@@ -4280,6 +4280,63 @@ PathSculptStroke motion_path_surface_fit(const Document &doc, const std::vector<
                                   motion_path_sculpt_dab_make(PathBrush::SurfaceSmooth, settings, {0.0f, 0.0f}, 1e6f));
 }
 
+bool motion_path_stretch_reset(Document &doc, const MotionPathTarget &target, int frame, bool shape, bool timing)
+{
+  Channel<float2> *ch = target.drawing ? nullptr : handle_channel(doc, target);
+  if (!ch) {
+    /* A path with no place of its own to shape (a drawing's: its points' timing; a bone turning its tip): only its
+     * timing. */
+    return timing && motion_path_even_spacing(doc, target, frame);
+  }
+  std::vector<Key<float2>> &keys = ch->keys;
+  /* The stretch: the key it arrives at is the first on or after `frame`, one after a key before it. */
+  size_t i = 0;
+  while (i < keys.size() && keys[i].frame < frame) {
+    i++;
+  }
+  if (i == 0 || i >= keys.size()) {
+    return false;
+  }
+  const int end = keys[i].frame;
+  Key<float2> &a = keys[i - 1], &b = keys[i];
+  if (shape) {
+    /* The timing needs nothing: a stretch's dots go by their share of its length, whatever its shape. Every handle as
+     * it is now (Auto ones worked out from the keys around them), so the stretches beside keep theirs. */
+    float2 a_in, a_out, b_in, b_out;
+    key_path_handles(keys, i - 1, a_in, a_out);
+    key_path_handles(keys, i, b_in, b_out);
+    const float2 way = b.value - a.value;
+    const auto set_side = [](Key<float2> &k, float2 in, float2 out, bool out_side) {
+      const float2 other = out_side ? in : out, mine = out_side ? out : in;
+      if (k.path_handles != PathHandles::Broken) {
+        /* In line still (or nothing on the other side to keep in line): Aligned; else a corner. */
+        const bool lined_up = length(other) < 1e-9f || length(mine) < 1e-9f ||
+                              (std::abs(other.x * mine.y - other.y * mine.x) <= 1e-4f * length(other) * length(mine) &&
+                               dot(other, mine) < 0.0f);
+        k.path_handles = lined_up ? PathHandles::Aligned : PathHandles::Broken;
+      }
+      k.path_in = in;
+      k.path_out = out;
+    };
+    set_side(a, a_in, way / 3.0f, true);
+    set_side(b, -way / 3.0f, b_out, false);
+    b.path_controls.clear();
+    b.path_control_handles.clear();
+  }
+  if (timing) {
+    if (shape) {
+      b.interp = Interp::Linear;
+      b.speeds.clear();
+    }
+    else if (!motion_path_even_spacing(doc, target, end - 1)) {
+      return false;
+    }
+  }
+  channel_keys_changed();
+  animation_evaluate(doc, doc.frame_current);
+  return true;
+}
+
 int motion_path_sculpt_dab(Document &doc, PathSculptStroke &stroke, const SculptDab &dab)
 {
   if (stroke.empty()) {

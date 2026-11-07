@@ -4985,28 +4985,85 @@ static bool menu_operator(Context &C, const char *label, const char *idname, con
   return false;
 }
 
+/* The stretch a right click on a path dot or control point opened the menu on (anim.motion_path_stretch_reset's
+ * arguments), and whether it has a shape to reset (a drawing's path has only its timing). */
+static struct {
+  bool valid = false, shape = false;
+  OpArgs args;
+} g_path_stretch_menu;
+
+/* A path dot's or control point's stretch: Reset Stretch, Reset Shape, Reset Timing. True when it drew them. */
+static bool path_stretch_items(Context &C)
+{
+  if (!g_path_stretch_menu.valid) {
+    return false;
+  }
+  ImGui::TextDisabled("Stretch");
+  ImGui::Separator();
+  const auto item = [&](const char *label, const char *what, const char *tip) {
+    OpArgs args = g_path_stretch_menu.args;
+    args["what"] = what;
+    menu_operator(C, label, "anim.motion_path_stretch_reset", args);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("%s", tip);
+    }
+  };
+  if (g_path_stretch_menu.shape) {
+    item("Reset Stretch", "BOTH",
+         "A straight line from key to key at an even speed; its control points go, the keys and the stretches beside "
+         "them stay");
+    item("Reset Shape", "SHAPE", "A straight line from key to key, its timing kept; its control points go");
+  }
+  item("Reset Timing", "TIMING", "An even speed along it, its shape kept");
+  return true;
+}
+
 /* The Motion Path tool's Edit menus: V (handle types of the selected keys) and the right click's, for the keys and
- * dots selected. Each item is one undo step. */
+ * dots selected, and on a path dot or control point its stretch's resets. Each item is one undo step. */
 static void motion_path_menus(Context &C, bool hovered)
 {
   WindowManager &wm = *C.wm;
   const ToolSettings &ts = wm.tool_settings;
   const bool edit = C.document && ts.tool == Tool::MotionPath && ts.path_brush == PathBrush::Edit;
   if (hovered && wm.menu_request == "motion_path_handles") {
+    g_path_stretch_menu.valid = false;
     ImGui::OpenPopup("##path_handles");
     wm.menu_request.clear();
+  }
+  /* Over a dot between keys, or a control point (its stretch by its key's frame): that stretch's resets too. Taken
+   * where the button went down, as that is what was clicked on. */
+  static decltype(g_path_stretch_menu) pressed;
+  if (edit && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+    pressed.valid = false;
+    if (wm.path_under) {
+      const Document &doc = *C.document;
+      const MotionPathTarget &t = wm.path_under_target;
+      const bool control = wm.path_under_end > 0;
+      const int frame = control ? wm.path_under_end : wm.path_under_frame;
+      if (control || (frame > 0 && !motion_path_is_key(doc, t, frame))) {
+        pressed.valid = true;
+        pressed.shape = motion_path_has_handles(doc, t);
+        pressed.args = motion_path_target_args(doc, t);
+        pressed.args["frame"] = std::to_string(frame);
+      }
+    }
   }
   if (edit && hovered && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
       !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right) && !g_right_click_spent && !g_path_drag.active)
   {
+    g_path_stretch_menu = pressed;
+    pressed.valid = false;
     if (!wm.path_handle_picks.empty()) {
       ImGui::OpenPopup("##path_handles");
     }
-    else if (!path_edit_selection(C).empty()) {
+    else if (g_path_stretch_menu.valid || !path_edit_selection(C).empty()) {
       ImGui::OpenPopup("##path_menu");
     }
   }
   if (ui_menu_begin("##path_handles")) {
+    if (path_stretch_items(C)) {
+      ImGui::Separator();
+    }
     const bool keys = std::any_of(wm.path_handle_picks.begin(), wm.path_handle_picks.end(),
                                   [](const MotionPathHandlePick &p) { return p.control < 0; });
     const bool controls = std::any_of(wm.path_handle_picks.begin(), wm.path_handle_picks.end(),
@@ -5034,8 +5091,13 @@ static void motion_path_menus(Context &C, bool hovered)
     const Document &doc = *C.document;
     const std::vector<std::pair<MotionPathTarget, int>> picked = path_edit_selection(C);
     const bool keys = picked.size() > wm.path_dots.size();
-    ImGui::TextDisabled(keys ? "Path Keys" : "Path Dots");
-    ImGui::Separator();
+    if (path_stretch_items(C) && !picked.empty()) {
+      ImGui::Separator();
+    }
+    if (!picked.empty()) {
+      ImGui::TextDisabled(keys ? "Path Keys" : "Path Dots");
+      ImGui::Separator();
+    }
     if (keys) {
       menu_operator(C, "Align Handles", "anim.motion_path_handles_type", {{"mode", "ALIGNED"}});
       menu_operator(C, "Auto Handles", "anim.motion_path_handles_type", {{"mode", "AUTO"}});
@@ -5046,7 +5108,6 @@ static void motion_path_menus(Context &C, bool hovered)
     if (!wm.path_dots.empty()) {
       menu_operator(C, "Even Spacing", "anim.motion_path_even_spacing");
     }
-    menu_operator(C, "Smooth Arc", "anim.motion_path_smooth_arc");
     if (!picked.empty()) {
       ImGui::Separator();
       OpArgs args = motion_path_target_args(doc, picked.front().first);

@@ -905,6 +905,40 @@ void motion_path_operators_register()
   }
   {
     OperatorType ot;
+    ot.idname = "anim.motion_path_stretch_reset";
+    ot.name = "Reset Stretch";
+    ot.description = "Right-click a path dot or control point: its stretch (frame=N in it, after its first key and up to "
+                     "its last: a control point's by its key's frame) "
+                     "made a straight line at an even speed; what=SHAPE only straightens it (its timing kept), "
+                     "what=TIMING only evens its speed (its shape kept). Its control points go; the keys stay on their "
+                     "frames and where they are, the stretches beside them as they were. Of what a path traces "
+                     "(layer=, bone=, point=, drawing=1, or the first traced)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_targets(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      const std::string what = op_has_arg(C, "what") ? op_arg(C, "what") : "BOTH";
+      if (what != "BOTH" && what != "SHAPE" && what != "TIMING") {
+        report(ReportType::Error, "what= is one of BOTH, SHAPE, TIMING");
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      if (!motion_path_stretch_reset(doc, targets.front(), op_arg_int(C, "frame", doc.frame_current), what != "TIMING",
+                                     what != "SHAPE"))
+      {
+        report(ReportType::Warning, "Nothing to reset there");
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
     ot.idname = "anim.motion_path_smooth_arc";
     ot.name = "Smooth Arc";
     ot.description = "Even out a lumpy path: each key inside the path's range moves onto a smooth curve through the "

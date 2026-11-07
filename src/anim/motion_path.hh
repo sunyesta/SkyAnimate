@@ -277,6 +277,13 @@ int motion_path_keys_delete(Document &doc, const std::vector<MotionPathTarget> &
 
 /* The stretch `frame` is in goes along its path at an even speed (Custom, every speed 1). */
 bool motion_path_even_spacing(Document &doc, const MotionPathTarget &target, int frame);
+/* Reset Stretch (a path dot's or control point's right-click menu): the stretch of `target` that `frame` is in (after
+ * its first key, up to and on its last: a control point's stretch by its key's frame). `shape`: a straight line from key to key, its control points deleted and the two handles on it pointing at
+ * each other a third of the way; a key whose handles went in line keeps them so where its other side still lines up,
+ * else turns Broken, so the stretch beside it keeps its shape. `timing`: an even speed (Linear; with the shape kept,
+ * Custom at an even speed along it). With only the shape, the dots keep their share of the way along it. Keys stay on
+ * their frames and where they are. A drawing's path has only its timing to reset. False when nothing could be. */
+bool motion_path_stretch_reset(Document &doc, const MotionPathTarget &target, int frame, bool shape, bool timing);
 /* How fast the dot on `frame` goes, as a share of its stretch's even speed (1 between keys moving evenly); 0 off any
  * stretch that moves. */
 float motion_path_dot_speed(const Document &doc, const MotionPathTarget &target, int frame);
