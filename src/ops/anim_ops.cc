@@ -1715,7 +1715,7 @@ void anim_operators_register()
                     "Copy the selected keys (Ctrl C in the timeline); they can be pasted in another action too",
                     OPTYPE_REGISTER, [](Context &C) {
                       animation_record(*C.document);
-                      const int copied = layers_copy_selected_keys(timeline_layers(C));
+                      const int copied = layers_copy_selected_keys(*C.document, timeline_layers(C));
                       if (copied == 0) {
                         report(ReportType::Warning, "Select keys to copy");
                         return OpStatus::Cancelled;
@@ -1754,7 +1754,7 @@ void anim_operators_register()
                       if (keep_place) {
                         was = std::make_unique<Document>(doc);
                       }
-                      const int pasted = layers_paste_keys(timeline_layers(C), doc.frame_current, &ids, &frames);
+                      const int pasted = layers_paste_keys(doc, timeline_layers(C), doc.frame_current, &ids, &frames);
                       if (pasted == 0) {
                         report(ReportType::Warning, "The copied keys' layers aren't selected");
                         return OpStatus::Cancelled;

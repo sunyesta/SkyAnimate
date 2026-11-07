@@ -126,4 +126,83 @@ go(7)
 assert close(hi(), (40, 0)), ("even again", hi())
 assert close(playing("eye_r"), 10), playing("eye_r")
 
+# --- Set from Python, the knob plays its action at once, as dragging it does ------------------------------------------
+rig.bone_set("eye", knob=(25.0, 0.0))
+right_after = pupil.shown()[0]
+go(7)
+assert close(right_after, pupil.shown()[0], 1e-5), ("bone_set(knob=) shows its pose at once", right_after, pupil.shown()[0])
+
+# --- Keys copied in the side's own action, pasted on the mainline: its timing keys stay behind ---------------------------
+assert ops.anim.action_set(name="eye_r") == {'FINISHED'}
+doc.frame_current = 20
+rig.bone_set("eye", knob=(10.0, 0.0))
+go(40)
+assert 20 in [k["frame"] for k in rig.keyframes(KNOB)], rig.keyframes(KNOB)
+assert ops.anim.action_set(name="") == {'FINISHED'}
+go(7)
+mainline_knob = [(k["frame"], k["value"]) for k in rig.keyframes(KNOB)]
+assert ops.anim.action_set(name="eye_r") == {'FINISHED'}
+go(40)
+layers.active = rig
+pupil.selected = True
+assert ops.anim.keys_select(frame_start="20", frame_end="40") == {'FINISHED'}
+assert ops.anim.keys_copy() == {'FINISHED'}
+assert ops.anim.action_set(name="") == {'FINISHED'}
+go(100)
+assert ops.anim.keys_paste() == {'FINISHED'}
+assert [(k["frame"], k["value"]) for k in rig.keyframes(KNOB)] == mainline_knob, \
+    ("the timing keys would move the knob", mainline_knob, rig.keyframes(KNOB))
+pasted = [k["frame"] for k in pupil.keyframes("points[1].pos")]
+assert 100 in pasted, ("the pupil's key lands on the frame pasted on", pasted)
+right_after = pupil.shown()[0]
+go(100)
+assert close(right_after, pupil.shown()[0], 1e-5), ("the frame shown after the paste", right_after, pupil.shown()[0])
+# In the same action they are its timing still, and paste there.
+assert ops.anim.action_set(name="eye_r") == {'FINISHED'}
+go(60)
+assert ops.anim.keys_paste() == {'FINISHED'}
+assert 60 in [k["frame"] for k in rig.keyframes(KNOB)], rig.keyframes(KNOB)
+assert ops.anim.action_set(name="") == {'FINISHED'}
+go(7)
+
+# The same for a dial (a bone named after the side's action): its turns there are which frame plays, not a pose.
+go(0)
+assert ops.armature.bone_add(name="eye_r", head_x="1", head_y="1", tail_x="1.5", tail_y="1") == {'FINISHED'}
+rig.bone_set("eye_r", strength=0.0)
+assert ops.anim.action_set(name="eye_r") == {'FINISHED'}
+doc.frame_current = 40
+rig.bone_set("eye_r", angle=bone("eye_r")["setup_angle"] + 1.0)
+go(40)
+DIAL = 'bones["eye_r"].angle'
+assert 40 in [k["frame"] for k in rig.keyframes(DIAL)], rig.keyframes(DIAL)
+assert ops.anim.action_set(name="") == {'FINISHED'}
+go(7)
+assert bone("eye_r")["controller"] == "eye", "a dial linked to the knob"
+mainline = (rig.keyframes(KNOB), rig.keyframes(DIAL))
+assert ops.anim.action_set(name="eye_r") == {'FINISHED'}
+go(40)
+assert ops.anim.keys_select(frame_start="40", frame_end="40") == {'FINISHED'}
+assert ops.anim.keys_copy() == {'FINISHED'}
+assert ops.anim.action_set(name="") == {'FINISHED'}
+go(120)
+assert ops.anim.keys_paste() == {'FINISHED'}
+right_after = pupil.shown()[0]
+assert (rig.keyframes(KNOB), rig.keyframes(DIAL)) == mainline, ("the dial's turn would play the action again", mainline,
+                                                                 rig.keyframes(KNOB), rig.keyframes(DIAL))
+assert 120 in [k["frame"] for k in pupil.keyframes("points[1].pos")], pupil.keyframes("points[1].pos")
+go(120)
+assert close(right_after, pupil.shown()[0], 1e-5), ("the frame shown after the paste", right_after, pupil.shown()[0])
+
+# Mainline keys of the knob pasted on the mainline move it there, shown at once.
+go(7)
+assert ops.anim.keys_select(frame_start="7", frame_end="7") == {'FINISHED'}
+assert ops.anim.keys_copy() == {'FINISHED'}
+go(60)
+assert ops.anim.keys_paste() == {'FINISHED'}
+assert 60 in [k["frame"] for k in rig.keyframes(KNOB)], rig.keyframes(KNOB)
+right_after = (pupil.shown()[0], bone("eye")["knob_shown"])
+go(60)
+assert close(right_after[0], pupil.shown()[0], 1e-5) and close(right_after[1], bone("eye")["knob_shown"]), \
+    ("the frame shown after the paste", right_after, pupil.shown()[0], bone("eye")["knob_shown"])
+
 print("Controller side timing tests passed")

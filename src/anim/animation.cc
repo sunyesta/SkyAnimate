@@ -6230,6 +6230,11 @@ struct ClipboardChannel {
    * which changes as points are added or deleted). */
   uint64_t point = 0;
   int curve = -1;
+  /* A 2 Axis Controller's knob position, or its linked dial's angle, copied in one of its sides' own actions: the
+   * action. Those keys are the side's timing there (how far out or how far turned each frame plays), never a move of
+   * the knob or the dial, so they paste only into that action. Elsewhere they would play the action on top of the
+   * pose pasted with them. */
+  std::string knob_timing;
 };
 
 /* The number in `path` after `prefix` (which starts it, at `at`), up to a ']'; -1 if there isn't one. */
@@ -6327,14 +6332,22 @@ const Document *key_clipboard_source()
   return key_clipboard().source.get();
 }
 
-int layers_copy_selected_keys(const std::vector<Layer *> &layers)
+int layers_copy_selected_keys(const Document &doc, const std::vector<Layer *> &layers)
 {
   KeyClipboard copied;
   int count = 0;
   int first = INT32_MAX;
   for (Layer *layer : layers) {
+    /* In a side's own action, the knob's position keys are its timing there, and the angle keys of the bone named after
+     * the action (a dial linked to that side) its curve: which frame each turn plays. */
+    const Bone *timed = !doc.action.empty() && doc.action_layer == layer->id ? controller_of_action(*layer, doc.action, nullptr)
+                                                                             : nullptr;
+    const Bone *dial = timed ? controller_dial_of_action(*layer, doc.action) : nullptr;
     for (const ChannelRef &ref : layer_channels(*layer)) {
       ClipboardChannel c{layer->id, layer->name, ref.path, {}, {}};
+      if ((timed && ref.vector == &timed->position_keys) || (dial && ref.scalar == &dial->angle_keys)) {
+        c.knob_timing = doc.action;
+      }
       const auto take = [&](const auto &channel, auto &into) {
         for (const auto &key : channel.keys) {
           if (key.selected) {
@@ -6364,7 +6377,7 @@ int layers_copy_selected_keys(const std::vector<Layer *> &layers)
   return count;
 }
 
-int layers_paste_keys(const std::vector<Layer *> &layers, int frame,
+int layers_paste_keys(const Document &doc, const std::vector<Layer *> &layers, int frame,
                       std::vector<std::pair<uint64_t, uint64_t>> *r_layers, std::vector<std::pair<int, int>> *r_frames)
 {
   const KeyClipboard &clipboard = key_clipboard();
@@ -6408,8 +6421,23 @@ int layers_paste_keys(const std::vector<Layer *> &layers, int frame,
     }
     return false;
   };
+  /* A knob's timing in a side's own action means nothing anywhere else: on the mainline it would move the knob. The
+   * first key that pastes lands on `frame`. */
+  const auto pastes = [&](const ClipboardChannel &c) { return c.knob_timing.empty() || c.knob_timing == doc.action; };
+  int first_frame = INT32_MAX;
+  for (const ClipboardChannel &c : clipboard.channels) {
+    for (const auto &k : c.scalar) {
+      first_frame = pastes(c) ? std::min(first_frame, k.frame) : first_frame;
+    }
+    for (const auto &k : c.vector) {
+      first_frame = pastes(c) ? std::min(first_frame, k.frame) : first_frame;
+    }
+  }
+  if (first_frame == INT32_MAX) {
+    return 0;
+  }
   layers_deselect_keys(layers);
-  const int offset = frame - clipboard.first_frame;
+  const int offset = frame - first_frame;
   int count = 0;
   /* The layers whose points or bones took a pose on the setup frame: their values follow the changes. */
   std::set<Layer *> posed_setup;
@@ -6418,6 +6446,9 @@ int layers_paste_keys(const std::vector<Layer *> &layers, int frame,
   std::vector<std::pair<float *, float>> setup_scalars;
   std::vector<std::pair<float2 *, float2>> setup_vectors;
   for (const ClipboardChannel &c : clipboard.channels) {
+    if (!pastes(c)) {
+      continue;
+    }
     ChannelRef ref;
     if (!target(c, &ref)) {
       continue;
@@ -6427,7 +6458,7 @@ int layers_paste_keys(const std::vector<Layer *> &layers, int frame,
     }
     if (r_frames) {
       const auto note = [&](int from) {
-        const std::pair<int, int> p{from, from + frame - clipboard.first_frame};
+        const std::pair<int, int> p{from, from + offset};
         if (std::find(r_frames->begin(), r_frames->end(), p) == r_frames->end()) {
           r_frames->push_back(p);
         }

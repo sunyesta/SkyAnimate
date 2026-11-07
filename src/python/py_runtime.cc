@@ -3299,6 +3299,11 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         throw py::key_error("unknown bone setting '" + key + "'");
       }
     }
+    /* A knob plays its actions: what they move is worked out from it again now, as dragging it does, not only
+     * once the frame is set again. */
+    if (values.contains("knob") || values.contains("knob_snap")) {
+      animation_refresh_action_bones(*current_context().document);
+    }
     current_context().undo->mark_changed();
   });
   m.def("layer_select_bone", [layer_or_raise](uint64_t id, const std::string &name, bool extend,

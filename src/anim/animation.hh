@@ -522,10 +522,10 @@ std::vector<std::pair<int, int>> layers_hold_spans(const std::vector<Layer *> &l
  * `layers` that has the channel. The pasted keys become the selection; one landing on frame 0
  * becomes the setup pose, and any before it are left out. Each returns how many keys it copied or
  * pasted. */
-int layers_copy_selected_keys(const std::vector<Layer *> &layers);
+int layers_copy_selected_keys(const Document &doc, const std::vector<Layer *> &layers);
 /* With `r_layers` and `r_frames`: each layer pasted onto with the layer its keys were copied from, and
  * each copied key's frame with the frame it was pasted on (for Ignore Bones). */
-int layers_paste_keys(const std::vector<Layer *> &layers, int frame,
+int layers_paste_keys(const Document &doc, const std::vector<Layer *> &layers, int frame,
                       std::vector<std::pair<uint64_t, uint64_t>> *r_layers = nullptr,
                       std::vector<std::pair<int, int>> *r_frames = nullptr);
 bool key_clipboard_empty();
