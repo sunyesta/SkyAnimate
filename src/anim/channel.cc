@@ -546,34 +546,27 @@ static float2 bezier_along(const float2 p[4], float u)
   return bezier(p, (float(j - 1) + f) / PIECES);
 }
 
-float2 path_control_value(float2 a, float2 b, float2 stored)
+/* Stored where they are (in the keys' own space): moving a key leaves them, only the curve's shape changing toward
+ * them, as a vector point's neighbours stay when it moves. (The keys are still asked for, so a way of keeping them
+ * can change in one place.) */
+float2 path_control_value(float2 /*a*/, float2 /*b*/, float2 stored)
 {
-  const float2 d = b - a;
-  if (length(d) < 1e-6f) {
-    /* The keys on top of each other: kept as an offset from them. */
-    return a + stored;
-  }
-  return a + d * stored.x + float2{-d.y, d.x} * stored.y;
+  return stored;
 }
 
-float2 path_control_stored(float2 a, float2 b, float2 value)
+float2 path_control_stored(float2 /*a*/, float2 /*b*/, float2 value)
 {
-  const float2 d = b - a, v = value - a;
-  const float l2 = d.x * d.x + d.y * d.y;
-  if (l2 < 1e-12f) {
-    return v;
-  }
-  return float2{(v.x * d.x + v.y * d.y) / l2, (v.y * d.x - v.x * d.y) / l2};
+  return value;
 }
 
-float2 path_control_offset_value(float2 a, float2 b, float2 stored)
+float2 path_control_offset_value(float2 /*a*/, float2 /*b*/, float2 stored)
 {
-  return path_control_value(a, b, stored) - a;
+  return stored;
 }
 
-float2 path_control_offset_stored(float2 a, float2 b, float2 offset)
+float2 path_control_offset_stored(float2 /*a*/, float2 /*b*/, float2 offset)
 {
-  return path_control_stored(a, b, a + offset);
+  return offset;
 }
 
 PathControlHandles path_control_handles_of(const Key<float2> &key, size_t j)

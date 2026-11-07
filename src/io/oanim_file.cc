@@ -1720,6 +1720,28 @@ static bool value_from_json(const json &j, float2 *r)
 /* The file being read: its format version. */
 static int g_loading_version = OANIM_FILE_VERSION;
 
+/* Before format 6 a control point (Key::path_controls) was kept relative to its stretch's keys, x along the line from
+ * the key before to its own, y across it (in that line's length; an offset from them where they were on top of each
+ * other), and its handles' offsets the same way: now each is where it is. */
+static void keys_controls_from_relative(std::vector<Key<float2>> &keys)
+{
+  for (size_t i = 1; i < keys.size(); i++) {
+    const float2 a = keys[i - 1].value, b = keys[i].value, d = b - a;
+    const auto value = [&](float2 stored) {
+      return length(d) < 1e-6f ? a + stored : a + d * stored.x + float2{-d.y, d.x} * stored.y;
+    };
+    for (float2 &c : keys[i].path_controls) {
+      c = value(c);
+    }
+    for (PathControlHandles &h : keys[i].path_control_handles) {
+      if (h.set) {
+        h.in = value(h.in) - a;
+        h.out = value(h.out) - a;
+      }
+    }
+  }
+}
+
 template<typename T> static void get_key_list(const json &j, const char *name, Channel<T> &r_ch)
 {
   for (const json &k : get_array(j, name)) {
@@ -1806,6 +1828,11 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
   /* Before format 4 a key's curve was for the stretch after it: now it's the one arriving at it. */
   if (g_loading_version < 4) {
     keys_curves_to_arriving(r_ch.keys);
+  }
+  if constexpr (std::is_same_v<T, float2>) {
+    if (g_loading_version < 6) {
+      keys_controls_from_relative(r_ch.keys);
+    }
   }
 }
 

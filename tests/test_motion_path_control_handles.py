@@ -84,8 +84,8 @@ added = handles(ball)
 assert added["set"] is True and added["aligned"] is True and in_line(added), added
 stored = added
 assert ops.anim.motion_path_move(frame="30", x="4", y="0.5", **args) == {'FINISHED'}
-# Its own: kept relative to the keys, riding with the line between them as the key moves (turned and stretched).
-assert close(handles(ball)["out"], (stored["out"][0], stored["out"][0] * 0.5 / 4.0), 1e-3), (stored, handles(ball))
+# Its own: left as it was as the key moves, as the control point is.
+assert close(handles(ball)["out"], stored["out"], 1e-3), (stored, handles(ball))
 assert ops.ed.undo() == {'FINISHED'}
 assert ops.anim.motion_path_control_move(frame="30", index="0", x="2", y="1", **args) == {'FINISHED'}
 

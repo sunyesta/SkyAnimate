@@ -86,12 +86,59 @@ assert max(abs(a - b) for a, b in zip(shares(before), shares(bent))) < 0.03, \
 assert bent[1][1] > 0.0 and bent[19][1] > 0.0, "a smooth arc, not a corner"
 assert frames(ball) == [0, 10, 30]
 
-# --- It rides with the keys -----------------------------------------------------------------------------------------
+# --- It stays where it is as the keys move: the curve's shape changes toward it -------------------------------------
 stored = key(ball, 30)["path_controls"][0]
+assert close(stored, (2.0, 2.0), 1e-4), ("stored where it is", stored)
 assert ops.anim.motion_path_move(frame="30", x="8", y="0", **args) == {'FINISHED'}
-assert close(key(ball, 30)["path_controls"][0], stored, 1e-5), "kept relative to its keys"
-assert pos(ball, 20)[0] > 3.0 and pos(ball, 20)[1] > 3.0, ("stretched with them", pos(ball, 20))
+assert close(key(ball, 30)["path_controls"][0], stored, 1e-5), "left as it was"
+c = next(c for c in wm.motion_path_controls() if c["end"] == 30)
+assert close(c["at"], (2.0, 2.0), 1e-3), ("not carried with the key", c["at"])
 assert ops.ed.undo() == {'FINISHED'}
+
+# --- A file from before format 6 kept them relative to the keys: read where they were --------------------------------
+import json
+import zipfile
+old_file = os.path.join(tempfile.mkdtemp(), "relative.oanim")
+assert ops.wm.save_as_mainfile(filepath=old_file) == {'FINISHED'}
+with zipfile.ZipFile(old_file) as z:
+    entries = {n: z.read(n) for n in z.namelist()}
+stored_doc = json.loads(entries["document.json"])
+stored_doc["version"] = 5
+
+
+def to_relative(node):
+    """Every key's control points and handles as format 5 kept them: along and across the line between the keys."""
+    if isinstance(node, dict):
+        for v in node.values():
+            to_relative(v)
+    elif isinstance(node, list) and node and all(isinstance(k, dict) and "frame" in k and "value" in k for k in node):
+        ks = sorted(node, key=lambda k: k["frame"])
+        for i in range(1, len(ks)):
+            if "path_controls" not in ks[i]:
+                continue
+            a, b = ks[i - 1]["value"], ks[i]["value"]
+            d = (b[0] - a[0], b[1] - a[1])
+            l2 = d[0] * d[0] + d[1] * d[1]
+            rel = lambda v: [((v[0] - a[0]) * d[0] + (v[1] - a[1]) * d[1]) / l2,
+                             ((v[1] - a[1]) * d[0] - (v[0] - a[0]) * d[1]) / l2]
+            ks[i]["path_controls"] = [rel(c) for c in ks[i]["path_controls"]]
+    elif isinstance(node, list):
+        for v in node:
+            to_relative(v)
+
+
+to_relative(stored_doc)
+entries["document.json"] = json.dumps(stored_doc).encode()
+with zipfile.ZipFile(old_file, "w") as z:
+    for n, data in entries.items():
+        z.writestr(n, data)
+assert ops.wm.open_mainfile(filepath=old_file) == {'FINISHED'}
+ball = next(l for l in layers if l.name == ball.name)
+args = dict(layer=str(ball.id))
+for l in layers:
+    l.selected = l.id == ball.id
+layers.active = ball
+assert close(key(ball, 30)["path_controls"][0], (2.0, 2.0), 1e-3), ("where it was", key(ball, 30)["path_controls"])
 
 # --- Picked on its own; G moves it ------------------------------------------------------------------------------------
 assert ops.anim.motion_path_handle_select(frame="30", control="0", **args) == {'FINISHED'}

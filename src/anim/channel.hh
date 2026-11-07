@@ -134,8 +134,8 @@ template<typename T> struct Key {
   std::vector<float> speeds;
   /* Position keys only: the control points of the stretch arriving at this key (the Motion Path tool's Alt click),
    * in order along it. They shape its path only (no frame, no timing: its dots go the same share of the way each
-   * frame as without them). Each is where it sits relative to the keys either side: x along the line from the key
-   * before to this one, y across it (both in that line's length), so they ride with the keys. */
+   * frame as without them). Each is where it is, in the keys' own space: a key moved leaves them where they are, the
+   * curve's shape changing toward them. (Before format 6 they were kept relative to the keys either side.) */
   std::vector<T> path_controls;
   /* Their handles, one for each (any missing: not set yet). */
   std::vector<PathControlHandles> path_control_handles;
@@ -304,7 +304,8 @@ template<typename T> void key_speeds_set(std::vector<Key<T>> &keys, size_t i, st
  * the keys' own space); past either end (an overshoot), on along the end's direction. */
 float2 stretch_path_point(const std::vector<Key<float2>> &keys, size_t i, float u);
 
-/* A control point stored relative to the stretch from `a` to `b` (Key::path_controls) as a value, and back. */
+/* A control point of the stretch from `a` to `b` as stored (Key::path_controls) as a value, and back: stored where it
+ * is, so these are the same (a file before format 6 kept them relative to the keys; see oanim_file.cc). */
 float2 path_control_value(float2 a, float2 b, float2 stored);
 float2 path_control_stored(float2 a, float2 b, float2 value);
 /* A control point's handle (an offset from it) stored the same way, and back. */
@@ -313,7 +314,7 @@ float2 path_control_offset_stored(float2 a, float2 b, float2 offset);
 /* Control point `j`'s handles as stored (not set when it has none yet). */
 PathControlHandles path_control_handles_of(const Key<float2> &key, size_t j);
 /* Key `i` just put between two: the control points of the stretch it splits go to the side of it they are on along
- * the path, each staying where it is (they are stored relative to their stretch's keys). */
+ * the path, each staying where it is. */
 void key_controls_split(std::vector<Key<float2>> &keys, size_t i);
 /* Before key `i` is taken out: the control points either side of it go to the stretch that joins its neighbours, each
  * staying where it is. */

@@ -330,11 +330,8 @@ assert close(where(box, 18)[0], x18), ("writing back what keyframes() gave chang
 
 # --- Control points stay where they are when a key is added or deleted in their stretch ------------------------------
 def control_point(layer, first, last, j=0):
-    """Control point j of the stretch first..last, where it is (stored relative to the stretch's keys)."""
-    a, b = key(layer, first)["value"], key(layer, last)["value"]
-    sx, sy = key(layer, last)["path_controls"][j]
-    d = (b[0] - a[0], b[1] - a[1])
-    return (a[0] + d[0] * sx - d[1] * sy, a[1] + d[1] * sx + d[0] * sy)
+    """Control point j of the stretch first..last, where it is (stored so)."""
+    return tuple(key(layer, last)["path_controls"][j])
 
 
 start()
