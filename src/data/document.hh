@@ -189,9 +189,9 @@ struct Document {
   PathRelative path_relative = PathRelative::World;
   uint64_t path_relative_layer = 0;
   uint64_t path_relative_bone = 0;
-  /* Own Motion (the Motion Path tool's header): a path being edited, one of its own keys or dots picked, is worked out
-   * with everything else that moves it (the bones a point hangs from, parent bones, its layer, the groups above) held
-   * as on the frame shown, so it shows and edits only its own motion; the real path stays as a faint ghost. */
+  /* Own Motion (the Motion Path tool's header): in the tool, every path is worked out with everything else that moves
+   * it (the bones a point hangs from, parent bones, its layer, the groups above, its own constraints) held as on the
+   * frame shown, so it shows and edits only its own motion, picked or not. */
   bool path_own_motion = true;
   std::vector<MotionPathTarget> path_targets;
   /* The timeline's Playback popover (Blender's scene settings). The audio ones are kept for when the

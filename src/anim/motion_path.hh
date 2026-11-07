@@ -56,7 +56,7 @@ struct MotionPath {
   std::vector<float> speed;
   std::vector<int> keys;
   /* Own Motion (Document::path_own_motion): `points` hold only the target's own motion. (Where it really goes isn't
-   * shown alongside: a second path confused more than it told; Own Motion off, or nothing picked, shows it.) */
+   * shown alongside: a second path confused more than it told; Own Motion off shows it.) */
   bool own_motion = false;
   /* The path's own shape between the dots (document space, as `points`): shape[i] the points strictly between dot
    * i - 1 and dot i, where shape_known[i]. Known where the path comes from a position channel and its dots sit on its
@@ -71,14 +71,11 @@ struct MotionPath {
 /* From document space on `frame` to where path `p` draws it, `at` (a place on that frame, in document space: the
  * target's) landing on its dot: the key's handles and control points as drawn, and back with inverted(). */
 Transform2D motion_path_drawn(const MotionPath &p, int frame, float2 at);
-/* Whether `target`'s path shows only its own motion now: Own Motion is on and something on it is picked (one of its
- * own keys, a dot, a key handle or a control point). */
+/* Whether `target`'s path shows only its own motion now: Own Motion is on and the Motion Path tool is (picked or not). */
 bool motion_path_own_motion(const Document &doc, const MotionPathTarget &target);
 /* Whether the Motion Path tool is on (the window's): Own Motion is for editing with it; outside it paths are only
  * looked at, the real ones. */
 void motion_path_tool_on(bool on);
-/* The targets with dots, key handles or control points picked on their paths (the window's), for Own Motion. */
-void motion_path_dots_picked(const std::vector<MotionPathTarget> &targets);
 /* The paths of `targets` over frames first..last. */
 std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector<MotionPathTarget> &targets,
                                           int first, int last);

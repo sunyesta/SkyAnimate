@@ -2052,8 +2052,8 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     return;
   }
   const std::vector<MotionPathTarget> targets = motion_path_targets(C);
-  motion_path_picks_sync(C);
-  /* Own Motion: which paths show only their own motion (those being edited). */
+  motion_path_tool_sync(C);
+  /* Own Motion: which paths show only their own motion. */
   std::vector<bool> own;
   for (const MotionPathTarget &t : targets) {
     own.push_back(motion_path_own_motion(doc, t));
@@ -5482,7 +5482,7 @@ static void motion_path_header(Context &C)
       }
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-      ImGui::SetTooltip("A path being edited (a key or dot picked) shows only its own motion: whatever else moves it "
+      ImGui::SetTooltip("Every path shows only its own motion: whatever else moves it "
                         "(a bone, a parent, a group, its own constraints) held as on this frame. Off: the real path");
     }
     ImGui::SameLine();

@@ -1523,7 +1523,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     if (!doc.motion_paths || !motion_path_range(doc, targets, first, last)) {
       return out;
     }
-    motion_path_picks_sync(C);
+    motion_path_tool_sync(C);
     for (const MotionPath &p : motion_paths_make(doc, targets, first, last)) {
       py::dict d;
       d["label"] = motion_path_label(doc, p.target);

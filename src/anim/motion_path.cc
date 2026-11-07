@@ -148,8 +148,6 @@ struct OwnValues {
 bool own_values(const Document &doc, const MotionPathTarget &t, OwnValues &r);
 void own_values_set(Document &doc, const MotionPathTarget &t, const OwnValues &v);
 
-/* The targets with dots, key handles or control points picked, set by the window (see motion_path_dots_picked). */
-std::vector<MotionPathTarget> g_dots_picked;
 bool g_path_tool = true;
 /* While a MotionPathOnFrame has the document on another frame: the document as shown, what Own Motion holds. (Each
  * thread's: places worked out side by side are handed it, held_places.) */
@@ -526,11 +524,6 @@ bool motion_path_range(const Document &doc, const std::vector<MotionPathTarget> 
   return true;
 }
 
-void motion_path_dots_picked(const std::vector<MotionPathTarget> &targets)
-{
-  g_dots_picked = targets;
-}
-
 void motion_path_tool_on(bool on)
 {
   g_path_tool = on;
@@ -538,42 +531,10 @@ void motion_path_tool_on(bool on)
 
 bool motion_path_own_motion(const Document &doc, const MotionPathTarget &target)
 {
-  /* A drawing's path is its layer's origin, which its own (shape) keys never move; outside the tool nothing is being
-   * edited. */
-  if (!doc.path_own_motion || target.drawing || !g_path_tool) {
-    return false;
-  }
-  if (std::any_of(g_dots_picked.begin(), g_dots_picked.end(), [&](const MotionPathTarget &t) { return t.same(target); }))
-  {
-    return true;
-  }
-  const Layer *layer = layer_find(doc, target.layer);
-  if (!layer) {
-    return false;
-  }
-  const auto picked = [](const auto &ch) {
-    return std::any_of(ch.keys.begin(), ch.keys.end(), [](const auto &k) { return k.selected; });
-  };
-  if (target.bone) {
-    const int i = bone_index(*layer, target.bone);
-    if (i < 0) {
-      return false;
-    }
-    const Bone &b = layer->bones[size_t(i)];
-    return picked(b.position_keys) || picked(b.angle_keys) || picked(b.scale_keys);
-  }
-  if (target.point) {
-    const int i = point_index(*layer, target.point);
-    return i >= 0 && picked(layer->drawing.points[size_t(i)].pos_keys);
-  }
-  KeyFilter filter;
-  filter.kinds = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM;
-  for (const ChannelRef &ref : layer_filtered_channels(*const_cast<Layer *>(layer), filter)) {
-    if ((ref.scalar && picked(*ref.scalar)) || (ref.vector && picked(*ref.vector))) {
-      return true;
-    }
-  }
-  return false;
+  /* Checked, every path the tool shows is its own motion, picked or not (one that turned real as something on it was
+   * picked, or let go, confused). A drawing's path is its layer's origin, which its own (shape) keys never move;
+   * outside the tool paths are only looked at, the real ones. */
+  return doc.path_own_motion && !target.drawing && g_path_tool;
 }
 
 static void path_shape_fill(const Document &doc, MotionPath &p);
@@ -1663,8 +1624,6 @@ static bool held_copy(const Document &doc, const MotionPathTarget &t, Document &
   held.interp = Interp::Linear;
   held.speeds.clear();
   held.path_handles = PathHandles::Auto;
-  /* Shown with Own Motion as the path is (its picked keys are what turn it on, and they're gone from the copy). */
-  held.selected = motion_path_own_motion(doc, t);
   ch->keys = {held};
   return true;
 }

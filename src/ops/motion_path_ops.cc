@@ -17,30 +17,17 @@
 
 namespace oanim {
 
-void motion_path_picks_sync(Context &C)
+void motion_path_tool_sync(Context &C)
 {
-  std::vector<MotionPathTarget> targets;
-  if (C.wm) {
-    for (const auto &[t, f] : C.wm->path_dots) {
-      targets.push_back(t);
-    }
-    /* A key handle or control point picked is its path being edited as much as a key or dot: picking one lets the
-     * keys go, and Own Motion would flip to the real path under it. */
-    for (const MotionPathHandlePick &p : C.wm->path_handle_picks) {
-      targets.push_back(p.target);
-    }
-  }
-  motion_path_dots_picked(targets);
   motion_path_tool_on(C.wm && C.wm->tool_settings.tool == Tool::MotionPath);
 }
 
-/* Own Motion follows the dots and path handles picked (motion_path_own_motion): told whenever an operator here changes
- * them. */
-struct PathDotsSync {
+/* Own Motion is for the Motion Path tool (motion_path_own_motion): told whether it is on as an operator here ends. */
+struct PathToolSync {
   Context &C;
-  ~PathDotsSync()
+  ~PathToolSync()
   {
-    motion_path_picks_sync(C);
+    motion_path_tool_sync(C);
   }
 };
 
@@ -125,7 +112,7 @@ bool motion_path_pick_at(Context &C, const std::vector<MotionPathTarget> &target
   WindowManager &wm = *C.wm;
   /* Edits not yet recorded belong to the frame they were made at. */
   animation_record(doc);
-  PathDotsSync sync{C};
+  PathToolSync sync{C};
   if (!extend) {
     std::vector<Layer *> all;
     for (const Layer *l : document_layers_flat(doc)) {
@@ -416,7 +403,7 @@ void motion_path_operators_register()
       }
       /* Frame 0 only for its key, the setup's: picked for its out handle, never a dot to slide. */
       const int frame = std::max(0, op_arg_int(C, "frame", doc.frame_current));
-      PathDotsSync sync{C};
+      PathToolSync sync{C};
       std::vector<std::pair<MotionPathTarget, int>> &dots = C.wm->path_dots;
       const bool none = op_arg_bool(C, "none");
       /* Keys and dots are never picked with path handles, Shift or not. */
@@ -505,7 +492,7 @@ void motion_path_operators_register()
     ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
     ot.exec = [](Context &C) {
       Document &doc = *C.document;
-      PathDotsSync picked{C};
+      PathToolSync picked{C};
       std::vector<MotionPathHandlePick> &picks = C.wm->path_handle_picks;
       if (op_arg_bool(C, "none")) {
         picks.clear();
@@ -528,7 +515,7 @@ void motion_path_operators_register()
       }
       /* Whatever else is picked on the paths goes: a handle is picked alone or with other handles. */
       {
-        PathDotsSync sync{C};
+        PathToolSync sync{C};
         std::vector<Layer *> all;
         for (const Layer *l : document_layers_flat(doc)) {
           all.push_back(layer_find(doc, l->id));
@@ -602,7 +589,7 @@ void motion_path_operators_register()
                                                "path is (not where a dot has gone past its key)");
         return OpStatus::Cancelled;
       }
-      PathDotsSync sync{C};
+      PathToolSync sync{C};
       std::vector<Layer *> all;
       for (const Layer *l : document_layers_flat(doc)) {
         all.push_back(layer_find(doc, l->id));
@@ -1579,7 +1566,6 @@ void motion_path_operators_register()
       }
       layers_deselect_keys(all);
       C.wm->path_dots.clear();
-      motion_path_dots_picked({});
       if (Layer *layer = layer_find(doc, targets.front().layer)) {
         layers_select_keys({layer}, frame, frame, true, motion_path_key_filter(doc, targets.front()));
       }

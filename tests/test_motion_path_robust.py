@@ -590,6 +590,7 @@ for at in (0, 20):
 
 # --- Grab and Smooth take a Relative To Parent path's dots where they are drawn --------------------------------------
 start()
+doc.path_own_motion = False  # (it holds the group as on the frame shown instead: Relative To is what's tried here)
 ops.layer.new()
 art = layers.active
 art.key_whole_drawing = False
