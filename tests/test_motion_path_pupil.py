@@ -274,4 +274,27 @@ assert ops.anim.motion_path_keys_transform(kind="G", x=str(25 * size), y="0") ==
 knob = next(k for k in rig.keyframes('bones["eye"].position') if k["frame"] == 30)["value"]
 assert close(knob, (40.0, 0.0), 0.05), ("the key at the edge, not past it", knob)
 
+
+# --- A Grab on a target its position keys don't move: refused, its path handles left alone ---------------------------
+doc.auto_key = True
+doc.frame_current = 45
+rig.bone_set("eye", knob=(5.0, 0.0))
+doc.auto_key = False
+CH = 'bones["eye"].position'
+for l in layers.all():
+    l.selected = l.id == rig.id
+layers.active = rig
+ops.armature.select_none()
+rig.select_bone("eye")
+doc.frame_current = 22
+was = [(k["frame"], k["value"], k["path_in"], k["path_out"]) for k in rig.keyframes(CH)]
+assert any(math.hypot(*k[3]) > 1e-3 for k in was), was
+for extra in ({}, {"head": "1"}):
+    assert ops.anim.motion_path_handle(frame="30", side="IN", x="0", y="0", layer=str(rig.id), bone="eye",
+                                       **extra) == {'CANCELLED'}, "its handles can't be dragged"
+    assert ops.anim.motion_path_stroke(brush="GRAB", points="0,0;0.01,0.01", radius="0.2", strength="1",
+                                       layer=str(rig.id), bone="eye", **extra) == {'CANCELLED'}
+    now = [(k["frame"], k["value"], k["path_in"], k["path_out"]) for k in rig.keyframes(CH)]
+    assert now == was, ("the Grab changed keys it can't move", was, now)
+
 print("test_motion_path_pupil: all passed")

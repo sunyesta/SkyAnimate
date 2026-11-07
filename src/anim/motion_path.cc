@@ -4132,10 +4132,15 @@ float2 map_vector(const KeyMap &m, float2 d)
 {
   return m.cx * d.x + m.cy * d.y;
 }
+/* Whether a step of the key's value moves where the target shows both ways (so map_unvector can undo it). */
+bool map_invertible(const KeyMap &m)
+{
+  return std::abs(m.cx.x * m.cy.y - m.cy.x * m.cx.y) >= 1e-12f;
+}
 float2 map_unvector(const KeyMap &m, float2 d)
 {
   const float det = m.cx.x * m.cy.y - m.cy.x * m.cx.y;
-  if (std::abs(det) < 1e-12f) {
+  if (!map_invertible(m)) {
     return float2{0.0f, 0.0f};
   }
   return float2{(d.x * m.cy.y - d.y * m.cy.x) / det, (m.cx.x * d.y - m.cx.y * d.x) / det};
@@ -4264,6 +4269,9 @@ PathSculptStroke motion_path_sculpt_begin(const Document &doc, const std::vector
       KeyMap m;
       m.value = k.value;
       ok = ok && key_jacobian(doc, t, k.frame, m.at, m.cx, m.cy);
+      /* A key whose value doesn't move the target (a tip its position keys don't carry): nothing the brush does to the
+       * line could be given back to the keys, so the target is left out, as dragging its handles or keys is refused. */
+      ok = ok && map_invertible(m);
       tg.maps.push_back(m);
     }
     if (!ok) {
