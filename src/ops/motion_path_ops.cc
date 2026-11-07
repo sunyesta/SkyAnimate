@@ -658,6 +658,33 @@ void motion_path_operators_register()
   }
   {
     OperatorType ot;
+    ot.idname = "anim.motion_path_deselect_all";
+    ot.name = "Deselect Path Picks";
+    ot.description = "Alt A with the Motion Path tool's Edit and something picked on the paths: let go of the path "
+                     "keys, dots, handles and control points picked, the bones and points traced staying (with "
+                     "nothing on the paths picked, Alt A deselects those)";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) {
+      return path_edit_poll(C) && (!path_selected_keys(C).empty() || !C.wm->path_dots.empty() ||
+                                   path_handles_picked(C));
+    };
+    ot.exec = [](Context &C) {
+      PathToolSync sync{C};
+      std::vector<Layer *> all;
+      for (const Layer *l : document_layers_flat(*C.document)) {
+        all.push_back(layer_find(*C.document, l->id));
+      }
+      layers_deselect_keys(all);
+      C.wm->path_dots.clear();
+      C.wm->path_handle_picks.clear();
+      C.wm->path_timing_end = 0;
+      C.undo->mark_changed();
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
     ot.idname = "anim.motion_path_handles_reset";
     ot.name = "Reset Path Handles";
     ot.description = "X with path handles or control points picked (the Motion Path tool's Edit): the handles' keys "

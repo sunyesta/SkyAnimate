@@ -647,6 +647,10 @@ PENDING = [
     ('src/anim/motion_path.cc', '    middle = middle + key_dot(doc, paths, t, f);\n    points++;', '    (void)t;\n    (void)f;', 'the pivot counts the keys', 'tests/test_motion_path_select_linked.py'),
     ('src/ops/motion_path_ops.cc', '      if (controls && smooth + handles == 0 && !path_selected_keys(C).empty()) {', '      if (false) {', 'X deletes the keys picked with control points', 'tests/test_motion_path_select_linked.py'),
     ('src/ops/motion_path_ops.cc', '      const bool handles = path_handles_picked(C) && !motion_path_picks_with_keys(C.wm->path_handle_picks);', '      const bool handles = path_handles_picked(C);', 'V with keys and control points: the keys', 'tests/test_motion_path_select_linked.py'),
+    ('src/ops/rig_ops.cc', '                  * paths picked) would take away the bone being animated. */\n                 if (!on_setup_frame(C)) {', '                  * paths picked) would take away the bone being animated. */\n                 if (false) {', 'bones deleted on frame 0 only', 'tests/test_rigging.py'),
+    ('scripts/startup/oanim_keymap_default.py', '    ("Motion Path", "anim.motion_path_deselect_all", "A", {"alt": True}),\n', '', 'Alt A in the keymap: the path picks first', 'tests/test_motion_path_select_linked.py'),
+    ('src/ops/motion_path_ops.cc', '      return path_edit_poll(C) && (!path_selected_keys(C).empty() || !C.wm->path_dots.empty() ||\n                                   path_handles_picked(C));', '      return path_edit_poll(C) && (!path_selected_keys(C).empty() || !C.wm->path_dots.empty());', 'Alt A with only handles picked', 'tests/test_motion_path_select_linked.py'),
+    ('src/ops/motion_path_ops.cc', '      layers_deselect_keys(all);\n      C.wm->path_dots.clear();\n      C.wm->path_handle_picks.clear();\n      C.wm->path_timing_end = 0;', '      layers_deselect_keys(all);\n      C.wm->path_handle_picks.clear();\n      C.wm->path_timing_end = 0;', 'Alt A lets go of dots', 'tests/test_motion_path_select_linked.py'),
 ]
 
 def build():

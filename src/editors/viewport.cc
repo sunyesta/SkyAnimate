@@ -2105,6 +2105,14 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
   float best = pick_path_pixels() * pick_path_pixels();
   const MotionPath *hover_path = nullptr;
   int hover_frame = 0;
+  /* For L: the path under the mouse, found even while a press or a move keeps the hover off (L pressed right after a
+   * click or a G was taken by the drawing's Select Linked). A control point wins over a dot, as hovering. */
+  const bool under_look = hovered && editing && tool;
+  const MotionPath *under_path = nullptr;
+  int under_frame = 0;
+  float under_best = pick_path_pixels() * pick_path_pixels();
+  std::optional<PathControlHover> under_control;
+  float under_control_best = under_best;
   const int step = std::max(1, doc.path_step);
   /* With the tool, the path handles of selected position keys. */
   std::vector<std::pair<MotionPathTarget, int>> handle_keys;
@@ -2258,6 +2266,11 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
             best = how_near * how_near;
             hover_path = &p;
             hover_frame = p.first + int(k);
+          }
+          if (under_look && how_near * how_near < under_best) {
+            under_best = how_near * how_near;
+            under_path = &p;
+            under_frame = p.first + int(k);
           }
         }
       }
@@ -2475,6 +2488,10 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
         hover_cs = &cs;
         g_path_control_hover = PathControlHover{cs.target, cs.c.end, cs.c.index, cs.c.near_frame, 0, cs.drawn};
       }
+      if (under_look && dx * dx + dy * dy < under_control_best) {
+        under_control_best = dx * dx + dy * dy;
+        under_control = PathControlHover{cs.target, cs.c.end, cs.c.index, cs.c.near_frame, 0, cs.drawn};
+      }
     }
     if (hover_cs) {
       hover_cs->hovered = true;
@@ -2571,12 +2588,12 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     /* A handle over a dot: the handle, which is only there on a selected key. */
     hover_path = nullptr;
   }
-  /* For L: the stretch under the mouse, by a dot or key, or a control point. */
-  if (hovered && tool && editing && (hover_path || g_path_control_hover)) {
+  /* For L: the stretch under the mouse, by a control point, or a dot or key. */
+  if (under_control || under_path) {
     wm.path_under = true;
-    wm.path_under_target = hover_path ? hover_path->target : g_path_control_hover->target;
-    wm.path_under_frame = hover_path ? hover_frame : g_path_control_hover->near_frame;
-    wm.path_under_end = hover_path ? 0 : g_path_control_hover->end;
+    wm.path_under_target = under_control ? under_control->target : under_path->target;
+    wm.path_under_frame = under_control ? under_control->near_frame : under_frame;
+    wm.path_under_end = under_control ? under_control->end : 0;
   }
   if (tool && !editing) {
     motion_path_brush_input(C, area, view, dl, hovered, first, last);

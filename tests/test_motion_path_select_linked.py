@@ -203,4 +203,24 @@ assert picks() == []
 assert ops.ed.undo() == {'FINISHED'}
 assert frames(ball) == [0, 10, 30, 50], frames(ball)
 
+# --- Alt A: lets go of what is picked on the paths first, the thing traced staying ---------------------------------------
+first_stretch()
+assert ops.anim.motion_path_select(frame="45", extend="1", **args) == {'FINISHED'}
+assert ops.anim.motion_path_handle_select(frame="50", control="0", extend="1", **args) == {'FINISHED'}
+assert wm.event_simulate("A", alt=True, area="Viewport")
+assert selected(ball) == [] and picks() == [] and wm.motion_path_dots() == [], (selected(ball), picks())
+assert ball.selected, "the layer traced stays picked: its path still shows"
+# A handle picked alone: let go too.
+assert ops.anim.motion_path_handle_select(frame="30", out="1", **args) == {'FINISHED'}
+assert ops.anim.motion_path_deselect_all.poll()
+assert wm.event_simulate("A", alt=True, area="Viewport")
+assert picks() == []
+# And a dot.
+assert ops.anim.motion_path_select(frame="45", **args) == {'FINISHED'}
+assert len(wm.motion_path_dots()) == 1
+assert wm.event_simulate("A", alt=True, area="Viewport")
+assert wm.motion_path_dots() == []
+# Nothing on the paths picked: Alt A is the drawing's (not this).
+assert ops.anim.motion_path_deselect_all.poll() is False
+
 print("Motion path L: ok")

@@ -179,14 +179,30 @@ assert close(after["arm_R"]["tail"], before["arm_R"]["tail"])
 assert oanim.ops.armature.bone_parent_set(bone="spine", parent="arm_L") == {'CANCELLED'}, "no loops"
 assert oanim.ops.armature.bone_parent_set(bone="arm_R", parent="spine") == {'FINISHED'}
 
-# X deletes bones over the viewport when a bone layer is active (any frame).
+# X deletes bones over the viewport when a bone layer is active, on frame 0 (a rig change; not on frame 7).
 doc.frame_current = 7
+rig.select_bone("arm_R")
+oanim.wm.event_simulate("X", area="Viewport")
+assert "arm_R" in [b["name"] for b in rig.bones], "not off the setup frame"
+doc.frame_current = 0
 rig.select_bone("arm_R")
 assert oanim.wm.event_simulate("X", area="Viewport")
 assert "arm_R" not in [b["name"] for b in rig.bones]
 oanim.ops.ed.undo()
 assert "arm_R" in [b["name"] for b in rig.bones]
 doc.frame_current = 0
+
+# Deleting a bone is a rig change: only on frame 0, the setup. On another frame X (the Motion Path tool's too, with
+# nothing on the paths picked) leaves the bone being animated.
+oanim.data.layers.active = rig
+rig.select_bone("arm_L")
+doc.frame_current = 12
+assert oanim.ops.armature.bone_delete() == {'CANCELLED'}
+assert "arm_L" in [b["name"] for b in rig.bones], "not deleted off the setup frame"
+assert oanim.ops.wm.tool_motion_path() == {'FINISHED'}
+oanim.wm.event_simulate("X", area="Viewport")
+assert "arm_L" in [b["name"] for b in rig.bones], "nor by X in the Motion Path tool"
+assert oanim.ops.wm.tool_select() == {'FINISHED'}
 
 # Deleting a bone: points that followed only it stay where they are (no new weights).
 doc.frame_current = 0

@@ -871,7 +871,8 @@ void rig_operators_register()
                });
 
   rig_operator("armature.bone_delete", "Delete Bones",
-               "Delete the selected bones; their children move up to the deleted bone's parent",
+               "Delete the selected bones; their children move up to the deleted bone's parent (on frame 0, the "
+               "setup, as every rig change)",
                [](Context &C) {
                  /* With no bone picked, X goes on to delete points (of layers marked Editable in Bone
                   * Group). */
@@ -879,6 +880,11 @@ void rig_operators_register()
                  return active && active->is_bone_layer() && armature_any_picked(*active_armature(C));
                },
                [](Context &C) {
+                 /* A rig change, as adding one: on any other frame X (in the Motion Path tool, with nothing on the
+                  * paths picked) would take away the bone being animated. */
+                 if (!on_setup_frame(C)) {
+                   return OpStatus::Cancelled;
+                 }
                  Layer &armature = *active_armature(C);
                  std::vector<uint64_t> doomed;
                  /* A bone picked by its body or either ball goes. */

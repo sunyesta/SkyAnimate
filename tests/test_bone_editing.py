@@ -391,7 +391,7 @@ assert rig.move_bone_ends((0.5, 0.0))
 assert close(ends("loose")[0], (before[0][0] + 0.5, before[0][1])), "posed: children come along"
 doc.frame_current = 0
 
-# --- Delete on a posed frame: as on the setup frame (children rest where they did, keep their keys, none made) -------
+# --- Delete: on the setup frame children rest where they did and keep their keys; on a posed frame nothing goes ------
 def ends(name):
     b = bones()[name]
     return b.get("knob_head", b["head"]), b["tail"]
@@ -418,6 +418,14 @@ def deleted_on(frame):
     doc.frame_current = frame
     oanim.ops.armature.select_none()
     rig.select_bone("b")
+    if frame != 0:
+        # A rig change: only on the setup frame. Off it nothing is deleted (nor keyed).
+        before = {n: [(k["frame"], k["value"]) for k in rig.keyframes('bones["%s"].angle' % n)] for n in ("b", "c")}
+        assert oanim.ops.armature.bone_delete() == {'CANCELLED'}
+        assert "b" in bones() and bones()["c"]["parent"] == "b"
+        assert before == {n: [(k["frame"], k["value"]) for k in rig.keyframes('bones["%s"].angle' % n)]
+                          for n in ("b", "c")}
+        return None, None
     assert oanim.ops.armature.bone_delete() == {'FINISHED'}
     assert "b" not in bones() and bones()["c"]["parent"] == "a"
     seen = {}
@@ -429,12 +437,7 @@ def deleted_on(frame):
     return seen, keys
 
 
-setup_seen, setup_keys = deleted_on(0)
-posed_seen, posed_keys = deleted_on(10)
-for f in setup_seen:
-    for n in setup_seen[f]:
-        assert close(posed_seen[f][n][0], setup_seen[f][n][0], 1e-3) and close(posed_seen[f][n][1], setup_seen[f][n][1], 1e-3), (
-            "as deleted on the setup frame", f, n, setup_seen[f][n], posed_seen[f][n])
-assert posed_keys == setup_keys, ("no keys made on the frame it was deleted on", setup_keys, posed_keys)
+deleted_on(0)
+deleted_on(10)
 
 print("Bone editing tests passed")
