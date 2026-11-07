@@ -370,6 +370,10 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
       const int n = s.end - s.start;
       for (int k = 1; k < n; k++) {
         const int frame = s.start + k;
+        if (s.held(k)) {
+          /* On 2s or 3s: it shows the frame before's pose, so it has no tick (nothing to drag) of its own. */
+          continue;
+        }
         const float x = xa + (xb - xa) * s.progress[size_t(k)];
         const bool picked = std::find(dots.begin(), dots.end(), frame) != dots.end();
         const bool ringed = (g_tick.active && g_tick.target.same(t) && g_tick.frame == frame) ||
@@ -764,6 +768,9 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   bool on_arrow = false;
   for (int k = 1; k < n; k++) {
     const int frame = s.start + k;
+    if (s.held(k)) {
+      continue;
+    }
     const ImVec2 p = to_screen(float(frame), s.progress[size_t(k)]);
     if (p.x < min.x || p.x > max.x || p.y < min.y || p.y > max.y) {
       const ImVec2 e(std::clamp(p.x, min.x + 7.0f, max.x - 7.0f), std::clamp(p.y, min.y + 7.0f, max.y - 7.0f));

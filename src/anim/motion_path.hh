@@ -212,6 +212,19 @@ struct MotionPathStretch {
   std::vector<float> progress;
   /* Breakdowns inside the stretch (a span from main key to main key is one stretch). */
   std::vector<int> breakdowns;
+  /* On 2s or 3s (its start key's interval): `progress` is the timing played every `interval` frames, a frame between
+   * holding the pose of the one its step began on (played()). */
+  int interval = 1;
+  /* How far along the dot shows on frame `start + k`, as it plays. */
+  float played(int k) const
+  {
+    return start + k >= end ? progress.back() : progress[size_t(k / interval * interval)];
+  }
+  /* Whether frame `start + k` holds the pose of an earlier frame (on 2s or 3s). */
+  bool held(int k) const
+  {
+    return k % interval != 0 && k + start != end;
+  }
 };
 /* Each stretch that moves (not stepped, posed or cycling). Progress can go over 1 (past its key: overshoot) or under 0
  * (backing up first). */

@@ -1332,6 +1332,15 @@ template<typename T> bool stretch_of(const Channel<T> &ch, int frame, size_t &r_
   return false;
 }
 
+/* On 2s or 3s (the start key's interval) a held frame plays the pose of the frame its step began on: `frame` made
+ * that one. False when that is the stretch's start (the key's own pose, nothing to slide). */
+template<typename T> static bool played_frame(const Channel<T> &ch, size_t i, int start, int &frame)
+{
+  const int interval = std::max(ch.keys[i - 1].interval, 1);
+  frame = start + (frame - start) / interval * interval;
+  return frame > start;
+}
+
 /* The stretch made Custom as it moves now (a straight position stretch keeping its line): its speeds. */
 template<typename T> std::vector<float> stretch_make_custom(Channel<T> &ch, size_t i, int start, int n)
 {
@@ -1889,7 +1898,7 @@ bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame,
       return false;
     }
     Channel<float> &ch = layer->bones[size_t(b)].angle_keys;
-    if (!stretch_of(ch, frame, i, start, n)) {
+    if (!stretch_of(ch, frame, i, start, n) || !played_frame(ch, i, start, frame)) {
       return false;
     }
     Document copy = doc;
@@ -1914,7 +1923,7 @@ bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame,
   }
   else {
     Channel<float2> *ch = handle_channel(doc, target);
-    if (!ch || !stretch_of(*ch, frame, i, start, n)) {
+    if (!ch || !stretch_of(*ch, frame, i, start, n) || !played_frame(*ch, i, start, frame)) {
       return false;
     }
     /* The mouse in the keys' own space, by how the target moves with the channel's value there. */
@@ -2514,6 +2523,7 @@ std::vector<MotionPathStretch> motion_path_stretches(const Document &doc, const 
       st.start = start;
       st.end = b.frame;
       st.progress = speeds_progress(stretch_speeds(ch, i, start, n));
+      st.interval = std::max(a.interval, 1);
       out.push_back(std::move(st));
     }
   });
@@ -2541,12 +2551,12 @@ bool motion_path_slide_progress(Document &doc, const MotionPathTarget &target, i
   bool slid = false;
   with_timing_channels(doc, target, [&](auto &ch) {
     size_t i = 0;
-    int start = 0, n = 0;
-    if (!stretch_of(ch, frame, i, start, n)) {
+    int start = 0, n = 0, played = frame;
+    if (!stretch_of(ch, frame, i, start, n) || !played_frame(ch, i, start, played)) {
       return;
     }
     const std::vector<float> s = stretch_make_custom(ch, i, start, n);
-    key_speeds_set(ch.keys, i, slid_speeds(s, frame - start, progress, slide));
+    key_speeds_set(ch.keys, i, slid_speeds(s, played - start, progress, slide));
     slid = true;
   });
   animation_evaluate(doc, doc.frame_current);

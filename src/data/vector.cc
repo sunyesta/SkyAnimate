@@ -282,6 +282,132 @@ void curve_point_align_both(VectorDrawing &drawing, Curve &curve, int i)
   cp.handle_out = -back * out_len;
 }
 
+static float wrap_turn(float a);
+
+/* One timeline of an aligned point's two handle channels (keys hold each handle's turn and growth from its setup):
+ * the follower takes the other's turn at every frame either is keyed. `setup_frame`: an action's keys start after
+ * frame 0, which is the setup (no change). */
+static bool align_timeline(std::vector<Key<float2>> &in, std::vector<Key<float2>> &out, AlignFollow follow,
+                           bool setup_frame)
+{
+  if (in.empty() && out.empty()) {
+    return false;
+  }
+  const auto evaluated = [setup_frame](const std::vector<Key<float2>> &keys) {
+    Channel<float2> ch;
+    ch.keys = keys;
+    if (setup_frame && !keys.empty() && !ch.key_at(0)) {
+      ch.set_key(0, float2());
+    }
+    return ch;
+  };
+  const Channel<float2> ci = evaluated(in), co = evaluated(out);
+  std::set<int> frames;
+  for (const auto *keys : {&in, &out}) {
+    for (const Key<float2> &k : *keys) {
+      frames.insert(k.frame);
+    }
+  }
+  const auto value = [](const Channel<float2> &ch, int frame) { return ch.animated() ? ch.evaluate(frame) : float2(); };
+  const auto rebuilt = [&](const std::vector<Key<float2>> &own, const std::vector<Key<float2>> &other,
+                           const Channel<float2> &own_ch, const auto &turn) {
+    std::vector<Key<float2>> keys;
+    for (const int f : frames) {
+      const auto at = [f](const Key<float2> &k) { return k.frame == f; };
+      const auto mine = std::find_if(own.begin(), own.end(), at);
+      /* A frame only the other is keyed on takes its key's timing. */
+      Key<float2> k = mine != own.end() ? *mine : *std::find_if(other.begin(), other.end(), at);
+      k.frame = f;
+      k.value = float2(turn(f), value(own_ch, f).y);
+      keys.push_back(k);
+    }
+    return keys;
+  };
+  const std::vector<Key<float2>> was_in = in, was_out = out;
+  if (follow == AlignFollow::In) {
+    in = rebuilt(was_in, was_out, ci, [&](int f) { return value(co, f).x; });
+  }
+  else if (follow == AlignFollow::Out) {
+    out = rebuilt(was_out, was_in, co, [&](int f) { return value(ci, f).x; });
+  }
+  else {
+    const auto halfway = [&](int f) {
+      const float a = value(ci, f).x;
+      return a + wrap_turn(value(co, f).x - a) * 0.5f;
+    };
+    in = rebuilt(was_in, was_out, ci, halfway);
+    out = rebuilt(was_out, was_in, co, halfway);
+  }
+  const auto same = [](const std::vector<Key<float2>> &a, const std::vector<Key<float2>> &b) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](const Key<float2> &x, const Key<float2> &y) {
+             return x.frame == y.frame && x.value == y.value;
+           });
+  };
+  return !same(in, was_in) || !same(out, was_out);
+}
+
+bool curve_point_align_keys(CurvePoint &cp, AlignFollow follow)
+{
+  Channel<float2> &ci = cp.handle_in_keys, &co = cp.handle_out_keys;
+  bool changed = false;
+  /* The setups in line first: then the same turn keeps them so. */
+  const float2 si = handle_setup(cp, true), so = handle_setup(cp, false);
+  const float li = length(si), lo = length(so);
+  float2 new_in = si, new_out = so;
+  if (li > 1e-9f && lo > 1e-9f) {
+    if (follow == AlignFollow::In) {
+      new_in = -so / lo * li;
+    }
+    else if (follow == AlignFollow::Out) {
+      new_out = -si / li * lo;
+    }
+    else if (const float2 back = si / li - so / lo; length(back) > 1e-6f) {
+      new_in = normalize(back) * li;
+      new_out = -normalize(back) * lo;
+    }
+  }
+  std::set<std::string> names;
+  for (const auto *ch : {&ci, &co}) {
+    for (const auto &[name, keys] : ch->actions) {
+      names.insert(name);
+    }
+  }
+  const bool keyed = ci.animated() || co.animated() || !names.empty();
+  if (!keyed) {
+    return false;
+  }
+  /* Keys with no setup of their own yet: the handle as it is. */
+  cp.setup_in = new_in;
+  cp.setup_out = new_out;
+  changed = new_in != si || new_out != so;
+  changed |= align_timeline(ci.keys, co.keys, follow, false);
+  for (const std::string &name : names) {
+    std::vector<Key<float2>> in, out;
+    if (auto it = ci.actions.find(name); it != ci.actions.end()) {
+      in = it->second;
+    }
+    if (auto it = co.actions.find(name); it != co.actions.end()) {
+      out = it->second;
+    }
+    /* "" is the mainline, put away while an action is edited: it has its own frame 0. */
+    if (align_timeline(in, out, follow, !name.empty())) {
+      changed = true;
+      for (auto [ch, keys] : {std::pair{&ci, &in}, std::pair{&co, &out}}) {
+        if (keys->empty()) {
+          ch->actions.erase(name);
+        }
+        else {
+          ch->actions[name] = *keys;
+        }
+      }
+    }
+  }
+  for (Channel<float2> *ch : {&ci, &co}) {
+    ch->has_last = true;
+  }
+  return changed;
+}
+
 void curve_segment_points(const Curve &curve, int segment, int *r_from, int *r_to)
 {
   const int n = int(curve.points.size());
@@ -2573,10 +2699,12 @@ bool curve_point_selected(const VectorDrawing &drawing, const CurvePoint &cp)
   return drawing.points[cp.point].selected || cp.select_in || cp.select_out;
 }
 
-int drawing_align_selected_handles(VectorDrawing &drawing, bool align)
+int drawing_align_selected_handles(VectorDrawing &drawing, bool align,
+                                   std::vector<std::tuple<int, int, AlignFollow>> *r_aligned)
 {
   int changed = 0;
-  for (Curve &curve : drawing.curves) {
+  for (int c = 0; c < int(drawing.curves.size()); c++) {
+    Curve &curve = drawing.curves[size_t(c)];
     for (int i = 0; i < int(curve.points.size()); i++) {
       CurvePoint &cp = curve.points[i];
       if (!curve_point_selected(drawing, cp)) {
@@ -2591,6 +2719,10 @@ int drawing_align_selected_handles(VectorDrawing &drawing, bool align)
         }
         else {
           curve_point_align(drawing, curve, i, cp.select_out);
+        }
+        if (r_aligned) {
+          /* curve_point_align turns the out handle when the out is picked (or the in has no length to follow). */
+          r_aligned->emplace_back(c, i, point ? AlignFollow::Both : cp.select_out ? AlignFollow::Out : AlignFollow::In);
         }
         changed++;
       }

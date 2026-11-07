@@ -1622,6 +1622,13 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           progress.append(u);
         }
         d["progress"] = progress;
+        /* On 2s or 3s: what each frame plays (a held frame its step's). */
+        py::list played;
+        for (int k = 0; k < int(s.progress.size()); k++) {
+          played.append(s.played(k));
+        }
+        d["played"] = played;
+        d["interval"] = s.interval;
         py::list breakdowns;
         for (const int f : s.breakdowns) {
           breakdowns.append(f);

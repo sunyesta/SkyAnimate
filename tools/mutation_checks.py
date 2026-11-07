@@ -605,6 +605,16 @@ PENDING = [
     ('src/anim/animation.cc', '        if (c.type == BoneConstraintType::FollowPoint || c.type == BoneConstraintType::LimitShape ||\n            c.type == BoneConstraintType::LookAt)', '        if (c.type == BoneConstraintType::FollowPoint || c.type == BoneConstraintType::LimitShape)', 'a Look At in an Eye Shape plays the knob actions from where it looks', 'tests/test_frame_visit_order.py'),
     ('src/anim/shape_limit.cc', '        const bool loop = target && target->has_drawing() && layer_moved_by_bone(doc, *target, rig.id, b.id);', '        const bool loop = false;', 'Look At and Limit to Shape refuse a shape their bone moves', 'tests/test_shape_loop.py'),
     ('src/anim/shape_limit.cc', '        c.shape_error.clear();\n        /* Limit to Shape', '        /* Limit to Shape', 'a loop let go of works again', 'tests/test_shape_loop.py'),
+    ('src/anim/motion_path.cc', '    if (!stretch_of(ch, frame, i, start, n) || !played_frame(ch, i, start, played)) {', '    if (!stretch_of(ch, frame, i, start, n)) {', "on 3s a held frame's dot slides the frame whose pose it holds", 'tests/test_path_timing_threes.py'),
+    ('src/anim/motion_path.cc', '    if (!ch || !stretch_of(*ch, frame, i, start, n) || !played_frame(*ch, i, start, frame)) {', '    if (!ch || !stretch_of(*ch, frame, i, start, n)) {', 'on 3s sliding a held frame moves the pose it holds (position)', 'tests/test_path_timing_threes.py'),
+    ('src/anim/motion_path.cc', '    if (!stretch_of(ch, frame, i, start, n) || !played_frame(ch, i, start, frame)) {', '    if (!stretch_of(ch, frame, i, start, n)) {', 'on 3s sliding a held frame moves the pose it holds (tip)', 'tests/test_path_timing_threes.py'),
+    ('src/anim/motion_path.hh', '    return start + k >= end ? progress.back() : progress[size_t(k / interval * interval)];', '    return progress[size_t(k)];', 'on 3s the timing chart says what each frame plays', 'tests/test_path_timing_threes.py'),
+    ('src/anim/follow_point.cc', '          if (turned) {', '          if (false) {', 'Look At refuses an IK that turns what carries its Eye Shape', 'tests/test_shape_loop.py'),
+    ('src/anim/follow_point.cc', '(c.chain == 0 || n < c.chain); n++) {', 'true; n++) {', 'an IK that turns only its own bone is no loop', 'tests/test_shape_loop.py'),
+    ('src/ops/vector_ops.cc', '                              rekeyed |= curve_point_align_keys(cp, follow);', '                              (void)follow;', 'Align keeps the handles in line on every frame', 'tests/test_handles_align_keys.py'),
+    ('src/data/vector.cc', '      return a + wrap_turn(value(co, f).x - a) * 0.5f;', '      return a;', "Align on a point turns both handles' keys halfway", 'tests/test_handles_align_keys.py'),
+    ('src/data/vector.cc', '      new_in = -so / lo * li;', '      new_in = si;', 'Align on a later frame lines up the setup too', 'tests/test_handles_align_keys.py'),
+    ('src/data/vector.cc', '          ch->actions[name] = *keys;', '          (void)keys;', "Align makes an action's keys agree", 'tests/test_handles_align_keys.py'),
 ]
 
 

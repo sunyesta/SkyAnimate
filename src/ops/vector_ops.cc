@@ -1,6 +1,7 @@
 /* Operators that edit the active vector layer's drawing: selection, delete, shapes, curvature,
  * and the start of modal transforms (G, R, S, E). */
 
+#include "anim/animation.hh"
 #include "anim/bone_family.hh"
 #include "anim/deform.hh"
 #include "ops/edit_ops.hh"
@@ -353,12 +354,36 @@ void vector_operators_register()
                         ids.push_back(layer->id);
                       }
                       const PartnerMirror partners = layer_mirror_partners_begin(*C.document, ids, ts.mirror_x);
+                      std::vector<std::pair<uint64_t, std::vector<std::tuple<int, int, AlignFollow>>>> aligned;
                       for (Layer *layer : editable_layers(C)) {
-                        changed += drawing_align_selected_handles(layer->drawing, align);
+                        aligned.emplace_back(layer->id, std::vector<std::tuple<int, int, AlignFollow>>());
+                        changed += drawing_align_selected_handles(layer->drawing, align, &aligned.back().second);
                         drawing_mirror_selected_handles(
                             layer->drawing, layer_mirror_x_self(*C.document, layer->id, ts.mirror_x), ts.mirror_y);
                       }
                       layer_mirror_partners_end(*C.document, partners);
+                      if (align) {
+                        /* Kept in line on every frame: keys (an action's too) that turn the two apart would still
+                         * turn one by itself. The line made here is recorded first, then the keys agree with it. */
+                        animation_record(*C.document);
+                        bool rekeyed = false;
+                        for (auto &[id, points] : aligned) {
+                          Layer *layer = layer_find(*C.document, id);
+                          if (!layer || layer->is_reference()) {
+                            continue;
+                          }
+                          VectorDrawing &d = layer->drawing;
+                          for (const auto &[c, i, follow] : points) {
+                            CurvePoint &cp = d.curves[size_t(c)].points[size_t(i)];
+                            if (d.points[size_t(cp.point)].detail.level == 0) {
+                              rekeyed |= curve_point_align_keys(cp, follow);
+                            }
+                          }
+                        }
+                        if (rekeyed) {
+                          animation_evaluate(*C.document, C.document->frame_current);
+                        }
+                      }
                       return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;
                     });
   }

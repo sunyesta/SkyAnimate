@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "anim/channel.hh"
@@ -412,6 +413,13 @@ void curve_point_align(VectorDrawing &drawing, Curve &curve, int i, bool turn_ou
  * them, keeping their lengths; folded back on each other (no halfway), along the way from the point before to the
  * one after. A handle with no length leaves the other where it is. Marks the point aligned. */
 void curve_point_align_both(VectorDrawing &drawing, Curve &curve, int i);
+/* Which handle Align turned into line: the in, the out, or both halfway (a point picked). */
+enum class AlignFollow { In, Out, Both };
+/* Align's keys, so the two stay in line as they play: the handle turned into line takes the other's turn on every
+ * frame either is keyed, in the timeline being edited and in every action (each keeps its own length), and their setup
+ * directions are lined up the same way. Keys that turned them apart (an action keying one handle, or the two by
+ * different amounts) would otherwise still turn one by itself. Returns whether anything changed. */
+bool curve_point_align_keys(CurvePoint &cp, AlignFollow follow);
 /* The four Bezier control points of a segment. */
 void curve_segment_bezier(const VectorDrawing &drawing, const Curve &curve, int segment, float2 r_ctrl[4]);
 float2 bezier_eval(const float2 ctrl[4], float t);
@@ -760,7 +768,8 @@ void drawing_deselect_handles(VectorDrawing &drawing);
 bool curve_point_selected(const VectorDrawing &drawing, const CurvePoint &cp);
 /* Align (or, `align` false, Unalign) the selected points' handles. With only one handle of a
  * point picked, that handle is the one that turns into line. Returns how many points changed. */
-int drawing_align_selected_handles(VectorDrawing &drawing, bool align);
+int drawing_align_selected_handles(VectorDrawing &drawing, bool align,
+                                   std::vector<std::tuple<int, int, AlignFollow>> *r_aligned = nullptr);
 /* The selected points' alignment: -1 none selected, 0 free, 1 aligned, -2 some of each. */
 int drawing_selected_alignment(const VectorDrawing &drawing);
 /* Peak (`peak`) or Smooth the selected points' handles, once: Peak points them a third of the

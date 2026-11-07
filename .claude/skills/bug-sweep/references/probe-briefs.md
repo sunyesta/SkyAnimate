@@ -35,6 +35,9 @@ doubtful / maybe-by-design findings; then what you checked that came out clean. 
 and posed frames, inside and outside actions (`doc.action`), auto-key on and off. Bone add/delete/duplicate/parent/
 connect, convert types and back, controller sides, knobs past the box, fixes and spots, action new/rename/delete/
 mirror/frames, constraints add/remove/reorder/disable, dynamics on/off/bake, Apply Pose as Rest, Freeze Keys, IK.
+Scan every aligned curve point on every frame (as the head turns the actions): its two handles must stay in line
+(`layer.curve_handles` minus the point); keys or actions that turn one alone are a bug the user sees as "it turns by
+itself". Then Align it and check again.
 
 **Motion paths and timing.** The Motion Path tool, path keys, handles, control points and their handles, breakdowns,
 path brushes, Slide, overshoot and anticipation, the timing chart and graph, Time Together, Key Whole Drawing, paths
