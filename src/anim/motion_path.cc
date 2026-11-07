@@ -2973,13 +2973,27 @@ bool key_add_in_place(Channel<float2> &pos, int frame)
     over = uk > 1.0f + 1e-4f ? 1 : uk < -1e-4f ? -1 : 0;
     split = curve_timed || (uk > 1e-3f && uk < 1.0f - 1e-3f) || over != 0;
   }
+  /* A plain stretch's Bezier as it runs now (its keys' handles frozen above): split exactly where the dot is, at its
+   * own parameter (Smooth goes by it, and Linear's handles a third of the way make it the share of the way). */
+  float2 whole_curve[4];
+  {
+    float2 unused, out, in;
+    key_path_handles(pos.keys, size_t(bi - 1), unused, out);
+    key_path_handles(pos.keys, size_t(bi), in, unused);
+    whole_curve[0] = a.value;
+    whole_curve[1] = a.value + out;
+    whole_curve[2] = b.value + in;
+    whole_curve[3] = b.value;
+  }
+  const float curve_t = b.frame > start ? float(frame - start) / float(b.frame - start) : 0.0f;
   pos.set_key(frame, pos.evaluate(frame));
   const size_t ki = size_t(bi);
   Key<float2> *k = &pos.keys[ki];
   const auto settle = [&]() {
     k = &pos.keys[ki];
     key_settings_apply(*k, arriving);
-    k->hold = 0;
+    /* Inside the start key's hold: it holds on to where the hold ended, so the move still starts there. */
+    k->hold = std::max(start - frame, 0);
     k->interval = interval;
     k->type = KeyType::Key;
   };
@@ -3049,7 +3063,27 @@ bool key_add_in_place(Channel<float2> &pos, int frame)
     settle();
     /* Its control points stay where they are. */
     key_controls_split(pos.keys, ki);
-    if (span_in > 0 && span_out > 0) {
+    if (span_in > 0 && span_out > 0 && frame <= start) {
+      /* In the hold, where nothing moves: the new key sets off along the way the start key's handle took. */
+      k->path_out = whole_curve[1] - whole_curve[0];
+      k->path_in = -k->path_out;
+      k->path_handles = PathHandles::Aligned;
+    }
+    else if (span_in > 0 && span_out > 0 && plain) {
+      /* Cut in two at the dot's place on the curve (de Casteljau): the halves run where the whole did, each by its own
+       * parameter as the whole did by its (whatever the hold before it or the frames it plays on). */
+      const float t = curve_t;
+      const float2 *w = whole_curve;
+      const float2 q1 = w[0] + (w[1] - w[0]) * t, q2 = w[1] + (w[2] - w[1]) * t, q3 = w[2] + (w[3] - w[2]) * t;
+      const float2 r1 = q1 + (q2 - q1) * t, r2 = q2 + (q3 - q2) * t;
+      const float2 m = r1 + (r2 - r1) * t;
+      k->path_in = r1 - m;
+      k->path_out = r2 - m;
+      k->path_handles = PathHandles::Aligned;
+      pos.keys[ki - 1].path_out = q1 - whole_curve[0];
+      pos.keys[ki + 1].path_in = q3 - whole_curve[3];
+    }
+    else if (span_in > 0 && span_out > 0) {
       k->path_in = speed * (-float(span_in) / 3.0f);
       k->path_out = speed * (float(span_out) / 3.0f);
       k->path_handles = PathHandles::Aligned;
@@ -3064,7 +3098,31 @@ bool key_add_in_place(Channel<float2> &pos, int frame)
   return true;
 }
 
-bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int frame)
+/* A key on `frame` of a scalar channel (none there yet) holding what it has there, as key_add_in_place puts one in: it
+ * arrives as the stretch it splits did, plays on as the key before did, and holds what is left of that key's hold. */
+static bool scalar_key_add_in_place(Channel<float> &ch, int frame)
+{
+  if (frame < 1 || ch.key_at(frame)) {
+    return false;
+  }
+  const auto b = std::find_if(ch.keys.begin(), ch.keys.end(), [&](const Key<float> &k) { return k.frame > frame; });
+  if (b == ch.keys.begin() || b == ch.keys.end()) {
+    ch.set_key(frame, ch.evaluate(frame));
+    return true;
+  }
+  const Key<float> &a = *(b - 1);
+  const KeySettings arriving = key_settings(*b);
+  const int interval = a.interval;
+  const int start = std::min(a.frame + std::max(a.hold, 0), b->frame);
+  Key<float> &k = ch.set_key(frame, ch.evaluate(frame));
+  key_settings_apply(k, arriving);
+  k.hold = std::max(start - frame, 0);
+  k.interval = interval;
+  k.type = KeyType::Key;
+  return true;
+}
+
+bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int frame, KeyType type, int *r_frame)
 {
   if (frame < 1) {
     return false;
@@ -3072,7 +3130,58 @@ bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int fram
   /* The position's key goes in where its dot is, keeping the stretch's way and timing; the other channels the path
    * keys take their values there too. */
   Channel<float2> *pos = handle_channel(doc, target);
+  if (pos) {
+    /* On 2s or 3s a held frame's dot is the pose of the frame its step began on (drawn on it, and the one picked
+     * there): the key goes on that frame, as a slide of the held dot slides that frame. A key there already (the
+     * stretch's start) is the pose itself. */
+    for (size_t i = 1; i < pos->keys.size(); i++) {
+      const Key<float2> &a = pos->keys[i - 1], &b = pos->keys[i];
+      if (frame > a.frame && frame < b.frame) {
+        const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
+        const int interval = std::max(a.interval, 1);
+        if (frame > start) {
+          frame = start + (frame - start) / interval * interval;
+        }
+        break;
+      }
+    }
+    if (pos->key_at(frame)) {
+      return false;
+    }
+  }
+  if (r_frame) {
+    *r_frame = frame;
+  }
   bool added = pos && key_add_in_place(*pos, frame);
+  const auto typed = [&](auto &ch) {
+    if (auto *k = ch.key_at(frame)) {
+      k->type = type;
+    }
+  };
+  if (pos && added) {
+    typed(*pos);
+  }
+  Layer *layer = layer_find(doc, target.layer);
+  if (layer && (target.point || target.drawing) && layer->key_whole_drawing && layer->type == LayerType::Vector) {
+    /* Key Whole Drawing: every channel of the shape keyed here, each in place on its own stretch (its own way and
+     * timing kept), so no other point moves either (left to the drawing's keying, they would take this point's
+     * timing). */
+    drawing_channels(doc, *layer, [&](auto &ch) {
+      if (static_cast<void *>(&ch) == static_cast<void *>(pos) || ch.key_at(frame)) {
+        return true;
+      }
+      if constexpr (std::is_same_v<std::decay_t<decltype(ch.keys[0].value)>, float2>) {
+        added = key_add_in_place(ch, frame) || added;
+      }
+      else {
+        added = scalar_key_add_in_place(ch, frame) || added;
+      }
+      typed(ch);
+      return true;
+    });
+    animation_evaluate(doc, doc.frame_current);
+    return added;
+  }
   with_path_channel(doc, target, [&](auto &ch) {
     if (static_cast<void *>(&ch) == static_cast<void *>(pos) || ch.key_at(frame)) {
       return;

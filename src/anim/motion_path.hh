@@ -268,7 +268,10 @@ bool motion_path_timing_stretch(const Document &doc, const std::vector<MotionPat
  * stretch did), and the keys either side keep their handles, so no dot moves anywhere; before the first key or after
  * the last it holds the value there. Every way of keying a position goes through it. */
 bool key_add_in_place(Channel<float2> &pos, int frame);
-bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int frame);
+/* On 2s or 3s a held frame's key goes on the frame whose pose it holds (`r_frame`: the frame keyed). With Key Whole
+ * Drawing every channel of the drawing is keyed in place, each on its own stretch, its new key `type`. */
+bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int frame, KeyType type = KeyType::Key,
+                         int *r_frame = nullptr);
 /* The target's keys on `frame` (each channel its path covers: a bone's, a point's, a drawing's, a layer's turn, move
  * and size) made `type`; never frame 0. Returns how many. Alt click and Alt Shift on a path make breakdowns. */
 int motion_path_key_type_set(Document &doc, const MotionPathTarget &target, int frame, KeyType type);

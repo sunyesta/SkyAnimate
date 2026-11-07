@@ -98,4 +98,100 @@ doc.frame_current = 14
 assert abs(v.location_y) < 1e-3 and v.location_x < 0.0, ("a timing dipping under 0 went sideways", v.location_x,
                                                          v.location_y)
 
+
+# --- Holds and 2s / 3s: the new key keeps the hold and the frames played --------------------------------------------------
+def poses(layer, a=0, b=45):
+    out = []
+    for f in range(a, b + 1):
+        doc.frame_current = f
+        out.append((layer.location_x, layer.location_y))
+    return out
+
+
+def timed(interp, **settings):
+    ops.wm.read_homefile()
+    doc.auto_key = False
+    doc.path_before = doc.path_after = 60
+    assert ops.wm.tool_motion_path() == {'FINISHED'}
+    ops.layer.new()
+    v = L.active
+    v.add_curve([(0.0, 0.0), (0.1, 0.0)])
+    v.key_whole_drawing = False
+    doc.frame_current = 0
+    v.location_x, v.location_y = -1.0, -1.0
+    for layer in L:
+        layer.selected = layer.id == v.id
+    A = dict(layer=str(v.id))
+    for f, (x, y) in ((10, (0.0, 0.0)), (20, (1.0, 0.5)), (30, (2.0, 0.0)), (40, (3.0, 1.0))):
+        assert ops.anim.motion_path_move(frame=str(f), x=str(x), y=str(y), **A) == {'FINISHED'}
+    for f in (10, 20, 30, 40):
+        v.keyframe_set("position", f, interp=interp, **settings)
+    return v, A
+
+
+for interp, settings, frame, keyed in (("LINEAR", {"hold": 3}, 11, 11), ("SMOOTH", {"hold": 3}, 14, 14),
+                                       ("SMOOTH", {"interval": 3}, 13, 13), ("LINEAR", {"interval": 2}, 12, 12),
+                                       ("SMOOTH", {"interval": 3}, 14, 13), ("SMOOTH", {"hold": 2, "interval": 2}, 15, 14),
+                                       ("SMOOTH", {}, 25, 25), ("SMOOTH", {"hold": 3}, 11, 11),
+                                       ("EASE_IN_OUT", {"hold": 3}, 12, 12)):
+    v, A = timed(interp, **settings)
+    p0 = poses(v)
+    assert ops.anim.motion_path_key_add(frame=str(frame), type="KEYFRAME", **A) == {'FINISHED'}
+    frames = [k["frame"] for k in v.keyframes("position")]
+    assert keyed in frames and (frame == keyed or frame not in frames), (interp, settings, frame, frames)
+    w = max(math.dist(a, b) for a, b in zip(p0, poses(v)))
+    assert w < 1e-4, (f"{interp} {settings}: a key added on {frame} moved a dot by {w:.5f}", v.keyframes("position"))
+    k = next(k for k in v.keyframes("position") if k["frame"] == keyed)
+    assert k["interval"] == settings.get("interval", 1), k
+
+# A held frame of the start key's own pose: that pose is a key already.
+v, A = timed("LINEAR", interval=2)
+p0 = poses(v)
+assert ops.anim.motion_path_key_add(frame="11", type="KEYFRAME", **A) == {'CANCELLED'}
+assert 11 not in [k["frame"] for k in v.keyframes("position")]
+assert max(math.dist(a, b) for a, b in zip(p0, poses(v))) < 1e-6
+
+# --- Key Whole Drawing: a key on one point's path keeps every other point's own motion ---------------------------------
+for interp in ("EASE_IN_OUT", "SMOOTH"):
+    ops.wm.read_homefile()
+    doc.path_before = doc.path_after = 60
+    assert ops.wm.tool_motion_path() == {'FINISHED'}
+    ops.layer.new()
+    v = L.active
+    assert v.key_whole_drawing
+    v.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.5)])
+    for layer in L:
+        layer.selected = layer.id == v.id
+    doc.auto_key = True
+    moves = {10: [(0.0, 0.3), (1.2, 0.0), (2.0, 0.9)], 20: [(0.5, 1.0), (1.0, -0.6), (2.6, 0.5)],
+             30: [(1.5, 0.2), (1.9, 0.3), (2.0, -0.4)], 40: [(0.4, -0.5), (1.0, 1.0), (3.0, 0.0)]}
+    for f, pts in moves.items():
+        doc.frame_current = f
+        for i, p in enumerate(pts):
+            v.set_point(i, p)
+        ops.anim.keyframe_insert()
+    doc.auto_key = False
+    for i in range(3):
+        for f in moves:
+            v.keyframe_set("points[%d].pos" % i, f, interp=interp)
+    v.select_points([0])
+
+    def shape():
+        out = []
+        for f in range(0, 46):
+            doc.frame_current = f
+            out.append([tuple(p[:2]) for p in v.points])
+        return out
+
+    s0 = shape()
+    doc.frame_current = 25
+    assert ops.anim.motion_path_key_add(frame="25", layer=str(v.id), point=str(v.point_ids[0])) == {'FINISHED'}
+    s1 = shape()
+    w = max(math.dist(a[i], b[i]) for a, b in zip(s0, s1) for i in range(3))
+    assert w < 1e-3, (f"{interp}: a key on point 0's path moved the drawing by {w:.4f}",
+                      v.keyframes("points[1].pos"))
+    for i in range(3):
+        k = next(k for k in v.keyframes("points[%d].pos" % i) if k["frame"] == 25)
+        assert k["type"] == "BREAKDOWN", (i, k)
+
 print("test_path_key_add_dots: all passed")

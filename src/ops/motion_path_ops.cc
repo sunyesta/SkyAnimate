@@ -1725,8 +1725,8 @@ void motion_path_operators_register()
     ot.idname = "anim.motion_path_key_add";
     ot.name = "Add Motion Path Key";
     ot.description = "A key on frame=N of what a path traces (layer=, bone=, point=, or the first traced), where it is "
-                     "now, so the path stays as it is (Alt click with the Motion Path tool's Edit); it is selected. A "
-                     "breakdown, unless type=KEYFRAME";
+                     "now, so the path stays as it is (Alt click with the Motion Path tool's Edit); it is selected. On "
+                     "2s or 3s a held frame keys the frame whose pose it holds. A breakdown, unless type=KEYFRAME";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
@@ -1735,14 +1735,14 @@ void motion_path_operators_register()
       if (!op_targets(C, targets)) {
         return OpStatus::Cancelled;
       }
-      const int frame = op_arg_int(C, "frame", doc.frame_current);
+      int frame = op_arg_int(C, "frame", doc.frame_current);
       animation_sync(doc);
       KeyType type = KeyType::Breakdown;
       if (op_has_arg(C, "type") && !key_type_from_identifier(op_arg(C, "type"), &type)) {
         report(ReportType::Error, "type is KEYFRAME or BREAKDOWN");
         return OpStatus::Cancelled;
       }
-      if (!motion_path_key_add(doc, targets.front(), frame)) {
+      if (!motion_path_key_add(doc, targets.front(), frame, type, &frame)) {
         report(ReportType::Info, "A key is there already");
         return OpStatus::Cancelled;
       }

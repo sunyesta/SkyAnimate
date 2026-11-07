@@ -178,9 +178,14 @@ curve = [pos(arc, f) for f in range(10, 21)]
 assert ops.anim.motion_path_key_add(frame="15", type="KEYFRAME", layer=str(arc.id)) == {'FINISHED'}
 k = key(arc, 15)
 assert k["path_handles"] == "ALIGNED", k
+# Along the path's way there (the curve's own tangent: the chord through the dots either side is near it), in line,
+# and the curve split there, every dot staying.
 way = (curve[6][0] - curve[4][0], curve[6][1] - curve[4][1])
 cross = way[0] * k["path_out"][1] - way[1] * k["path_out"][0]
-assert abs(cross) < 1e-3 * math.hypot(*way) * math.hypot(*k["path_out"]) + 1e-6, ("along the path's way", way, k)
+assert abs(cross) < 2e-2 * math.hypot(*way) * math.hypot(*k["path_out"]) + 1e-6, ("along the path's way", way, k)
+crease = k["path_in"][0] * k["path_out"][1] - k["path_in"][1] * k["path_out"][0]
+assert abs(crease) < 1e-4 * math.hypot(*k["path_in"]) * math.hypot(*k["path_out"]) + 1e-9, ("in line", k)
+assert all(close(pos(arc, f), c, 1e-4) for f, c in zip(range(10, 21), curve)), "the dots stay"
 
 
 def turn(points, i):
