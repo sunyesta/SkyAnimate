@@ -328,10 +328,10 @@ int drawings_shown_keep(Document &doc, const DrawingsShown &before)
   return keyed;
 }
 
-/* Edits action `name` of `owner`, the mainline for "". */
+/* Edits action `name` of `owner`, the mainline for "". (Two bone layers can each have an action of a name.) */
 static void use_action(Document &doc, uint64_t owner, const std::string &name)
 {
-  if (doc.action != name) {
+  if (doc.action != name || (!name.empty() && doc.action_layer != owner)) {
     document_set_action(doc, name.empty() ? 0 : owner, name);
   }
 }
@@ -362,16 +362,14 @@ DrawingsShownAll drawings_shown_capture_all(Document &doc, const std::vector<uin
       }
     }
   }
-  const std::string was = doc.action;
-  uint64_t was_owner = 0;
+  /* Looking changes nothing: back in the action being edited, whoever's it is, its frame 0 keys as they were. */
+  animation_record(doc);
+  const EditedAction was = edited_action_save(doc);
   for (DrawingsShownAll::Action &a : out.actions) {
-    if (a.name == was) {
-      was_owner = a.owner;
-    }
     use_action(doc, a.owner, a.name);
     a.shown = drawings_shown_capture(doc, layers);
   }
-  use_action(doc, was_owner, was);
+  edited_action_restore(doc, was);
   return out;
 }
 
@@ -423,9 +421,9 @@ BonesShownAll bones_shown_capture_all(Document &doc, uint64_t armature, const st
   }
   std::vector<std::string> names{""};
   names.insert(names.end(), rig->actions.begin(), rig->actions.end());
-  const std::string was = doc.action;
-  const int was_frame = doc.frame_current;
   animation_record(doc);
+  const EditedAction was = edited_action_save(doc);
+  const int was_frame = doc.frame_current;
   for (const std::string &name : names) {
     use_action(doc, armature, name);
     BonesShownAll::Action a;
@@ -445,7 +443,7 @@ BonesShownAll bones_shown_capture_all(Document &doc, uint64_t armature, const st
     }
     out.actions.push_back(std::move(a));
   }
-  use_action(doc, armature, was);
+  edited_action_restore(doc, was);
   doc.frame_current = was_frame;
   animation_sync(doc);
   return out;
@@ -453,7 +451,8 @@ BonesShownAll bones_shown_capture_all(Document &doc, uint64_t armature, const st
 
 int bones_shown_keep_all(Document &doc, const BonesShownAll &before)
 {
-  const std::string was = doc.action;
+  animation_record(doc);
+  const EditedAction was = edited_action_save(doc);
   const int was_frame = doc.frame_current;
   int keyed = 0;
   for (auto it = before.actions.rbegin(); it != before.actions.rend(); ++it) {
@@ -530,7 +529,7 @@ int bones_shown_keep_all(Document &doc, const BonesShownAll &before)
       }
     }
   }
-  use_action(doc, before.armature, was);
+  edited_action_restore(doc, was);
   doc.frame_current = was_frame;
   animation_sync(doc);
   return keyed;
@@ -538,19 +537,16 @@ int bones_shown_keep_all(Document &doc, const BonesShownAll &before)
 
 int drawings_shown_keep_all(Document &doc, const DrawingsShownAll &before)
 {
-  const std::string was = doc.action;
-  uint64_t was_owner = 0;
+  animation_record(doc);
+  const EditedAction was = edited_action_save(doc);
   int keyed = 0;
   for (auto it = before.actions.rbegin(); it != before.actions.rend(); ++it) {
-    if (it->name == was) {
-      was_owner = it->owner;
-    }
     if (!it->shown.empty()) {
       use_action(doc, it->owner, it->name);
       keyed += drawings_shown_keep(doc, it->shown);
     }
   }
-  use_action(doc, was_owner, was);
+  edited_action_restore(doc, was);
   return keyed;
 }
 

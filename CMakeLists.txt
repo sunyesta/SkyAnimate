@@ -611,6 +611,8 @@ add_test(NAME vector_deform
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_vector_deform.py)
 add_test(NAME weights_keep_actions
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_weights_keep_actions.py)
+add_test(NAME keep_animation_edited_action
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_keep_animation_edited_action.py)
 add_test(NAME weights_menu
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_weights_menu.py)
 add_test(NAME keys_ignore_bones

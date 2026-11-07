@@ -1770,6 +1770,61 @@ bool document_set_action_by_name(Document &doc, const std::string &name)
   return false;
 }
 
+/* Calls f(channel) for every channel of a bone layer and the layers inside it, keys only (no values worked out). */
+template<typename F> static void owner_for_each_channel_keys(Layer &layer, F &&f)
+{
+  layer_for_each_channel<false>(layer, [&](auto &ch, auto & /*value*/) { f(ch); });
+  for (Layer &child : layer.children) {
+    owner_for_each_channel_keys(child, f);
+  }
+}
+
+EditedAction edited_action_save(Document &doc)
+{
+  EditedAction saved;
+  saved.name = doc.action;
+  saved.owner = doc.action.empty() ? 0 : doc.action_layer;
+  if (Layer *owner = saved.name.empty() ? nullptr : layer_find(doc, saved.owner)) {
+    owner_for_each_channel_keys(*owner, [&](auto &ch) {
+      using K = std::remove_cvref_t<decltype(ch.keys.front())>;
+      const K *k = ch.key_at(0);
+      saved.setup_keys.push_back(k ? std::make_shared<K>(*k) : nullptr);
+    });
+  }
+  return saved;
+}
+
+void edited_action_restore(Document &doc, const EditedAction &saved)
+{
+  if (doc.action != saved.name || (!saved.name.empty() && doc.action_layer != saved.owner)) {
+    document_set_action(doc, saved.owner, saved.name);
+  }
+  Layer *owner = saved.name.empty() || doc.action != saved.name ? nullptr : layer_find(doc, saved.owner);
+  if (!owner) {
+    return;
+  }
+  /* Only onto the same channels (nothing on the way adds or takes away points or bones). */
+  size_t count = 0;
+  owner_for_each_channel_keys(*owner, [&](auto & /*ch*/) { count++; });
+  if (count != saved.setup_keys.size()) {
+    return;
+  }
+  size_t i = 0;
+  owner_for_each_channel_keys(*owner, [&](auto &ch) {
+    using K = std::remove_cvref_t<decltype(ch.keys.front())>;
+    const std::shared_ptr<void> &kept = saved.setup_keys[i++];
+    if (!kept) {
+      return;
+    }
+    const K &was = *static_cast<const K *>(kept.get());
+    K *now = ch.key_at(0);
+    if (!now) {
+      now = &ch.set_key(0, was.value);
+    }
+    *now = was;
+  });
+}
+
 bool document_action_delete(Document &doc, uint64_t owner_id, const std::string &name)
 {
   Layer *owner = layer_find(doc, owner_id);

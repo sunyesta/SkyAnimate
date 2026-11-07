@@ -79,6 +79,19 @@ bool document_set_action(Document &doc, uint64_t owner, const std::string &name)
 /* By name alone: the bone layer is found from the active layer (the nearest around it that has it), else any bone layer
  * that has it. */
 bool document_set_action_by_name(Document &doc, const std::string &name);
+/* The action being edited (its bone layer and name) and its frame 0 keys, for work that looks through other actions
+ * and comes back (Keep Animation): leaving an action takes its frame 0 keys back into the setup, and coming back makes
+ * them again only where the channel is keyed after frame 0 (or on the mainline), so a key made on frame 0 alone would be
+ * lost on the way. */
+struct EditedAction {
+  uint64_t owner = 0;
+  std::string name;
+  /* Per channel of the owner and the layers inside it, in order: its frame 0 key, if it had one. */
+  std::vector<std::shared_ptr<void>> setup_keys;
+};
+EditedAction edited_action_save(Document &doc);
+/* Back into it (by its bone layer, not just its name), its frame 0 keys as they were. */
+void edited_action_restore(Document &doc, const EditedAction &saved);
 /* Adds an action to `owner` (named uniquely from `name`) and starts editing it. Returns its name. */
 std::string document_action_new(Document &doc, uint64_t owner, const std::string &name);
 /* Deletes action `name` of `owner` and its keys (editing it: back to the mainline first). Returns

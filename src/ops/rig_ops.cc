@@ -1324,14 +1324,16 @@ void rig_operators_register()
                  };
                  std::vector<ActionKept> actions;
                  const auto use_action = [&doc](uint64_t owner, const std::string &action) {
-                   if (doc.action != action) {
+                   if (doc.action != action || (!action.empty() && doc.action_layer != owner)) {
                      document_set_action(doc, action.empty() ? 0 : owner, action);
                    }
                  };
-                 const std::string was_action = doc.action;
-                 uint64_t was_owner = 0;
+                 /* Back in the action being edited at the end (whoever's it is), its frame 0 keys as they were: looking
+                  * through the others changes nothing. */
+                 EditedAction was;
                  if (keep) {
                    animation_record(doc);
+                   was = edited_action_save(doc);
                    actions.push_back({0, "", {}});
                    for (Layer *layer : keyed_layers(C)) {
                      if (const Layer *owner = action_owner(doc, layer->id)) {
@@ -1357,9 +1359,6 @@ void rig_operators_register()
                      ids.push_back(layer->id);
                    }
                    for (ActionKept &a : actions) {
-                     if (a.name == was_action) {
-                       was_owner = a.owner;
-                     }
                      use_action(a.owner, a.name);
                      for (const uint64_t id : ids) {
                        const Layer *layer = layer_find(doc, id);
@@ -1377,7 +1376,7 @@ void rig_operators_register()
                      doc.frame_current = 0;
                      animation_sync(doc);
                    }
-                   use_action(was_owner, was_action);
+                   edited_action_restore(doc, was);
                  }
                  for (Layer *layer : keyed_layers(C)) {
                    const Layer *armature = layer_armature(*C.document, layer->id);
@@ -1456,7 +1455,7 @@ void rig_operators_register()
                    C.undo_name = "Parent to Bone, Keeping Animation";
                  }
                  if (keep) {
-                   use_action(was_owner, was_action);
+                   edited_action_restore(doc, was);
                  }
                  if (changed == 0 && same_as_original > 0) {
                    report(ReportType::Warning, "Its pose is Same as Original: choose Own Bones in the Reference tab "
@@ -2715,7 +2714,8 @@ void rig_operators_register()
           const SetupSnapshot before = setup_snapshot(doc, {armature_id});
           /* Rig changes are made on the setup frame of the mainline. */
           const std::string was_action = doc.action;
-          const uint64_t was_owner = was_action.empty() ? 0 : action_owner(doc, armature_id) ? action_owner(doc, armature_id)->id : 0;
+          /* Whoever's it is: an action of a bone layer around this one is edited here too. */
+          const uint64_t was_owner = was_action.empty() ? 0 : doc.action_layer;
           const int was_frame = doc.frame_current;
           if (!was_action.empty()) {
             document_set_action(doc, 0, "");
