@@ -1316,14 +1316,20 @@ int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab)
               moved_to[k] = moved_to[k] + brush.move * (w[k] * strength);
             }
             break;
+          /* Only under the brush: turned by nothing about a far centre, a sample would still land a rounding off
+           * where it was, and count as moved (Dyntopo would resample the whole line). */
           case SculptBrush::Pinch:
             for (size_t k = 0; k < total; k++) {
-              moved_to[k] = moved_to[k] + (brush.center - moved_to[k]) * std::min(w[k] * step * 0.5f * sign, 1.0f);
+              if (w[k] > 0.0f) {
+                moved_to[k] = moved_to[k] + (brush.center - moved_to[k]) * std::min(w[k] * step * 0.5f * sign, 1.0f);
+              }
             }
             break;
           case SculptBrush::Twist:
             for (size_t k = 0; k < total; k++) {
-              moved_to[k] = brush.center + rotate(moved_to[k] - brush.center, w[k] * step * 0.5f * turn_sign);
+              if (w[k] > 0.0f) {
+                moved_to[k] = brush.center + rotate(moved_to[k] - brush.center, w[k] * step * 0.5f * turn_sign);
+              }
             }
             break;
           case SculptBrush::Smooth: {
