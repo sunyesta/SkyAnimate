@@ -4409,8 +4409,16 @@ bool motion_path_stretch_reset(Document &doc, const MotionPathTarget &target, in
   const int end = keys[i].frame;
   Key<float2> &a = keys[i - 1], &b = keys[i];
   if (shape) {
-    /* The timing needs nothing: a stretch's dots go by their share of its length, whatever its shape. Every handle as
-     * it is now (Auto ones worked out from the keys around them), so the stretches beside keep theirs. */
+    /* A stretch's dots go by their share of its length whatever its shape, except Smooth's, timed by its curve's own
+     * parameter: made Custom first with the speeds it goes along now, as the shape brushes do, so its timing stays. */
+    if (!timing && b.interp == Interp::Smooth) {
+      std::vector<float> speeds = stretch_length_speeds(*ch, i);
+      if (!speeds.empty()) {
+        key_speeds_set(keys, i, std::move(speeds));
+      }
+    }
+    /* Every handle as it is now (Auto ones worked out from the keys around them), so the stretches beside keep
+     * theirs. */
     float2 a_in, a_out, b_in, b_out;
     key_path_handles(keys, i - 1, a_in, a_out);
     key_path_handles(keys, i, b_in, b_out);

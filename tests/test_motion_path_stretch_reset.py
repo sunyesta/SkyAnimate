@@ -157,6 +157,14 @@ assert all(close(p, q) for p, q in zip(kept, [where(bent, f) for f in range(10, 
 for f in range(20, 31):
     assert close(where(bent, f), lerp((1.0, 0.0), (2.0, 1.0), (f - 20) / 10)), f
 
+# --- Shape only on a plain Smooth stretch: its timing (timed by its curve) kept ----------------------------------------
+eased = path({10: (0.0, 0.0), 20: (1.0, 0.0), 30: (5.0, 0.0)})
+before = [where(eased, f) for f in range(20, 31)]
+assert ops.anim.motion_path_stretch_reset(frame="25", what="SHAPE", layer=str(eased.id)) == {'FINISHED'}
+after = [where(eased, f) for f in range(20, 31)]
+assert all(close(p, q) for p, q in zip(before, after)), ("Reset Shape evened a straight Smooth stretch's timing",
+                                                        before, after)
+
 # --- Not between keys: nothing --------------------------------------------------------------------------------------
 assert ops.anim.motion_path_stretch_reset(frame="35", layer=str(s.id)) == {'CANCELLED'}, "past the last key"
 assert ops.anim.motion_path_stretch_reset(frame="5", what="NONSENSE", layer=str(s.id)) == {'CANCELLED'}
