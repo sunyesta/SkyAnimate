@@ -199,9 +199,9 @@ struct ToolSettings {
   /* Surface Smooth's Lump Sensitivity, 0-1 (SculptDab::surface_sensitivity). */
   float sculpt_surface_sensitivity = 0.25f;
   /* Dyntopo (the header's, beside mirror): points added and taken out as a stroke needs them, on drawings without
-   * animation (SculptDab::detail). Detail Size: how far the line may stray from the shape sculpted, in screen pixels. */
+   * animation. Resolution: points per unit of each layer's own space (SculptDab::resolution). */
   bool sculpt_dyntopo = false;
-  float sculpt_detail_size = 2.0f;
+  float sculpt_resolution = 50.0f;
   SculptRefine sculpt_refine = SculptRefine::SubdivideCollapse;
   /* The Motion Path tool's brush (its shelf), and each brush's own radius in screen pixels and strength (Shift's
    * brush, path_brush_shifted, uses its own). */
@@ -463,8 +463,8 @@ struct WindowManager {
   /* The pen is near the tablet, and its eraser end is the one down (or its eraser button held). */
   bool pen_near = false;
   bool pen_eraser = false;
-  /* F or Shift F with the Sculpt tool: the viewport sizes the brush's radius ('R') or strength ('S')
-   * with the mouse until a click. */
+  /* F, Shift F or R with the Sculpt tool: the viewport sets the brush's radius ('R'), its strength ('S') or Dyntopo's
+   * Resolution ('D') with the mouse until a click. */
   char sculpt_adjust_request = 0;
   /* The same for the Motion Path tool's brushes ('R' radius, 'S' strength). */
   /* The Motion Path tool's Edit: the dots selected between keys (each its target and frame; keys selected are the

@@ -606,9 +606,16 @@ def sculpt_settings():
     SURFACE_SMOOTH), preset (the shelf's preset it was picked from), radius (screen pixels), strength (0-1),
     falloff (SMOOTH, SPHERE, CONSTANT), pressure_radius, pressure_strength, selected_only and
     surface_sensitivity (Surface Smooth's Lump Sensitivity: 0-1 with no top, how big a lump it takes out; 1 is a
-    tenth of the canvas's height, whatever its resolution), and Dyntopo's: dyntopo (on or off), detail_size (how far
-    the line may stray from the shape sculpted, screen pixels) and refine (SUBDIVIDE, COLLAPSE, SUBDIVIDE_COLLAPSE)."""
+    tenth of the canvas's height, whatever its resolution), and Dyntopo's: dyntopo (on or off), resolution (points per
+    unit of each layer's own space: a stroke resamples the line that finely, following the layer's scale, and Collapse
+    keeps it to within a tenth of a step) and refine (SUBDIVIDE, COLLAPSE, SUBDIVIDE_COLLAPSE)."""
     return _oanim.sculpt_settings()
+
+
+def sculpt_dyntopo_cell(layer, resolution):
+    """One Dyntopo Resolution step on the layer (its id) as it shows, in document space: ((x, y), (x, y)), the ghost
+    grid cell's sides along the layer's own x and y, scaled, turned and stretched as the layer and its groups are."""
+    return _oanim.sculpt_dyntopo_cell(int(layer), float(resolution))
 
 
 def sculpt_dyntopo_blocked(layer):

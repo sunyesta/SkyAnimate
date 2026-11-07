@@ -5873,14 +5873,65 @@ static void tool_settings_draw(Area &area, Context &C, ImVec2 origin, float widt
   dl->ChannelsMerge();
 }
 
-/* The Sculpt tool's Dyntopo, beside mirror as Blender's: the toggle, and its popover (Detail Size, Refine Method,
+/* Dyntopo's ghost grid: a Resolution step on the active layer, shown while the Resolution is being set (scrubbed in
+ * the popover, or R) and fading out half a second after. `g_resolution_grid_at`: when it was last being set. */
+static double g_resolution_grid_at = -1e9;
+static constexpr double RESOLUTION_GRID_FADE = 0.5;
+
+/* Draws the grid over the view at `alpha` (0-1), cells a Resolution step of the active layer's own space as it shows
+ * (scaled, turned and stretched with it). Returns false when there is no layer, or its cells are too fine to draw at
+ * this zoom (under two pixels). */
+static bool draw_resolution_grid(ImDrawList *dl, const ViewMapping &view, Document &doc, float resolution,
+                                 float alpha)
+{
+  const Layer *active = document_active_layer(doc);
+  if (!active || resolution <= 0.0f || alpha <= 0.0f) {
+    return active != nullptr;
+  }
+  float2 cx, cy;
+  sculpt_dyntopo_cell(doc, active->id, resolution, &cx, &cy);
+  const float det = cx.x * cy.y - cx.y * cy.x;
+  if (std::fabs(det) < 1e-20f) {
+    return false;
+  }
+  /* The view's corners in cells (the cell's sides as the axes). */
+  const float2 origin = layer_world_transform(doc, active->id).apply(float2());
+  const auto in_cells = [&](float2 p) {
+    const float2 d = p - origin;
+    return float2{(d.x * cy.y - d.y * cy.x) / det, (cx.x * d.y - cx.y * d.x) / det};
+  };
+  float2 lo{1e30f, 1e30f}, hi{-1e30f, -1e30f};
+  for (const ImVec2 corner : {view.origin, view.origin + ImVec2(view.size.x, 0.0f), view.origin + view.size,
+                              view.origin + ImVec2(0.0f, view.size.y)})
+  {
+    const float2 c = in_cells(view.to_document(corner));
+    lo = float2{std::min(lo.x, c.x), std::min(lo.y, c.y)};
+    hi = float2{std::max(hi.x, c.x), std::max(hi.y, c.y)};
+  }
+  /* A cell's narrower side, the height across it: under two pixels it would only grey the view. */
+  const float narrow = std::fabs(det) / std::max(length(cx), length(cy)) * view.zoom;
+  if (narrow < 2.0f || hi.x - lo.x > 4000.0f || hi.y - lo.y > 4000.0f) {
+    return false;
+  }
+  const ImU32 col = IM_COL32(0xff, 0xff, 0xff, int(70.0f * alpha));
+  const auto at = [&](float u, float v) { return view.to_screen(origin + cx * u + cy * v); };
+  for (float u = std::floor(lo.x); u <= hi.x; u += 1.0f) {
+    dl->AddLine(at(u, lo.y), at(u, hi.y), col, 1.0f);
+  }
+  for (float v = std::floor(lo.y); v <= hi.y; v += 1.0f) {
+    dl->AddLine(at(lo.x, v), at(hi.x, v), col, 1.0f);
+  }
+  return true;
+}
+
+/* The Sculpt tool's Dyntopo, beside mirror as Blender's: the toggle, and its popover (Resolution, Refine Method,
  * Simplify). Off where it can't work on the active layer, saying why. */
 static float dyntopo_width(float h, float arrow_w)
 {
   return ImGui::CalcTextSize("Dyntopo").x + ImGui::GetStyle().FramePadding.x * 2.0f + h * 0.9f + 1.0f + arrow_w;
 }
 
-static void dyntopo_buttons(Area &area, Context &C, float h, float arrow_w)
+static void dyntopo_buttons(Context &C, float h, float arrow_w)
 {
   ToolSettings &ts = C.wm->tool_settings;
   const Layer *active = document_active_layer(*C.document);
@@ -5943,13 +5994,18 @@ static void dyntopo_buttons(Area &area, Context &C, float h, float arrow_w)
   const float label_w = ImGui::CalcTextSize("Refine Method").x + h;
   const float field_w = h * 7.0f;
   ImGui::AlignTextToFramePadding();
-  ImGui::TextDisabled("Detail Size");
+  ImGui::TextDisabled("Resolution");
   ImGui::SameLine(label_w);
   ImGui::SetNextItemWidth(field_w);
-  ImGui::DragFloat("##detail_size", &ts.sculpt_detail_size, 0.05f, 0.1f, 50.0f, "%.1f px", ImGuiSliderFlags_AlwaysClamp);
+  ImGui::DragFloat("##resolution", &ts.sculpt_resolution, 0.5f, SCULPT_RESOLUTION_MIN, SCULPT_RESOLUTION_MAX, "%.1f",
+                   ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+  if (ImGui::IsItemActive()) {
+    g_resolution_grid_at = ImGui::GetTime();
+  }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("How far the line may stray from the shape you sculpt, in screen pixels: smaller keeps\nmore "
-                      "points, so zooming in gives finer detail (Blender's Relative Detail)");
+    ImGui::SetTooltip("Points per unit of the layer's own space (Blender's Constant Detail): a stroke puts a point\n"
+                      "every 1/Resolution along the line it moves, so higher is finer. It follows the layer's scale,\n"
+                      "never the zoom, the canvas or the brush; the grid shows a step of it while you set it (R)");
   }
   ImGui::AlignTextToFramePadding();
   ImGui::TextDisabled("Refine Method");
@@ -5972,13 +6028,13 @@ static void dyntopo_buttons(Area &area, Context &C, float h, float arrow_w)
   }
   ImGui::Separator();
   if (ImGui::Button("Simplify", ImVec2(label_w + field_w - ImGui::GetStyle().ItemSpacing.x, 0.0f))) {
-    char detail[32];
-    std::snprintf(detail, sizeof(detail), "%g", double(ts.sculpt_detail_size / std::max(area.view_zoom, 1e-9f)));
-    operator_call(C, "sculpt.simplify", {{"detail", detail}});
+    char resolution[32];
+    std::snprintf(resolution, sizeof(resolution), "%g", double(ts.sculpt_resolution));
+    operator_call(C, "sculpt.simplify", {{"resolution", resolution}});
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Take out every point the drawings being edited keep their shape without, to within the "
-                      "Detail Size\nat this zoom (never an end, a corner, or a point two curves share)");
+    ImGui::SetTooltip("Take out every point the drawings being edited keep their shape without, to within a tenth "
+                      "of a\nResolution step (never an end, a corner, or a point two curves share)");
   }
   if (!works) {
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + label_w + field_w);
@@ -6209,7 +6265,7 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
   }
   if (sculpting) {
     ImGui::SameLine(0.0f, h * 0.6f);
-    dyntopo_buttons(area, C, h, arrow_w);
+    dyntopo_buttons(C, h, arrow_w);
   }
   ImGui::SameLine(0.0f, h * 0.6f);
   if (header_toggle("Snap", ts.snap_grid || ts.snap_points, "Snapping options")) {
@@ -8749,6 +8805,8 @@ struct SculptState {
 static SculptState g_sculpt;
 /* Shift F: this many pixels from the anchor is full strength. */
 static constexpr float SCULPT_STRENGTH_PX = 200.0f;
+/* R: this many pixels right doubles the Resolution (left halves it). */
+static constexpr float SCULPT_RESOLUTION_PX = 120.0f;
 
 static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool hovered, ImDrawList *dl)
 {
@@ -8759,8 +8817,11 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
   if (wm.sculpt_adjust_request && hovered && !g_sculpt.active) {
     g_sculpt.adjust = wm.sculpt_adjust_request;
     g_sculpt.adjust_area = area.id;
-    g_sculpt.was = g_sculpt.adjust == 'R' ? ts.sculpt_radius : ts.sculpt_strength;
-    const float reach = g_sculpt.adjust == 'R' ? ts.sculpt_radius : ts.sculpt_strength * SCULPT_STRENGTH_PX;
+    g_sculpt.was = g_sculpt.adjust == 'R' ? ts.sculpt_radius :
+                   g_sculpt.adjust == 'D' ? ts.sculpt_resolution : ts.sculpt_strength;
+    /* Resolution: from where R was pressed, each SCULPT_RESOLUTION_PX right doubles it. */
+    const float reach = g_sculpt.adjust == 'R' ? ts.sculpt_radius :
+                        g_sculpt.adjust == 'D' ? 0.0f : ts.sculpt_strength * SCULPT_STRENGTH_PX;
     g_sculpt.anchor = io.MousePos;
     g_sculpt.base_x = io.MousePos.x - reach;
     g_sculpt.slow = false;
@@ -8774,11 +8835,24 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
       dl->AddCircle(g_sculpt.anchor, ts.sculpt_radius, IM_COL32(0xff, 0xff, 0xff, 230), 64, 1.5f);
       std::snprintf(text, sizeof(text), "Radius %.0f px", double(ts.sculpt_radius));
     }
+    else if (g_sculpt.adjust == 'D') {
+      ts.sculpt_resolution = std::clamp(g_sculpt.was * std::exp2(reach / SCULPT_RESOLUTION_PX), SCULPT_RESOLUTION_MIN,
+                                        SCULPT_RESOLUTION_MAX);
+      g_resolution_grid_at = ImGui::GetTime();
+      const bool drawn = draw_resolution_grid(dl, view, doc, ts.sculpt_resolution, 1.0f);
+      std::snprintf(text, sizeof(text), drawn ? "Resolution %.1f" : "Resolution %.1f (too fine to show)",
+                    double(ts.sculpt_resolution));
+    }
     else {
       ts.sculpt_strength = std::clamp(reach / SCULPT_STRENGTH_PX, 0.0f, 1.0f);
       dl->AddCircle(g_sculpt.anchor, SCULPT_STRENGTH_PX, IM_COL32(0xff, 0xff, 0xff, 120), 64, 1.0f);
       dl->AddCircleFilled(g_sculpt.anchor, ts.sculpt_strength * SCULPT_STRENGTH_PX, IM_COL32(0x47, 0x72, 0xb3, 90), 64);
       std::snprintf(text, sizeof(text), "Strength %.2f", double(ts.sculpt_strength));
+    }
+    if (g_sculpt.adjust == 'D') {
+      /* On a plate: the grid and the drawing under it can be any colour. */
+      const ImVec2 size = ImGui::CalcTextSize(text), corner = g_sculpt.anchor - size * 0.5f;
+      dl->AddRectFilled(corner - ImVec2(6, 3), corner + size + ImVec2(6, 3), IM_COL32(0x18, 0x18, 0x18, 220), 4.0f);
     }
     dl->AddText(g_sculpt.anchor + ImVec2(-ImGui::CalcTextSize(text).x * 0.5f, -ImGui::GetFontSize() * 0.5f),
                 IM_COL32(0xff, 0xff, 0xff, 255), text);
@@ -8786,7 +8860,8 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
       g_sculpt.adjust = 0;
     }
     else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-      (g_sculpt.adjust == 'R' ? ts.sculpt_radius : ts.sculpt_strength) = g_sculpt.was;
+      (g_sculpt.adjust == 'R' ? ts.sculpt_radius : g_sculpt.adjust == 'D' ? ts.sculpt_resolution : ts.sculpt_strength) =
+          g_sculpt.was;
       g_right_click_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
       g_sculpt.adjust = 0;
     }
@@ -8810,9 +8885,19 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
   dab.selected_only = ts.sculpt_selected_only;
   dab.mirror_x = ts.mirror_x;
   dab.surface_sensitivity = ts.sculpt_surface_sensitivity;
-  dab.detail = ts.sculpt_dyntopo ? std::max(ts.sculpt_detail_size, 0.1f) / std::max(view.zoom, 1e-9f) : 0.0f;
+  dab.resolution = ts.sculpt_dyntopo ? ts.sculpt_resolution : 0.0f;
   dab.refine = ts.sculpt_refine;
   const std::vector<uint64_t> ids = editable_layer_ids(C);
+  /* Dyntopo's grid fading out after the Resolution was set (scrubbed in the popover, or R). */
+  if (const double since = ImGui::GetTime() - g_resolution_grid_at; since < RESOLUTION_GRID_FADE && doc.overlays.show) {
+    const float alpha = since <= 0.05 ? 1.0f : float(1.0 - since / RESOLUTION_GRID_FADE);
+    if (!draw_resolution_grid(dl, view, doc, ts.sculpt_resolution, alpha) && since <= 0.05) {
+      const char *note = "Resolution too fine to show at this zoom";
+      const ImVec2 size = ImGui::CalcTextSize(note), corner = view.origin + (view.size - size) * 0.5f;
+      dl->AddRectFilled(corner - ImVec2(6, 3), corner + size + ImVec2(6, 3), IM_COL32(0x18, 0x18, 0x18, 220), 4.0f);
+      dl->AddText(corner, IM_COL32(0xff, 0xff, 0xff, 255), note);
+    }
+  }
 
   if (hovered || g_sculpt.active) {
     /* The brush (it works on the line, so no points are lit). */

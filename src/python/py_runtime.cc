@@ -1899,9 +1899,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["selected_only"] = ts.sculpt_selected_only;
     d["surface_sensitivity"] = ts.sculpt_surface_sensitivity;
     d["dyntopo"] = ts.sculpt_dyntopo;
-    d["detail_size"] = ts.sculpt_detail_size;
+    d["resolution"] = ts.sculpt_resolution;
     d["refine"] = sculpt_refine_id(ts.sculpt_refine);
     return d;
+  });
+  m.def("sculpt_dyntopo_cell", [](uint64_t id, float resolution) {
+    float2 x, y;
+    sculpt_dyntopo_cell(*current_context().document, id, resolution, &x, &y);
+    return py::make_tuple(py::make_tuple(x.x, x.y), py::make_tuple(y.x, y.y));
   });
   m.def("sculpt_dyntopo_blocked", [](uint64_t id) {
     const Context &C = current_context();
@@ -1942,8 +1947,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (key == "dyntopo") {
         ts.sculpt_dyntopo = value.cast<bool>();
       }
-      else if (key == "detail_size") {
-        ts.sculpt_detail_size = std::clamp(value.cast<float>(), 0.1f, 50.0f);
+      else if (key == "resolution") {
+        ts.sculpt_resolution = std::clamp(value.cast<float>(), SCULPT_RESOLUTION_MIN, SCULPT_RESOLUTION_MAX);
       }
       else if (key == "refine") {
         if (!sculpt_refine_from_id(py::str(value), &ts.sculpt_refine)) {

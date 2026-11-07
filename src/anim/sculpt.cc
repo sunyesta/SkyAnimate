@@ -414,9 +414,21 @@ SculptStroke sculpt_stroke_begin(const Document &doc, const std::vector<uint64_t
     const VectorDrawing &drawing = layer->drawing;
     SculptStroke::Layer s;
     s.id = id;
-    s.dyntopo = dab.detail > 0.0f && sculpt_dyntopo_blocked(doc, id, dab.mirror_x).empty();
+    s.dyntopo = dab.resolution > 0.0f && sculpt_dyntopo_blocked(doc, id, dab.mirror_x).empty();
     s.points_before = drawing.points.size();
     const Transform2D to_document = layer_world_transform(doc, id);
+    /* Dyntopo: a Resolution step in the layer's own units, as long as it shows (its average scale). */
+    if (s.dyntopo) {
+      float2 cx, cy;
+      sculpt_dyntopo_cell(doc, id, dab.resolution, &cx, &cy);
+      s.spacing = std::max(std::sqrt(std::fabs(cx.x * cy.y - cx.y * cy.x)), 1e-6f);
+      s.tolerance = s.spacing * SCULPT_DYNTOPO_TOLERANCE;
+      const bool shaping = dab.brush == SculptBrush::Grab || dab.brush == SculptBrush::Push ||
+                           dab.brush == SculptBrush::Pinch || dab.brush == SculptBrush::Twist;
+      s.resample = shaping && dab.refine != SculptRefine::Collapse;
+    }
+    /* Resampled or simplified: samples a Resolution step apart (none between points closer than that). */
+    const bool stepped = s.dyntopo && (s.resample || dab.simplify);
     std::vector<Transform2D> skins = layer_point_skins(doc, *layer);
     skins.resize(drawing.points.size());
     s.to_shown.resize(skins.size());
@@ -507,7 +519,8 @@ SculptStroke sculpt_stroke_begin(const Document &doc, const std::vector<uint64_t
           last = q;
         }
         const float seg_length = lengths[table];
-        const int count = std::clamp(int(std::ceil(seg_length / spacing)), 4, 256);
+        const int count = stepped ? std::clamp(int(std::ceil(seg_length / s.spacing - 1e-3f)), 1, 4096) :
+                                    std::clamp(int(std::ceil(seg_length / spacing)), 4, 256);
         c.anchor[size_t(a)] = int(c.pos.size());
         const float wa = drawing.points[size_t(pa)].radius, wb = drawing.points[size_t(pb)].radius;
         const float sa = selection(a), sb = selection(b);
@@ -970,6 +983,7 @@ void dyntopo_follow(VectorDrawing &drawing, SculptStroke::Layer &sl, SculptStrok
 std::vector<int> dyntopo_collapse(const VectorDrawing &drawing, const SculptStroke::Layer &sl,
                                   const SculptStroke::Curve &c, const SculptDab &dab, const std::vector<int> &uses)
 {
+  const float tolerance = sl.tolerance;
   const Curve &real = drawing.curves[size_t(c.curve)];
   const int n = int(c.points.size());
   const auto point_of = [&](int i) { return real.points[size_t(c.points[size_t(i)])].point; };
@@ -1039,7 +1053,7 @@ std::vector<int> dyntopo_collapse(const VectorDrawing &drawing, const SculptStro
     }
     /* And the other way: the segment nowhere bulging off the line between the samples. */
     constexpr int steps = 32;
-    for (int i = 1; i < steps && worst <= dab.detail; i++) {
+    for (int i = 1; i < steps && worst <= tolerance; i++) {
       const float2 q = bezier_eval(ctrl, float(i) / float(steps));
       float nearest = 1e30f;
       for (size_t k = 1; k < d.size(); k++) {
@@ -1074,11 +1088,11 @@ std::vector<int> dyntopo_collapse(const VectorDrawing &drawing, const SculptStro
   std::vector<int> gone;
   const int least = c.closed ? 3 : 2;
   for (const auto &[alone, i] : order) {
-    if (alone > dab.detail || left <= least) {
+    if (alone > tolerance || left <= least) {
       continue;
     }
     kept[size_t(i)] = false;
-    if (span_error(prev_kept(i), next_kept(i)) <= dab.detail) {
+    if (span_error(prev_kept(i), next_kept(i)) <= tolerance) {
       left--;
       gone.push_back(point_of(i));
     }
@@ -1155,7 +1169,7 @@ int sculpt_stroke_end(Document &doc, SculptStroke &stroke, const SculptDab &dab)
       continue;
     }
     VectorDrawing &drawing = layer->drawing;
-    if (dab.refine != SculptRefine::Subdivide && dab.detail > 0.0f) {
+    if (dab.refine != SculptRefine::Subdivide && sl.tolerance > 0.0f) {
       drawing_ensure_ids(drawing);
       std::vector<int> uses(drawing.points.size(), 0);
       for (const Curve &curve : drawing.curves) {
@@ -1197,14 +1211,22 @@ int sculpt_stroke_end(Document &doc, SculptStroke &stroke, const SculptDab &dab)
   return removed;
 }
 
-int sculpt_simplify(Document &doc, const std::vector<uint64_t> &layers, float detail)
+void sculpt_dyntopo_cell(const Document &doc, uint64_t id, float resolution, float2 *r_x, float2 *r_y)
+{
+  const Transform2D to_document = layer_world_transform(doc, id);
+  const float step = 1.0f / std::max(resolution, 1e-6f);
+  *r_x = to_document.apply_vector({step, 0.0f});
+  *r_y = to_document.apply_vector({0.0f, step});
+}
+
+int sculpt_simplify(Document &doc, const std::vector<uint64_t> &layers, float resolution)
 {
   SculptDab dab;
   dab.brush = SculptBrush::Smooth;
-  /* Samples a Detail Size apart: as fine as it can tell. */
-  dab.radius = std::max(detail, 1e-6f) * 6.0f;
-  dab.detail = std::max(detail, 1e-6f);
+  dab.radius = 1.0f;
+  dab.resolution = std::max(resolution, 1e-6f);
   dab.refine = SculptRefine::Collapse;
+  dab.simplify = true;
   SculptStroke stroke = sculpt_stroke_begin(doc, layers, dab);
   for (SculptStroke::Layer &sl : stroke.layers) {
     for (SculptStroke::Curve &c : sl.curves) {
@@ -1372,7 +1394,7 @@ int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab)
       /* Dyntopo: the line is resampled where the dab moves it, then the dab moves its points. */
       const bool shaping = dab.brush == SculptBrush::Grab || dab.brush == SculptBrush::Push ||
                            dab.brush == SculptBrush::Pinch || dab.brush == SculptBrush::Twist;
-      if (sl.dyntopo && shaping && dab.refine != SculptRefine::Collapse) {
+      if (sl.resample && shaping) {
         dyntopo_resample(drawing, sl, c, moved, point_changed);
         dyntopo_follow(drawing, sl, c, moved_to, moved, dab, point_changed);
         continue;

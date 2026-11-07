@@ -184,6 +184,7 @@ KEYMAP = (
     ("Sculpt", "sculpt.brush_twist", "W", {}),
     ("Sculpt", "sculpt.radius_adjust", "F", {}),
     ("Sculpt", "sculpt.strength_adjust", "F", {"shift": True}),
+    ("Sculpt", "sculpt.resolution_adjust", "R", {}),
     ("Motion Path", "anim.motion_path_radius_adjust", "F", {}),
     ("Motion Path", "anim.motion_path_strength_adjust", "F", {"shift": True}),
     # The Edit brush: G R S on the selected keys, Alt S the timing around the selection, V handle types, X delete.

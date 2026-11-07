@@ -669,12 +669,15 @@ PENDING = [
     ('src/anim/sculpt.cc', '  if (mirror_x) {\n    return "X Mirror is on";', '  if (false) {\n    return "X Mirror is on";', 'Dyntopo: not with X Mirror', 'tests/test_sculpt_dyntopo.py'),
     ('src/anim/sculpt.cc', '    drawing_take_setup(drawing);\n    for (MeshPoint &p : drawing.points) {\n      p.pos_keys.last = p.transform;', '    for (MeshPoint &p : drawing.points) {\n      p.pos_keys.last = p.transform;', 'Dyntopo: the new shape is the setup, no keys', 'tests/test_sculpt_dyntopo.py'),
     ('src/anim/sculpt.cc', '        if (sl.dyntopo) {\n          c.touched[size_t(i)] = true;\n        }\n', '', 'Dyntopo Collapse: the points the stroke reached', 'tests/test_sculpt_dyntopo.py'),
-    ('src/anim/sculpt.cc', '    s.dyntopo = dab.detail > 0.0f && sculpt_dyntopo_blocked(doc, id, dab.mirror_x).empty();', '    s.dyntopo = dab.detail > 0.0f;', "Dyntopo: only where it isn't blocked", 'tests/test_sculpt_dyntopo.py'),
-    ('src/anim/sculpt.cc', '    if (span_error(prev_kept(i), next_kept(i)) <= dab.detail) {', '    if (true) {', 'Dyntopo Collapse: only where the shape stays', 'tests/test_sculpt_dyntopo.py'),
+    ('src/anim/sculpt.cc', '    s.dyntopo = dab.resolution > 0.0f && sculpt_dyntopo_blocked(doc, id, dab.mirror_x).empty();', '    s.dyntopo = dab.resolution > 0.0f;', "Dyntopo: only where it isn't blocked", 'tests/test_sculpt_dyntopo.py'),
+    ('src/anim/sculpt.cc', '    if (span_error(prev_kept(i), next_kept(i)) <= tolerance) {', '    if (true) {', 'Dyntopo Collapse: only where the shape stays', 'tests/test_sculpt_dyntopo.py'),
     ('src/anim/sculpt.cc', '        dyntopo_resample(drawing, sl, c, moved, point_changed);\n', '', 'Dyntopo Subdivide: resampled before the dab moves it', 'tests/test_sculpt_dyntopo.py'),
     ('src/anim/sculpt.cc', '    for (int o = -1; o <= 1; o++) {', '    for (int o = 0; o <= 0; o++) {', 'Dyntopo Subdivide: the segments either side resampled too', 'tests/test_sculpt_dyntopo.py'),
     ('src/anim/sculpt.cc', '      in = complex_mul(along * length(r_in), in);\n      out = complex_mul(along * length(r_out), out);', '      in = complex_mul(r_in, in);\n      out = complex_mul(r_out, out);', "Dyntopo: a smooth point's handles turn together", 'tests/test_sculpt_dyntopo.py'),
     ('src/anim/sculpt.cc', '    const bool own = size_t(cp.point) < sl.points_before;', '    const bool own = true;', "Dyntopo Collapse: the stroke's own points go whatever their groups", 'tests/test_sculpt_dyntopo.py'),
+    ('src/anim/sculpt.cc', '      s.spacing = std::max(std::sqrt(std::fabs(cx.x * cy.y - cx.y * cy.x)), 1e-6f);', '      s.spacing = 1.0f / dab.resolution;', "Dyntopo: the Resolution follows the layer's scale", 'tests/test_sculpt_dyntopo.py'),
+    ('src/anim/sculpt.cc', '    const bool stepped = s.dyntopo && (s.resample || dab.simplify);', '    const bool stepped = false;', 'Dyntopo: points a Resolution step apart, whatever the brush', 'tests/test_sculpt_dyntopo.py'),
+    ('src/anim/sculpt.cc', '      s.tolerance = s.spacing * SCULPT_DYNTOPO_TOLERANCE;', '      s.tolerance = s.spacing;', 'Dyntopo Collapse: within a tenth of a step', 'tests/test_sculpt_dyntopo.py'),
 ]
 
 def build():

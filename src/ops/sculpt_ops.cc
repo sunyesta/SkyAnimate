@@ -76,8 +76,8 @@ static OpStatus stroke_exec(Context &C)
   dab.mirror_x = op_has_arg(C, "mirror") ? op_arg_bool(C, "mirror") : ts.mirror_x;
   dab.surface_sensitivity = op_has_arg(C, "sensitivity") ? op_arg_float(C, "sensitivity", 0.25f)
                                                          : ts.sculpt_surface_sensitivity;
-  /* Dyntopo: detail= how far the line may stray (document units; 0 or none: off), refine= its Refine Method. */
-  dab.detail = std::max(op_arg_float(C, "detail", 0.0f), 0.0f);
+  /* Dyntopo: resolution= points per unit of each layer's own space (0 or none: off), refine= its Refine Method. */
+  dab.resolution = std::max(op_arg_float(C, "resolution", 0.0f), 0.0f);
   dab.refine = ts.sculpt_refine;
   if (op_has_arg(C, "refine") && !sculpt_refine_from_id(op_arg(C, "refine"), &dab.refine)) {
     report(ReportType::Error, "refine= is one of SUBDIVIDE, COLLAPSE, SUBDIVIDE_COLLAPSE");
@@ -138,19 +138,20 @@ void sculpt_operators_register()
       "document units, strength=, falloff= SMOOTH, SPHERE or CONSTANT, invert=1 (Ctrl), selected_only=1, "
       "mirror=1 (X mirror), amount= how much of a full step each point of the path is for the brushes that work "
       "on while held (1), sensitivity= Surface Smooth's Lump Sensitivity, 0-1 (default: the tool's), "
-      "keep_poses=1 on frame 0, detail= Dyntopo's Detail Size in document units (points added and taken out where "
-      "the line needs them, on drawings without animation; none: off), refine= SUBDIVIDE, COLLAPSE or "
-      "SUBDIVIDE_COLLAPSE (default: the tool's)",
+      "keep_poses=1 on frame 0, resolution= Dyntopo's Resolution, points per unit of each layer's own space (the line "
+      "resampled that finely where the stroke moves it, then the points it doesn't need taken out, on drawings without "
+      "animation; none: off), refine= SUBDIVIDE, COLLAPSE or SUBDIVIDE_COLLAPSE (default: the tool's)",
       OPTYPE_REGISTER | OPTYPE_UNDO, has_drawing, stroke_exec);
 
   add("sculpt.simplify", "Simplify",
-      "Take out every point the drawings being edited keep their shape without, to within detail= (document units), "
-      "as Dyntopo's Collapse does after a stroke: never an end, a corner, a point two curves share or one with "
-      "weights of its own. Only on drawings without animation", OPTYPE_REGISTER | OPTYPE_UNDO, has_drawing,
+      "Take out every point the drawings being edited keep their shape without, to within a tenth of a step of "
+      "resolution= (points per unit of each layer's own space; default: the tool's), as Dyntopo's Collapse does after "
+      "a stroke: never an end, a corner, a point two curves share or one with weights of its own. Only on drawings "
+      "without animation", OPTYPE_REGISTER | OPTYPE_UNDO, has_drawing,
       [](Context &C) {
-        const float detail = op_arg_float(C, "detail", 0.0f);
-        if (!(detail > 0.0f)) {
-          report(ReportType::Error, "detail= is how far the line may stray, in document units (more than 0)");
+        const float resolution = op_arg_float(C, "resolution", C.wm->tool_settings.sculpt_resolution);
+        if (!(resolution > 0.0f)) {
+          report(ReportType::Error, "resolution= is points per unit of the layer's own space (more than 0)");
           return OpStatus::Cancelled;
         }
         std::vector<uint64_t> ids;
@@ -164,7 +165,7 @@ void sculpt_operators_register()
             blocked = l->name + ": " + why;
           }
         }
-        const int gone = ids.empty() ? 0 : sculpt_simplify(*C.document, ids, detail);
+        const int gone = ids.empty() ? 0 : sculpt_simplify(*C.document, ids, resolution);
         if (gone == 0) {
           report(ReportType::Warning, blocked.empty() ? std::string("Nothing to simplify")
                                                       : "Nothing simplified (" + blocked + ")");
@@ -250,6 +251,12 @@ void sculpt_operators_register()
   add("sculpt.radius_adjust", "Adjust Sculpt Radius", "Size the sculpt brush with the mouse (F); click to keep it",
       0, sculpt_tool, [](Context &C) {
         C.wm->sculpt_adjust_request = 'R';
+        return OpStatus::Finished;
+      });
+  add("sculpt.resolution_adjust", "Adjust Dyntopo Resolution",
+      "Set Dyntopo's Resolution with the mouse (R, as Blender's detail size): right is finer; a ghost grid shows a step "
+      "of it on the active layer; click to keep it", 0, sculpt_tool, [](Context &C) {
+        C.wm->sculpt_adjust_request = 'D';
         return OpStatus::Finished;
       });
   add("sculpt.strength_adjust", "Adjust Sculpt Strength",
