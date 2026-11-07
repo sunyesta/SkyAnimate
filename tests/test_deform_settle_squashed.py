@@ -1,4 +1,4 @@
-"""A small G move of a point bent by a mesh squashed nearly flat (folded back over itself, or flattened along a slant)
+"""A small G move (or Sculpt Grab) of a point bent by a mesh squashed nearly flat (folded back over itself, or flattened along a slant)
 lands under the mouse, or as near as the deform lets it: never farther off than where it was, never flung away. The
 plain skin undone goes far for little where the deform squashes, and from there the point can show anywhere.
 
@@ -21,21 +21,26 @@ def at(frame):
     doc.frame_current = frame
 
 
+# Name: (grid columns and rows, the squash, whether G itself must land nearer than where the point was).
 SQUASHES = {
     # The right column folded back over the middle one.
-    "folded": lambda x, y: (-0.5 if x > 0.5 else x, y),
+    "folded": (2, lambda x, y: (-0.5 if x > 0.5 else x, y), True),
     # Everything flattened onto the diagonal, a hair apart across it.
-    "flattened": lambda x, y: ((x + y) * 0.5 + 0.002 * (x - y), (x + y) * 0.5 - 0.002 * (x - y)),
+    "flattened": (2, lambda x, y: ((x + y) * 0.5 + 0.002 * (x - y), (x + y) * 0.5 - 0.002 * (x - y)), True),
+    # A finer grid flattened onto a curve: a Sculpt Grab dab's skin, fixed at the stroke's start, sends the stored point
+    # where settling can't find its way back from, unless it also tries where the point was stored before.
+    "curved": (4, lambda x, y: ((x + y) * 0.5 + 0.0014 * (x - y), ((x + y) * 0.5) ** 2 * 0.8 - 0.0014 * (x - y)),
+               False),
 }
 
 MOVE = 0.006
 for method in ("CELLS", "ENVELOPE"):
-    for name, squash in SQUASHES.items():
+    for name, (cells, squash, strict) in SQUASHES.items():
         doc.frame_current = 0
         layers.active = anchor
         ops.layer.new()
         grid = layers.active
-        assert grid.add_primitive("GRID", [(-1, -1), (1, 1)], columns=2, rows=2)
+        assert grid.add_primitive("GRID", [(-1, -1), (1, 1)], columns=cells, rows=cells)
         layers.active = anchor
         ops.layer.new()
         art = layers.active
@@ -47,7 +52,7 @@ for method in ("CELLS", "ENVELOPE"):
         for i, p in enumerate(grid.points):
             grid.set_point(i, squash(p[0], p[1]))
         at(10)
-        worst = flung = 0.0
+        worst = flung = grab_worst = 0.0
         for p in range(art.point_count):
             for k in range(8):
                 d = (MOVE * math.cos(k * math.pi / 4), MOVE * math.sin(k * math.pi / 4))
@@ -62,9 +67,20 @@ for method in ("CELLS", "ENVELOPE"):
                 flung = max(flung, math.dist(now, before))
                 assert ops.ed.undo() == {'FINISHED'}
                 at(10)
-        print(method, name, "worst off %.4f, farthest %.4f" % (worst, flung), flush=True)
-        assert worst < MOVE, (method, name, "a point landed farther off than where it was", worst)
+                # Sculpt Grab settles each dab's points the same way, trying where they were stored too.
+                path = "%r,%r;%r,%r" % (before[0], before[1], before[0] + d[0], before[1] + d[1])
+                assert ops.sculpt.stroke(brush="GRAB", path=path, radius="0.002", strength="1", falloff="CONSTANT",
+                                         mirror="0") == {'FINISHED'}
+                at(10)
+                now = art.shown()[0][p]
+                grab_worst = max(grab_worst, math.dist(now, (before[0] + d[0], before[1] + d[1])))
+                assert ops.ed.undo() == {'FINISHED'}
+                at(10)
+        print(method, name, "worst off %.4f (Sculpt Grab %.4f), farthest %.4f" % (worst, grab_worst, flung), flush=True)
+        assert not strict or worst < MOVE, (method, name, "a point landed farther off than where it was", worst)
         assert flung < 2.0 * MOVE, (method, name, "a point was flung", flung)
+        assert grab_worst < max(worst, MOVE) + 1e-4, (method, name, "Sculpt Grab left a point farther off than G",
+                                                      grab_worst, worst)
         grid.visible = False
         art.visible = False
 

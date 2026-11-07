@@ -1812,7 +1812,8 @@ int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab)
           taken[size_t(point)] = true;
           const Transform2D skin = to_layer * sl.to_shown[size_t(point)];
           targets.push_back({point, to_layer.apply(c.pos[size_t(c.anchor[size_t(i)])]), skin.inverted(),
-                             length(drawing.points[size_t(point)].pos - sl.stored_start[size_t(point)])});
+                             length(drawing.points[size_t(point)].pos - sl.stored_start[size_t(point)]),
+                             sl.stored_start[size_t(point)], true});
         }
       }
       layer_points_settle(doc, *layer, targets);
