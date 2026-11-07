@@ -3229,6 +3229,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["follow_offset"] = py::make_tuple(c.follow_offset.x, c.follow_offset.y);
       d["follow_now"] = py::make_tuple(c.follow_now.x, c.follow_now.y);
       d["follow_error"] = c.follow_error;
+      d["shape_error"] = c.shape_error;
       d["follow_second"] = c.follow_two;
       d["follow_shift"] = py::make_tuple(c.follow_shift.x, c.follow_shift.y);
       d["follow_shift2"] = py::make_tuple(c.follow_shift2.x, c.follow_shift2.y);

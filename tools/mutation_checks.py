@@ -603,6 +603,8 @@ PENDING = [
     ('src/anim/channel.cc', '  const float tiny = 1e-4f * total;', '  const float tiny = 1e-9f;', 'backing up before the start goes the way the path leaves', 'tests/test_path_key_add_dots.py'),
     ('src/anim/animation.cc', '  if (doc.action_bones_applied && posed_after_action_bones(doc)) {', '  if (false) {', 'a frame shows the same whatever frame was shown before', 'tests/test_frame_visit_order.py'),
     ('src/anim/animation.cc', '        if (c.type == BoneConstraintType::FollowPoint || c.type == BoneConstraintType::LimitShape ||\n            c.type == BoneConstraintType::LookAt)', '        if (c.type == BoneConstraintType::FollowPoint || c.type == BoneConstraintType::LimitShape)', 'a Look At in an Eye Shape plays the knob actions from where it looks', 'tests/test_frame_visit_order.py'),
+    ('src/anim/shape_limit.cc', '        const bool loop = target && target->has_drawing() && layer_moved_by_bone(doc, *target, rig.id, b.id);', '        const bool loop = false;', 'Look At and Limit to Shape refuse a shape their bone moves', 'tests/test_shape_loop.py'),
+    ('src/anim/shape_limit.cc', '        c.shape_error.clear();\n        /* Limit to Shape', '        /* Limit to Shape', 'a loop let go of works again', 'tests/test_shape_loop.py'),
 ]
 
 

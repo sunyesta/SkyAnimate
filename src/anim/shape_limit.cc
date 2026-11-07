@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "anim/deform.hh"
+#include "anim/follow_point.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
 
@@ -72,6 +73,7 @@ void shape_limits_update(Document &doc)
     const Transform2D to_rig = layer_world_transform(doc, rig.id).inverted();
     for (Bone &b : rig.bones) {
       for (BoneConstraint &c : b.constraints) {
+        c.shape_error.clear();
         /* Limit to Shape, and Look At with its own eye shape. */
         if (c.type != BoneConstraintType::LimitShape && !(c.type == BoneConstraintType::LookAt && c.shape_layer != 0)) {
           if (c.type == BoneConstraintType::LookAt) {
@@ -82,7 +84,12 @@ void shape_limits_update(Document &doc)
           continue;
         }
         const Layer *target = layer_find(doc, c.shape_layer);
-        if (!target || !target->has_drawing() || !c.enabled) {
+        const bool loop = target && target->has_drawing() && layer_moved_by_bone(doc, *target, rig.id, b.id);
+        if (loop) {
+          c.shape_error = c.type == BoneConstraintType::LookAt ? "Loop: this bone moves its Eye Shape"
+                                                               : "Loop: this bone moves the shape it stays inside";
+        }
+        if (!target || !target->has_drawing() || !c.enabled || loop) {
           c.shape_region.clear();
           c.shape_footprint.clear();
           c.look_reach = {};

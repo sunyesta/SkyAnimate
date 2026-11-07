@@ -6321,6 +6321,12 @@ static void constraints_panel(Context &C, Layer &armature)
             done("Limit to Shape");
             ui_driver_typed(C, armature.id, softness_path, -1);
             ui_driver_field_end(C, armature.id, softness_path, -1, driven_softness);
+            if (!c.shape_error.empty()) {
+              modifier_row_label("", column);
+              ImGui::PushTextWrapPos(0.0f);
+              ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", c.shape_error.c_str());
+              ImGui::PopTextWrapPos();
+            }
       };
       switch (c.type) {
         case BoneConstraintType::LimitAngle: {

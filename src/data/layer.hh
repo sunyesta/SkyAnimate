@@ -479,6 +479,10 @@ struct BoneConstraint {
    * there is nothing to stay inside. */
   std::vector<float2> shape_region;
   std::vector<float2> shape_footprint;
+  /* LimitShape and LookAt, worked out every frame and never saved: why the shape can't be used (empty when it can). A
+   * shape this bone moves (weighted to it or a bone hanging on it, on it by Parent Bone, bent by a deform it moves) is
+   * refused: the bone would chase itself, and the pose would depend on the frames shown before. */
+  std::string shape_error;
   /* FollowPoint: the deform (modifier `follow_modifier`, its Modifier::id, on layer `follow_layer`) and the point it
    * carries, at rest, in that layer's space and (`follow_rest`, as it was on frame 0) in the bone layer's; and whether
    * that point is shown (light blue, dragged on frame 0). */

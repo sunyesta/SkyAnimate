@@ -27,6 +27,11 @@ struct Modifier;
 
 void follow_points_update(Document &doc);
 
+/* Whether bone `bone` of bone layer `rig` moves `layer`'s drawing: its points weighted to it (or to a bone it moves), the
+ * layer or a group above it on it by Parent Bone, a deform or reference bending it that it moves, through parents,
+ * constraint targets and IK. Look At and Limit to Shape refuse such a shape, as Follow Point refuses such a deform. */
+bool layer_moved_by_bone(const Document &doc, const Layer &layer, uint64_t rig, uint64_t bone);
+
 /* The deform `c` names, null when it's gone; `r_owner` the layer it's on. */
 Modifier *follow_point_modifier(Document &doc, const BoneConstraint &c, Layer **r_owner);
 /* The deform named `modifier` on the layer `layer` names, by its id or (a group and a drawing can share one) by a name:

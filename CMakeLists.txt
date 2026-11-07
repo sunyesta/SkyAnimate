@@ -486,6 +486,8 @@ add_test(NAME frame_visit_order
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_frame_visit_order.py)
 add_test(NAME path_key_add_dots
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_path_key_add_dots.py)
+add_test(NAME shape_loop
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_shape_loop.py)
 add_test(NAME selected_stretch
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_selected_stretch.py)
 add_test(NAME motion_path_pick

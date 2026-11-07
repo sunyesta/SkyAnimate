@@ -401,6 +401,16 @@ static void follow_picked_rest(const Document &doc, BoneConstraint &c, const Lay
 }
 
 /* What moves the deform's shape and the layer it's on. */
+bool layer_moved_by_bone(const Document &doc, const Layer &layer, uint64_t rig, uint64_t bone)
+{
+  std::set<uint64_t> seen;
+  BoneSets sets;
+  gather_bones(doc, layer, true, seen, sets);
+  close_bones(doc, sets);
+  const auto it = sets.find(rig);
+  return it != sets.end() && it->second.count(bone) != 0;
+}
+
 static void follower_gather(Document &doc, Follower &f)
 {
   std::set<uint64_t> seen;
