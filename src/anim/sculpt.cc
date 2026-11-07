@@ -756,58 +756,6 @@ void stroke_segment(const SculptStroke::Curve &c, int s, float2 r_ctrl[4])
   r_ctrl[2] = r_ctrl[3] + c.handle_in[size_t(b)];
 }
 
-/* Segment s's handles fitted to its samples at their parameters (as a dab fits a touched segment). */
-void stroke_fit_segment(SculptStroke::Curve &c, int s)
-{
-  const int n = int(c.points.size());
-  const int a = s, b = (s + 1) % n;
-  std::vector<float2> pts;
-  std::vector<float> params;
-  for (const int k : segment_samples(c, s)) {
-    pts.push_back(c.pos[size_t(k)]);
-    params.push_back(c.param[size_t(k)]);
-  }
-  params.back() = 1.0f;
-  const float was = std::max({length(c.handle_out[size_t(a)]), length(c.handle_in[size_t(b)]),
-                              distance(pts.front(), pts.back()) / 3.0f});
-  float2 h1, h2;
-  bezier_fit_handles(pts, params, pts.front(), pts.back(), nullptr, nullptr, was, &h1, &h2);
-  c.handle_out[size_t(a)] = h1;
-  c.handle_in[size_t(b)] = h2;
-}
-
-/* A smooth point whose handles were in line keeps them so after one side (or both) was fitted again: along the
- * average of the two when both were, else opposite the side left as it was (as a dab does). */
-void stroke_keep_in_line(SculptStroke::Curve &c, const Curve &real, int i, bool out_fitted, bool in_fitted)
-{
-  const int n = int(c.points.size());
-  if (!real.points[size_t(c.points[size_t(i)])].aligned || !c.in_line[size_t(i)] ||
-      !(c.closed || (i > 0 && i < n - 1)))
-  {
-    return;
-  }
-  float2 &out = c.handle_out[size_t(i)], &in = c.handle_in[size_t(i)];
-  if (out_fitted && in_fitted) {
-    const float2 along = normalized(normalized(out) - normalized(in));
-    if (length(along) > 0.0f) {
-      out = along * length(out);
-      in = -along * length(in);
-    }
-  }
-  else if (out_fitted) {
-    const float2 opposite = -normalized(in);
-    if (length(opposite) > 0.0f) {
-      out = opposite * std::max(dot(out, opposite), length(out) * 0.25f);
-    }
-  }
-  else if (in_fitted) {
-    const float2 opposite = -normalized(out);
-    if (length(opposite) > 0.0f) {
-      in = opposite * std::max(dot(in, opposite), length(in) * 0.25f);
-    }
-  }
-}
-
 /* Point i of the stroke's curve into the drawing: where its sample is and its handles, back where it is stored. */
 void stroke_write_point(VectorDrawing &drawing, const SculptStroke::Layer &sl, const SculptStroke::Curve &c, int i)
 {
@@ -819,72 +767,112 @@ void stroke_write_point(VectorDrawing &drawing, const SculptStroke::Layer &sl, c
   drawing.points[size_t(cp.point)].pos = back.apply(c.pos[size_t(c.anchor[size_t(i)])]);
 }
 
-/* Each sample's place in its segment as the share of the way along its samples, from `from` to `to` (indices into
- * the segment's samples `idx`): what a segment new from a split is fitted by. */
-void stroke_param_by_length(SculptStroke::Curve &c, const std::vector<int> &idx, size_t from, size_t to)
+/* The Bezier's derivative at t (its direction and speed there). */
+float2 bezier_derivative(const float2 ctrl[4], float t)
 {
-  float total = 0.0f;
-  for (size_t j = from + 1; j <= to; j++) {
-    total += distance(c.pos[size_t(idx[j - 1])], c.pos[size_t(idx[j])]);
-  }
-  float upto = 0.0f;
-  for (size_t j = from + 1; j < to; j++) {
-    upto += distance(c.pos[size_t(idx[j - 1])], c.pos[size_t(idx[j])]);
-    c.param[size_t(idx[j])] = total > 1e-12f ? upto / total : float(j - from) / float(to - from);
-  }
-  c.param[size_t(idx[from])] = 0.0f;
+  const float u = 1.0f - t;
+  return ((ctrl[1] - ctrl[0]) * (u * u) + (ctrl[2] - ctrl[1]) * (2.0f * u * t) + (ctrl[3] - ctrl[2]) * (t * t)) * 3.0f;
 }
 
-/* Subdivide: while a segment in `check` strays further than the Detail Size from the samples it was fitted to, a
- * point goes in where it strays most (a few samples in from either end), and the two halves are fitted. Returns how
- * many points went in. */
-int dyntopo_subdivide(VectorDrawing &drawing, SculptStroke::Layer &sl, SculptStroke::Curve &c, std::vector<bool> check,
-                      const SculptDab &dab, std::vector<bool> &point_changed)
+/* Plane vectors as complex numbers: a chord's turn and stretch, put onto a handle. */
+float2 complex_mul(float2 a, float2 b)
+{
+  return {a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x};
+}
+
+/* a / b: how b turned and stretched to become a; none where either has no length. */
+float2 complex_div(float2 a, float2 b)
+{
+  const float d = dot(b, b);
+  if (d < 1e-24f || dot(a, a) < 1e-24f) {
+    return {1.0f, 0.0f};
+  }
+  return float2{a.x * b.x + a.y * b.y, a.y * b.x - a.x * b.y} / d;
+}
+
+/* Segment s has a point at each of its samples (none between its two points). */
+bool segment_resampled(const SculptStroke::Curve &c, int s)
+{
+  const int n = int(c.points.size());
+  return c.anchor[size_t((s + 1) % n)] == (c.anchor[size_t(s)] + 1) % int(c.pos.size());
+}
+
+/* Subdivide, first: every segment the dab is about to move, and the segments either side of one, gets a point at each
+ * of its samples, the Bezier split there exactly so the line doesn't move. The samples stay as they are; they are now
+ * the points. Returns how many points went in. */
+int dyntopo_resample(VectorDrawing &drawing, SculptStroke::Layer &sl, SculptStroke::Curve &c,
+                     const std::vector<bool> &moved, std::vector<bool> &point_changed)
 {
   Curve &real = drawing.curves[size_t(c.curve)];
-  const auto held = [&](int i) {
-    return dab.selected_only && !drawing.points[size_t(real.points[size_t(c.points[size_t(i)])].point)].selected;
-  };
-  /* A dab's worth: the next dabs go on where this one stopped. */
-  constexpr int most = 64;
+  const int segments = segment_count(c);
+  std::vector<bool> moving(size_t(segments), false);
+  for (int s = 0; s < segments; s++) {
+    for (const int k : segment_samples(c, s)) {
+      moving[size_t(s)] = moving[size_t(s)] || moved[size_t(k)];
+    }
+  }
+  /* Either side too: a smooth point's handles turn together, so the segment past it changes as well. */
+  std::vector<bool> wanted(size_t(segments), false);
+  for (int s = 0; s < segments; s++) {
+    if (!moving[size_t(s)]) {
+      continue;
+    }
+    for (int o = -1; o <= 1; o++) {
+      const int t = s + o;
+      if (c.closed) {
+        wanted[size_t((t + segments) % segments)] = true;
+      }
+      else if (t >= 0 && t < segments) {
+        wanted[size_t(t)] = true;
+      }
+    }
+  }
   int added = 0;
-  int s = 0;
-  while (s < segment_count(c) && added < most) {
-    if (!check[size_t(s)]) {
-      s++;
+  /* From the last back, so the segments before keep their numbers. */
+  for (int s = segments - 1; s >= 0; s--) {
+    if (!wanted[size_t(s)]) {
+      continue;
+    }
+    const std::vector<int> idx = segment_samples(c, s);
+    if (idx.size() <= 2) {
       continue;
     }
     const int n = int(c.points.size());
     const int a = s, b = (s + 1) % n;
-    const std::vector<int> idx = segment_samples(c, s);
-    if (held(a) || held(b) || idx.size() < 6) {
-      check[size_t(s)] = false;
-      s++;
-      continue;
-    }
     float2 ctrl[4];
     stroke_segment(c, s, ctrl);
-    float worst = 0.0f;
-    size_t at = 0;
-    for (size_t j = 2; j + 2 < idx.size(); j++) {
-      const float d = bezier_distance(ctrl, c.pos[size_t(idx[j])]);
-      if (d > worst) {
-        worst = d;
-        at = j;
+    const size_t count = idx.size();
+    std::vector<float> t(count);
+    for (size_t j = 0; j < count; j++) {
+      t[j] = c.param[size_t(idx[j])];
+    }
+    t.front() = 0.0f;
+    t.back() = 1.0f;
+    /* The piece from t0 to t1 of a Bezier has handles a third of (t1 - t0) along the derivative at either end. */
+    std::vector<float2> h_in(count), h_out(count);
+    for (size_t j = 0; j < count; j++) {
+      const float2 d = bezier_derivative(ctrl, t[j]);
+      if (j > 0) {
+        h_in[j] = d * (-(t[j] - t[j - 1]) / 3.0f);
+      }
+      if (j + 1 < count) {
+        h_out[j] = d * ((t[j + 1] - t[j]) / 3.0f);
       }
     }
-    if (worst <= dab.detail) {
-      check[size_t(s)] = false;
-      s++;
-      continue;
-    }
-    /* The new point: on the segment as the drawing has it, then put where its sample is. */
+    /* Into the drawing, the last first: each split leaves segment s running to the one before. */
     const int pa = real.points[size_t(c.points[size_t(a)])].point, pb = real.points[size_t(c.points[size_t(b)])].point;
-    const float u = float(at) / float(idx.size() - 1);
-    const float t = std::clamp(c.param[size_t(idx[at])], 0.01f, 0.99f);
-    const int point = drawing_split_segment(drawing, ShapeEdge{c.curve, c.points[size_t(a)]}, t);
-    /* Its bones' weights between its neighbours' (as any point added between two). */
-    {
+    std::vector<int> made(count, -1);
+    float upper = 1.0f;
+    for (size_t j = count - 2; j >= 1; j--) {
+      made[j] = drawing_split_segment(drawing, ShapeEdge{c.curve, c.points[size_t(a)]}, t[j] / std::max(upper, 1e-6f));
+      upper = t[j];
+    }
+    sl.to_shown.resize(drawing.points.size());
+    point_changed.resize(drawing.points.size(), false);
+    for (size_t j = 1; j + 1 < count; j++) {
+      MeshPoint &p = drawing.points[size_t(made[j])];
+      const float u = float(j) / float(count - 1);
+      /* Its bones' weights between its neighbours' (as any point added between two). */
       std::vector<BoneWeight> weights;
       const auto add = [&](const std::vector<BoneWeight> &from, float share) {
         for (const BoneWeight &w : from) {
@@ -898,45 +886,81 @@ int dyntopo_subdivide(VectorDrawing &drawing, SculptStroke::Layer &sl, SculptStr
       };
       add(drawing.points[size_t(pa)].weights, 1.0f - u);
       add(drawing.points[size_t(pb)].weights, u);
-      drawing.points[size_t(point)].weights = std::move(weights);
+      p.weights = std::move(weights);
+      p.selected = drawing.points[size_t(pa)].selected && drawing.points[size_t(pb)].selected;
+      sl.to_shown[size_t(made[j])] = sl.to_shown[size_t(u < 0.5f ? pa : pb)];
     }
-    drawing.points[size_t(point)].selected = drawing.points[size_t(pa)].selected &&
-                                             drawing.points[size_t(pb)].selected;
-    const Transform2D near = sl.to_shown[size_t(u < 0.5f ? pa : pb)];
-    sl.to_shown.resize(drawing.points.size(), near);
-    point_changed.resize(drawing.points.size(), false);
-    point_changed[size_t(point)] = true;
-    /* The stroke's curve gets it after a (no detail levels here: its points are the curve's own, in order). */
-    const auto at_after = [&](auto &v, auto value) { v.insert(v.begin() + s + 1, value); };
-    at_after(c.anchor, idx[at]);
-    at_after(c.in_line, true);
-    at_after(c.corner, false);
-    at_after(c.factor_in, 1.0f);
-    at_after(c.factor_out, 1.0f);
-    at_after(c.touched, true);
-    at_after(c.handle_in, float2());
-    at_after(c.handle_out, float2());
-    c.points.resize(c.points.size() + 1);
+    /* The stroke's curve gets them after a (no detail levels here: its points are the curve's own, in order). */
+    c.handle_out[size_t(a)] = h_out.front();
+    c.handle_in[size_t(b)] = h_in.back();
+    const auto put = [&](auto &v, auto first, auto last) { v.insert(v.begin() + s + 1, first, last); };
+    const size_t inner = count - 2;
+    put(c.anchor, idx.begin() + 1, idx.end() - 1);
+    put(c.handle_in, h_in.begin() + 1, h_in.end() - 1);
+    put(c.handle_out, h_out.begin() + 1, h_out.end() - 1);
+    c.in_line.insert(c.in_line.begin() + s + 1, inner, true);
+    c.corner.insert(c.corner.begin() + s + 1, inner, false);
+    c.factor_in.insert(c.factor_in.begin() + s + 1, inner, 1.0f);
+    c.factor_out.insert(c.factor_out.begin() + s + 1, inner, 1.0f);
+    c.touched.insert(c.touched.begin() + s + 1, inner, true);
+    c.points.resize(c.points.size() + inner);
     for (size_t i = 0; i < c.points.size(); i++) {
       c.points[i] = int(i);
     }
-    stroke_param_by_length(c, idx, 0, at);
-    stroke_param_by_length(c, idx, at, idx.size() - 1);
-    stroke_fit_segment(c, s);
-    stroke_fit_segment(c, s + 1);
     const int m = int(c.points.size());
-    const int na = s, nb = (s + 2) % m;
-    stroke_keep_in_line(c, real, s + 1, true, true);
-    stroke_keep_in_line(c, real, na, true, false);
-    stroke_keep_in_line(c, real, nb, false, true);
-    for (const int i : {na, s + 1, nb}) {
-      stroke_write_point(drawing, sl, c, i);
-      point_changed[size_t(real.points[size_t(c.points[size_t(i)])].point)] = true;
+    for (int i = s; i <= s + int(inner) + 1; i++) {
+      stroke_write_point(drawing, sl, c, i % m);
+      point_changed[size_t(real.points[size_t(c.points[size_t(i % m)])].point)] = true;
     }
-    check.insert(check.begin() + s + 1, true);
-    added++;
+    added += int(inner);
   }
   return added;
+}
+
+/* Then the dab on the resampled line: every point goes where its sample went, and its handles turn and stretch as the
+ * chords to the points either side did (a smooth point's two by the same turn, so they stay in line). Nothing is
+ * fitted, so nothing jumps. A point Selected Only holds keeps its handles. */
+void dyntopo_follow(VectorDrawing &drawing, SculptStroke::Layer &sl, SculptStroke::Curve &c,
+                    const std::vector<float2> &moved_to, const std::vector<bool> &moved, const SculptDab &dab,
+                    std::vector<bool> &point_changed)
+{
+  const Curve &real = drawing.curves[size_t(c.curve)];
+  const int n = int(c.points.size());
+  const std::vector<float2> was = c.pos;
+  c.pos = moved_to;
+  const auto sample = [&](int i) { return size_t(c.anchor[size_t(i)]); };
+  for (int i = 0; i < n; i++) {
+    const int prev = (c.closed || i > 0) ? (i - 1 + n) % n : -1;
+    const int next = (c.closed || i < n - 1) ? (i + 1) % n : -1;
+    const bool affected = moved[sample(i)] || (prev >= 0 && moved[sample(prev)]) ||
+                          (next >= 0 && moved[sample(next)]);
+    const int point = real.points[size_t(c.points[size_t(i)])].point;
+    const MeshPoint &p = drawing.points[size_t(point)];
+    if (!affected || (dab.selected_only && !p.selected && size_t(point) < sl.points_before)) {
+      continue;
+    }
+    /* How the chord to a neighbour turned and stretched (not at all across a segment not resampled). */
+    const auto turn = [&](int j, int s) {
+      if (j < 0 || !segment_resampled(c, s)) {
+        return float2{1.0f, 0.0f};
+      }
+      return complex_div(c.pos[sample(j)] - c.pos[sample(i)], was[sample(j)] - was[sample(i)]);
+    };
+    const float2 r_in = turn(prev, prev), r_out = turn(next, i);
+    float2 &in = c.handle_in[size_t(i)], &out = c.handle_out[size_t(i)];
+    const float2 along = normalized(normalized(r_in) + normalized(r_out));
+    if (c.in_line[size_t(i)] && prev >= 0 && next >= 0 && length(along) > 0.0f) {
+      in = complex_mul(along * length(r_in), in);
+      out = complex_mul(along * length(r_out), out);
+    }
+    else {
+      in = complex_mul(r_in, in);
+      out = complex_mul(r_out, out);
+    }
+    stroke_write_point(drawing, sl, c, i);
+    point_changed[size_t(point)] = true;
+    c.touched[size_t(i)] = true;
+  }
 }
 
 /* Collapse on one of the stroke's curves: the points it touched that the line keeps its shape without, to within the
@@ -948,7 +972,6 @@ std::vector<int> dyntopo_collapse(const VectorDrawing &drawing, const SculptStro
 {
   const Curve &real = drawing.curves[size_t(c.curve)];
   const int n = int(c.points.size());
-  const size_t total = c.pos.size();
   const auto point_of = [&](int i) { return real.points[size_t(c.points[size_t(i)])].point; };
   std::vector<int> candidates;
   for (int i = 0; i < n; i++) {
@@ -959,14 +982,15 @@ std::vector<int> dyntopo_collapse(const VectorDrawing &drawing, const SculptStro
     const MeshPoint &p = drawing.points[size_t(cp.point)];
     const float2 hi = normalized(c.handle_in[size_t(i)]), ho = normalized(c.handle_out[size_t(i)]);
     const bool in_line = length(hi) > 0.0f && length(ho) > 0.0f && dot(hi, ho) < -0.995f;
-    if (c.corner[size_t(i)] || !in_line || uses[size_t(cp.point)] > 1 || (dab.selected_only && !p.selected) ||
-        (!p.weights.empty() && size_t(cp.point) < sl.points_before))
+    const bool own = size_t(cp.point) < sl.points_before;
+    if (c.corner[size_t(i)] || !in_line || uses[size_t(cp.point)] > 1 || (own && dab.selected_only && !p.selected) ||
+        (own && !p.weights.empty()))
     {
       continue;
     }
     bool grouped = false;
     for (const PointGroup &g : drawing.groups) {
-      grouped = grouped || g.weights.count(p.id) > 0;
+      grouped = grouped || (own && g.weights.count(p.id) > 0);
     }
     if (!grouped) {
       candidates.push_back(i);
@@ -980,13 +1004,25 @@ std::vector<int> dyntopo_collapse(const VectorDrawing &drawing, const SculptStro
   /* How far the line strays from the samples with one segment from kept point a to kept point b. */
   const auto span_error = [&](int a, int b) {
     const float2 p0 = c.pos[size_t(c.anchor[size_t(a)])], p3 = c.pos[size_t(c.anchor[size_t(b)])];
+    /* The line as it shows: each segment's samples, and a resampled one's curve between its two points. */
     std::vector<float2> d;
-    for (size_t k = size_t(c.anchor[size_t(a)]);; k = (k + 1) % total) {
-      d.push_back(c.pos[k]);
-      if (k == size_t(c.anchor[size_t(b)]) && d.size() > 1) {
+    for (int s = a;; s = (s + 1) % n) {
+      const std::vector<int> idx = segment_samples(c, s);
+      for (size_t j = 0; j + 1 < idx.size(); j++) {
+        d.push_back(c.pos[size_t(idx[j])]);
+      }
+      if (idx.size() == 2) {
+        float2 ctrl[4];
+        stroke_segment(c, s, ctrl);
+        for (int q = 1; q < 4; q++) {
+          d.push_back(bezier_eval(ctrl, float(q) / 4.0f));
+        }
+      }
+      if ((s + 1) % n == b) {
         break;
       }
     }
+    d.push_back(p3);
     float2 t1 = normalized(c.handle_out[size_t(a)]), t2 = normalized(c.handle_in[size_t(b)]);
     if (length(t1) == 0.0f) {
       t1 = normalized(p3 - p0);
@@ -1333,6 +1369,14 @@ int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab)
       for (size_t k = 0; k < total; k++) {
         moved[k] = !(moved_to[k] == c.pos[k]);
       }
+      /* Dyntopo: the line is resampled where the dab moves it, then the dab moves its points. */
+      const bool shaping = dab.brush == SculptBrush::Grab || dab.brush == SculptBrush::Push ||
+                           dab.brush == SculptBrush::Pinch || dab.brush == SculptBrush::Twist;
+      if (sl.dyntopo && shaping && dab.refine != SculptRefine::Collapse) {
+        dyntopo_resample(drawing, sl, c, moved, point_changed);
+        dyntopo_follow(drawing, sl, c, moved_to, moved, dab, point_changed);
+        continue;
+      }
       c.pos = moved_to;
 
       /* The segments the dab touched are fitted again; the others stay exactly as they are. */
@@ -1464,13 +1508,6 @@ int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab)
             point_changed[size_t(point_of(i))] = true;
           }
         }
-      }
-      /* Dyntopo: points where the line can't follow the sculpted shape. Not for the brushes that only even the line
-       * out or change its width. */
-      const bool shaping = dab.brush == SculptBrush::Grab || dab.brush == SculptBrush::Push ||
-                           dab.brush == SculptBrush::Pinch || dab.brush == SculptBrush::Twist;
-      if (sl.dyntopo && shaping && dab.refine != SculptRefine::Collapse && dab.detail > 0.0f) {
-        dyntopo_subdivide(drawing, sl, c, refit, dab, point_changed);
       }
     }
     std::vector<int> changed;

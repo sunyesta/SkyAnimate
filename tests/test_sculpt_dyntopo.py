@@ -83,6 +83,47 @@ assert len(ends) == 2, ("its ends stay", list(sub.points))
 subdivided = len(sub.points)
 sub_outline = o
 
+
+def lifted(x, cx=2.0, radius=0.5):
+    """How far a Grab with the Smooth falloff at cx lifts the line at x, for a move of 1."""
+    t = min(abs(x - cx) / radius, 1.0)
+    return 1.0 - t * t * (3.0 - 2.0 * t)
+
+
+# The line is resampled before the brush moves it: every point sits just where the brush took the line there.
+for x, y, *_ in sub.points:
+    assert abs(y - lifted(x)) < 1e-4, ("a point where the brush took the line", x, y, lifted(x))
+
+# --- No jumps while dragging: after every dab the line is the shape the brush made so far ----------------------------
+# (a stroke cut short is the drag up to there: Subdivide alone does nothing more when it ends)
+for cx in (2.0, 1.55):
+    steps = [(cx, 0.05 * i) for i in range(21)]
+    was = 0.0
+    for k in range(2, len(steps) + 1):
+        l = line([(float(x), 0.0) for x in range(5)])
+        assert ops.sculpt.stroke(brush="GRAB", path=path(*steps[:k]), radius=0.5, strength=1.0, falloff="SMOOTH",
+                                 mirror="0", detail=str(detail), refine="SUBDIVIDE") == {'FINISHED'}
+        lift = 0.05 * (k - 1)
+        assert all(abs(p[1] - lift * lifted(p[0], cx)) < 1e-4 for p in l.points), "every point where its sample went"
+        ideal = [(i / 400.0, lift * lifted(i / 400.0, cx)) for i in range(1601)]
+        worst = max(off(p, ideal) for p in outline(l))
+        # Between the points the line is a touch off the brush's shape (it bends sharply for points a sixth of the
+        # brush apart), but only ever a little more each dab: nothing is fitted again, so nothing jumps.
+        # (a smooth point just past the brush turns its handles with the line beside it: the segment beyond it is
+        # resampled too, so it bends with them and the line past it stays put)
+        assert worst < 0.012 and worst - was < 1.5e-3, ("no jump at dab", cx, k - 1, was, worst)
+        was = worst
+        ops.ed.undo()
+
+# A hard-edged brush whose edge falls just past a smooth point: the line beside the point turns sharply, and its handles
+# turn with it, so the segment on its far side is resampled too and only bends within a sample of it; past that the line
+# stays flat.
+edge = line([(float(x), 0.0) for x in range(5)])
+assert ops.sculpt.stroke(brush="GRAB", path=path((1.55, 0.0), (1.55, 0.5), (1.55, 1.0)), radius=0.5, strength=1.0,
+                         falloff="CONSTANT", mirror="0", detail=str(detail), refine="SUBDIVIDE") == {'FINISHED'}
+flat = max(abs(y) for x, y in outline(edge) if x < 0.9)
+assert flat < 1e-3, ("flat past the brush's edge", flat)
+
 # --- Subdivide Collapse: the same shape with fewer points ---------------------------------------------------------
 both = line([(0.0, 0.0), (4.0, 0.0)])
 assert bump(both, detail=str(detail)) == {'FINISHED'}
@@ -90,9 +131,19 @@ assert 2 < len(both.points) < subdivided, (len(both.points), subdivided)
 for p in outline(both):
     # (the outline's chords between samples cut a bend a touch)
     assert off(p, sub_outline) < detail * 3, ("the same shape", p, off(p, sub_outline))
+collapsed = len(both.points)
+print("Subdivide Collapse: %d points (Subdivide alone %d)" % (collapsed, subdivided))
 # One undo step, back to two points.
 ops.ed.undo()
 assert len(both.points) == 2, len(both.points)
+# The points the stroke made may go though their neighbours are in a point group (they are in it too).
+grouped = line([(0.0, 0.0), (4.0, 0.0)])
+grouped.select_points([0, 1])
+ops.mesh.point_group_add(name="Line")
+assert ops.mesh.point_group_assign() == {'FINISHED'}
+ops.mesh.select_none()
+assert bump(grouped, detail=str(detail)) == {'FINISHED'}
+assert len(grouped.points) == collapsed, ("grouped", len(grouped.points), collapsed)
 
 # --- Collapse alone: nothing added, and a line of many points along the way loses those it doesn't need --------------
 many = line([(x * 0.25, 0.0) for x in range(17)])

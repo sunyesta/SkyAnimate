@@ -665,14 +665,16 @@ PENDING = [
     ('src/anim/motion_path.cc', '        k.path_handles = lined_up ? PathHandles::Aligned : PathHandles::Broken;', '        k.path_handles = PathHandles::Aligned;', 'Reset Stretch: a key turning a corner goes Broken', 'tests/test_motion_path_stretch_reset.py'),
     ('src/anim/motion_path.cc', '  while (i < keys.size() && keys[i].frame < frame) {\n    i++;\n  }\n  if (i == 0 || i >= keys.size()) {\n    return false;\n  }\n  const int end = keys[i].frame;', '  while (i < keys.size() && keys[i].frame <= frame) {\n    i++;\n  }\n  if (i == 0 || i >= keys.size()) {\n    return false;\n  }\n  const int end = keys[i].frame;', "Reset Stretch: a control point's stretch by its key's frame", 'tests/test_motion_path_stretch_reset.py'),
     ('src/ops/motion_path_ops.cc', '      if (what != "BOTH" && what != "SHAPE" && what != "TIMING") {', '      if (false) {', 'Reset Stretch: what= checked', 'tests/test_motion_path_stretch_reset.py'),
-    ('src/anim/sculpt.cc', '    if (worst <= dab.detail) {\n      check[size_t(s)] = false;', '    if (true) {\n      check[size_t(s)] = false;', 'Dyntopo Subdivide: a point where the line strays', 'tests/test_sculpt_dyntopo.py'),
-    ('src/anim/sculpt.cc', '    if (span_error(prev_kept(i), next_kept(i)) <= dab.detail) {', '    if (true) {', 'Dyntopo Collapse: only where the shape stays', 'tests/test_sculpt_dyntopo.py'),
-    ('src/anim/sculpt.cc', '    for (int i = 1; i < steps && worst <= dab.detail; i++) {', '    for (int i = 1; i < 0; i++) {', 'Dyntopo Collapse: no bulge between the samples', 'tests/test_sculpt_dyntopo.py'),
     ('src/anim/sculpt.cc', '      return "its points are keyed";', '      return nullptr;', 'Dyntopo: not on keyed points', 'tests/test_sculpt_dyntopo.py'),
     ('src/anim/sculpt.cc', '  if (mirror_x) {\n    return "X Mirror is on";', '  if (false) {\n    return "X Mirror is on";', 'Dyntopo: not with X Mirror', 'tests/test_sculpt_dyntopo.py'),
     ('src/anim/sculpt.cc', '    drawing_take_setup(drawing);\n    for (MeshPoint &p : drawing.points) {\n      p.pos_keys.last = p.transform;', '    for (MeshPoint &p : drawing.points) {\n      p.pos_keys.last = p.transform;', 'Dyntopo: the new shape is the setup, no keys', 'tests/test_sculpt_dyntopo.py'),
     ('src/anim/sculpt.cc', '        if (sl.dyntopo) {\n          c.touched[size_t(i)] = true;\n        }\n', '', 'Dyntopo Collapse: the points the stroke reached', 'tests/test_sculpt_dyntopo.py'),
     ('src/anim/sculpt.cc', '    s.dyntopo = dab.detail > 0.0f && sculpt_dyntopo_blocked(doc, id, dab.mirror_x).empty();', '    s.dyntopo = dab.detail > 0.0f;', "Dyntopo: only where it isn't blocked", 'tests/test_sculpt_dyntopo.py'),
+    ('src/anim/sculpt.cc', '    if (span_error(prev_kept(i), next_kept(i)) <= dab.detail) {', '    if (true) {', 'Dyntopo Collapse: only where the shape stays', 'tests/test_sculpt_dyntopo.py'),
+    ('src/anim/sculpt.cc', '        dyntopo_resample(drawing, sl, c, moved, point_changed);\n', '', 'Dyntopo Subdivide: resampled before the dab moves it', 'tests/test_sculpt_dyntopo.py'),
+    ('src/anim/sculpt.cc', '    for (int o = -1; o <= 1; o++) {', '    for (int o = 0; o <= 0; o++) {', 'Dyntopo Subdivide: the segments either side resampled too', 'tests/test_sculpt_dyntopo.py'),
+    ('src/anim/sculpt.cc', '      in = complex_mul(along * length(r_in), in);\n      out = complex_mul(along * length(r_out), out);', '      in = complex_mul(r_in, in);\n      out = complex_mul(r_out, out);', "Dyntopo: a smooth point's handles turn together", 'tests/test_sculpt_dyntopo.py'),
+    ('src/anim/sculpt.cc', '    const bool own = size_t(cp.point) < sl.points_before;', '    const bool own = true;', "Dyntopo Collapse: the stroke's own points go whatever their groups", 'tests/test_sculpt_dyntopo.py'),
 ]
 
 def build():
