@@ -255,6 +255,11 @@ bool motion_path_timing_stretch(const Document &doc, const std::vector<MotionPat
                                 MotionPathStretch &r_stretch);
 /* A key on `frame` of the channel that moves the target's dot, where it is now (the path unchanged); false if there
  * is one already. */
+/* A key on `frame` of `pos` (none there yet), where its dot is: between two keys the stretch it splits keeps its way
+ * and its timing (the curve and its control points split there, its speeds shared out, the new key arriving as the
+ * stretch did), and the keys either side keep their handles, so no dot moves anywhere; before the first key or after
+ * the last it holds the value there. Every way of keying a position goes through it. */
+bool key_add_in_place(Channel<float2> &pos, int frame);
 bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int frame);
 /* The target's keys on `frame` (each channel its path covers: a bone's, a point's, a drawing's, a layer's turn, move
  * and size) made `type`; never frame 0. Returns how many. Alt click and Alt Shift on a path make breakdowns. */

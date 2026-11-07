@@ -135,29 +135,47 @@ void UndoStack::reset(const Document &doc)
   changes_++;
 }
 
+/* Whether `doc` is `before` but for what undo leaves as it is (the view, the frame shown, the timeline's switches: see
+ * view_state_restore in builtin_ops.cc), which `before`, a copy, takes from it. */
+static bool unchanged_since(Document &before, const Document &doc)
+{
+  before.frame_current = doc.frame_current;
+  before.texts = doc.texts;
+  before.overlays = doc.overlays;
+  before.ui_open = doc.ui_open;
+  before.view = doc.view;
+  before.motion_paths = doc.motion_paths;
+  before.auto_key = doc.auto_key;
+  before.auto_key_mode = doc.auto_key_mode;
+  before.time_together = doc.time_together;
+  return before == doc;
+}
+
 void UndoStack::push(const std::string &name, Document &doc)
 {
   /* A text changed has its letters made again, before the step holds them. */
   document_sync_text(doc);
   /* A linked shape's look changed changes its material, and the step holds every shape using it. */
   document_sync_materials(doc);
+  std::unique_ptr<Document> previous;
+  const auto was = [&]() -> const Document & {
+    if (!previous) {
+      previous = std::make_unique<Document>(rebuild(steps_[active_]));
+    }
+    return *previous;
+  };
   if (before_push && !steps_.empty()) {
-    std::unique_ptr<Document> previous;
-    const Step &step = steps_[active_];
-    before_push(
-        doc,
-        [&]() -> const Document & {
-          if (!previous) {
-            previous = std::make_unique<Document>(rebuild(step));
-          }
-          return *previous;
-        },
-        before_push_data);
+    before_push(doc, was, before_push_data);
   }
   animation_record(doc);
   fix_actions_tidy(doc);
   if (steps_.empty()) {
     reset(doc);
+  }
+  else if (was(); unchanged_since(*previous, doc)) {
+    /* Nothing changed (a move by nothing, a key type it already has): no step, as there's nothing to undo, and what
+     * can be redone stays. */
+    return;
   }
   /* A new action discards everything that was undone. */
   std::vector<Step> gone;

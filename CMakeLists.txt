@@ -478,6 +478,14 @@ add_test(NAME layer_move_rebind
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_layer_move_rebind.py)
 add_test(NAME controller_dial_setup_key
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_controller_dial_setup_key.py)
+add_test(NAME noop_ops
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_noop_ops.py)
+add_test(NAME paste_keys_points
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_paste_keys_points.py)
+add_test(NAME frame_visit_order
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_frame_visit_order.py)
+add_test(NAME path_key_add_dots
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_path_key_add_dots.py)
 add_test(NAME selected_stretch
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_selected_stretch.py)
 add_test(NAME motion_path_pick

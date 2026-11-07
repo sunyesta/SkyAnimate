@@ -59,11 +59,16 @@ struct ViewState {
   std::map<std::string, bool> ui_open;
   ViewportView view;
   bool motion_paths;
+  /* The timeline header's switches are how to edit, not what was made (as Blender's Auto Keying). */
+  bool auto_key;
+  AutoKeyMode auto_key_mode;
+  bool time_together;
 };
 
 static ViewState view_state_get(const Document &doc)
 {
-  return {doc.frame_current, doc.texts, doc.overlays, doc.ui_open, doc.view, doc.motion_paths};
+  return {doc.frame_current, doc.texts,     doc.overlays,      doc.ui_open,
+          doc.view,          doc.motion_paths, doc.auto_key, doc.auto_key_mode, doc.time_together};
 }
 
 static void view_state_restore(Document &doc, ViewState &view)
@@ -74,6 +79,9 @@ static void view_state_restore(Document &doc, ViewState &view)
   doc.ui_open = std::move(view.ui_open);
   doc.view = view.view;
   doc.motion_paths = view.motion_paths;
+  doc.auto_key = view.auto_key;
+  doc.auto_key_mode = view.auto_key_mode;
+  doc.time_together = view.time_together;
 }
 
 static void ed_undo_register()

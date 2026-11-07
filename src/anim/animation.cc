@@ -12,7 +12,7 @@
 #include <cmath>
 #include <climits>
 #include <memory>
-#include <cstdio>
+#include <charconv>
 #include <set>
 #include <tuple>
 #include <type_traits>
@@ -25,6 +25,7 @@
 #include "core/parallel.hh"
 #include "anim/dynamics.hh"
 #include "anim/follow_point.hh"
+#include "anim/motion_path.hh"
 #include "anim/shape_limit.hh"
 #include "anim/reference.hh"
 #include "anim/switch.hh"
@@ -292,6 +293,24 @@ static void find_still_drawings(const Document &doc, std::unordered_set<uint64_t
   walk(walk, doc.layers);
 }
 
+/* `ch`'s key on `frame` holding `base`. A new one inside a position's stretch shaped on its motion path (control
+ * points or Custom speeds, which no key would make) goes in where its dot is first, the stretch keeping its way,
+ * control points and timing (key_add_in_place), then takes the value, as a key moved there: so keying a frame
+ * doesn't reshape the rest of the stretch. Elsewhere it is a key as any other, its neighbours' Auto handles taking
+ * it in as Moho's do. */
+template<typename T> static Key<T> &key_put(Channel<T> &ch, int frame, const T &base)
+{
+  if constexpr (std::is_same_v<T, float2>) {
+    if (frame > 0 && ch.keys.size() >= 2 && !ch.key_at(frame)) {
+      const auto b = std::find_if(ch.keys.begin(), ch.keys.end(), [&](const auto &k) { return k.frame > frame; });
+      if (b != ch.keys.begin() && b != ch.keys.end() && (!b->path_controls.empty() || b->interp == Interp::Custom)) {
+        key_add_in_place(ch, frame);
+      }
+    }
+  }
+  return ch.set_key(frame, base);
+}
+
 /* Turns a change to `ch` since it was last evaluated into a key at `frame` (auto-key on). Replace
  * (Blender's auto-keying mode) only changes a key already on the frame. Returns whether it keyed. */
 template<typename T> static bool record(Channel<T> &ch, const T &value, int frame, bool auto_key, bool replace = false)
@@ -322,7 +341,7 @@ template<typename T> static bool record(Channel<T> &ch, const T &value, int fram
     if (!ch.animated()) {
       ch.set_key(0, ch.last - ch.from_action_bones);
     }
-    ch.set_key(frame, base);
+    key_put(ch, frame, base);
     ch.last = value;
     return true;
   }
@@ -340,7 +359,7 @@ template<typename T> static void freeze(Channel<T> &ch, const T &value, int fram
   if (!ch.animated()) {
     ch.set_key(0, base);
   }
-  ch.set_key(frame, base);
+  key_put(ch, frame, base);
   ch.last = value;
   ch.has_last = true;
 }
@@ -1261,6 +1280,30 @@ void animation_evaluate(Document &doc, int frame)
   evaluate_frame(doc, frame, false);
 }
 
+/* A bone posed after action bone actions are played (Follow Point, Limit to Shape, Look At, an outer parent): what
+ * those actions read may change once it is. */
+static bool posed_after_action_bones(const Document &doc)
+{
+  for (const Layer *flat : document_layers_flat(doc)) {
+    if (!flat->is_bone_layer()) {
+      continue;
+    }
+    for (const Bone &b : flat->bones) {
+      if (b.outer_bone != 0) {
+        return true;
+      }
+      for (const BoneConstraint &c : b.constraints) {
+        if (c.type == BoneConstraintType::FollowPoint || c.type == BoneConstraintType::LimitShape ||
+            c.type == BoneConstraintType::LookAt)
+        {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 static void evaluate_frame(Document &doc, int frame, bool recorded)
 {
   std::unordered_set<const Layer *> action_bone_layers;
@@ -1293,6 +1336,14 @@ static void evaluate_frame(Document &doc, int frame, bool recorded)
   /* Follow Point and Limit to Shape read what's drawn now, dynamics included. */
   follow_points_update(doc);
   shape_limits_update(doc);
+  /* Action bone actions played from bones those then move (a rig whose drawing moves the bone that poses it) are
+   * worked out once more from where the bones went: else the frame showed what they read on the frame shown before. */
+  if (doc.action_bones_applied && posed_after_action_bones(doc)) {
+    animation_refresh_action_bones(doc);
+    bone_outer_parents_update(doc);
+    follow_points_update(doc);
+    shape_limits_update(doc);
+  }
   doc.frame_current = shown;
   doc.evaluated_frame = frame;
 }
@@ -4518,11 +4569,26 @@ bool layer_channel(Layer &layer, const std::string &path, ChannelRef *r_ref)
   return false;
 }
 
+/* The angle channels of `layer`'s dials linked to a controller: what they turn is the knob's, so keying the layer keys
+ * the knob, never them (a key on one is moved onto the knob, as a turn: one made from its plain value, nothing, would
+ * take the knob back to rest). */
+static std::set<const void *> linked_dial_channels(const Layer &layer)
+{
+  std::set<const void *> dials;
+  for (const Bone &b : layer.bones) {
+    if (controller_of_dial(layer, b)) {
+      dials.insert(&b.angle_keys);
+    }
+  }
+  return dials;
+}
+
 int layer_insert_keys(Layer &layer, int frame)
 {
   int count = 0;
+  const std::set<const void *> dials = linked_dial_channels(layer);
   layer_for_each_channel(layer, [&](auto &ch, auto &value) {
-    if (ch.keyed_by_hand && !ch.animated()) {
+    if ((ch.keyed_by_hand && !ch.animated()) || dials.count(&ch)) {
       return;
     }
     /* Keys hold the value without what action bone actions add. */
@@ -4530,7 +4596,7 @@ int layer_insert_keys(Layer &layer, int frame)
     if (!ch.animated() && frame != 0) {
       ch.set_key(0, ch.has_last ? ch.last - ch.from_action_bones : base);
     }
-    ch.set_key(frame, base);
+    key_put(ch, frame, base);
     ch.last = value;
     ch.has_last = true;
     count++;
@@ -4541,16 +4607,18 @@ int layer_insert_keys(Layer &layer, int frame)
 int layer_insert_filtered_keys(Layer &layer, const KeyFilter &filter, int frame)
 {
   int count = 0;
+  const std::set<const void *> dials = linked_dial_channels(layer);
   const auto key = [&](auto &ch, auto &value) {
-    /* As layer_insert_keys: a setting keyed only by hand (a mask's Reach) waits to be keyed so. */
-    if (ch.keyed_by_hand && !ch.animated()) {
+    /* As layer_insert_keys: a setting keyed only by hand (a mask's Reach) waits to be keyed so; a linked dial is its
+     * knob's. */
+    if ((ch.keyed_by_hand && !ch.animated()) || dials.count(&ch)) {
       return;
     }
     const auto base = value - ch.from_action_bones;
     if (!ch.animated() && frame != 0) {
       ch.set_key(0, ch.has_last ? ch.last - ch.from_action_bones : base);
     }
-    ch.set_key(frame, base);
+    key_put(ch, frame, base);
     ch.last = value;
     ch.has_last = true;
     count++;
@@ -4583,7 +4651,10 @@ template<typename T> static bool delete_key(Channel<T> &ch, T &value, int frame)
     return false;
   }
   const bool removed = ch.remove_key(frame);
-  drop_lone_setup_key(ch, value);
+  /* Only what this took away can leave the setup key alone (one already alone is kept: nothing was deleted). */
+  if (removed) {
+    drop_lone_setup_key(ch, value);
+  }
   return removed;
 }
 
@@ -4624,7 +4695,7 @@ int layer_toggle_keys(Layer &layer, const std::vector<std::string> &paths, int f
       /* The setup key takes the value from before an edit not yet keyed. */
       ch.set_key(0, ch.has_last ? ch.last - ch.from_action_bones : base);
     }
-    ch.set_key(frame, base);
+    key_put(ch, frame, base);
     ch.last = value;
     ch.has_last = true;
     count++;
@@ -6141,7 +6212,77 @@ struct ClipboardChannel {
   std::string path;
   std::vector<Key<float>> scalar;
   std::vector<Key<float2>> vector;
+  /* A point's or curve point's channel: the point's id, and the curve it was on (paths name points by their place,
+   * which changes as points are added or deleted). */
+  uint64_t point = 0;
+  int curve = -1;
 };
+
+/* The number in `path` after `prefix` (which starts it, at `at`), up to a ']'; -1 if there isn't one. */
+static int path_index(const std::string &path, const std::string &prefix, size_t at = 0)
+{
+  if (path.compare(at, prefix.size(), prefix) != 0) {
+    return -1;
+  }
+  int n = -1;
+  const char *begin = path.data() + at + prefix.size(), *end = path.data() + path.size();
+  const auto [ptr, ec] = std::from_chars(begin, end, n);
+  return ec == std::errc() && ptr < end && *ptr == ']' ? n : -1;
+}
+
+/* The point a drawing channel's path names (its id, and the curve for a curve point's), or none. */
+static void clipboard_point_of(const Layer &layer, ClipboardChannel &c)
+{
+  const VectorDrawing &d = layer.drawing;
+  const int curve = path_index(c.path, "curves[");
+  const size_t dot = c.path.find("].points[");
+  const int index = curve >= 0 && dot != std::string::npos ? path_index(c.path, "points[", dot + 2) :
+                                                              path_index(c.path, "points[");
+  if (curve >= 0) {
+    if (curve >= 0 && size_t(curve) < d.curves.size() && index >= 0 &&
+        size_t(index) < d.curves[size_t(curve)].points.size())
+    {
+      c.point = d.points[d.curves[size_t(curve)].points[size_t(index)].point].id;
+      c.curve = curve;
+    }
+  }
+  else if (index >= 0 && size_t(index) < d.points.size()) {
+    c.point = d.points[size_t(index)].id;
+  }
+}
+
+/* `c`'s path on its own layer as that layer is now: by its point's id where the point's place has changed; empty
+ * when the point is gone. */
+static std::string clipboard_path_now(const Layer &layer, const ClipboardChannel &c)
+{
+  if (c.point == 0) {
+    return c.path;
+  }
+  const VectorDrawing &d = layer.drawing;
+  const std::string rest = c.path.substr(c.path.find(']', c.path.rfind("points[")) + 1);
+  if (c.curve < 0) {
+    for (size_t i = 0; i < d.points.size(); i++) {
+      if (d.points[i].id == c.point) {
+        return "points[" + std::to_string(i) + "]" + rest;
+      }
+    }
+    return "";
+  }
+  /* Its own curve first, then any curve through the point. */
+  std::string other;
+  for (size_t k = 0; k < d.curves.size(); k++) {
+    for (size_t i = 0; i < d.curves[k].points.size(); i++) {
+      if (d.points[d.curves[k].points[i].point].id == c.point) {
+        const std::string path = "curves[" + std::to_string(k) + "].points[" + std::to_string(i) + "]" + rest;
+        if (int(k) == c.curve) {
+          return path;
+        }
+        other = other.empty() ? path : other;
+      }
+    }
+  }
+  return other;
+}
 
 struct KeyClipboard {
   std::vector<ClipboardChannel> channels;
@@ -6196,6 +6337,7 @@ int layers_copy_selected_keys(const std::vector<Layer *> &layers)
         take(*ref.vector, c.vector);
       }
       if (!c.scalar.empty() || !c.vector.empty()) {
+        clipboard_point_of(*layer, c);
         copied.channels.push_back(std::move(c));
       }
     }
@@ -6224,9 +6366,16 @@ int layers_paste_keys(const std::vector<Layer *> &layers, int frame,
   Layer *found = nullptr;
   const auto target = [&](const ClipboardChannel &c, ChannelRef *r_ref) -> bool {
     for (Layer *layer : layers) {
-      if (layer->id == c.layer && layer_channel(*layer, c.path, r_ref)) {
-        found = layer;
-        return true;
+      if (layer->id == c.layer) {
+        /* Its own layer: the same point, wherever it is now (none if it was deleted). */
+        const std::string path = clipboard_path_now(*layer, c);
+        if (path.empty()) {
+          return false;
+        }
+        if (layer_channel(*layer, path, r_ref)) {
+          found = layer;
+          return true;
+        }
       }
     }
     for (Layer *layer : layers) {

@@ -526,12 +526,14 @@ static float2 bezier_along(const float2 p[4], float u)
     return l > 1e-9f ? d / l : fallback;
   };
   const float2 chord = direction(p[0], p[3], float2{1.0f, 0.0f});
+  /* A handle next to nothing (a flat Auto one is float noise) gives no way: the curve leaves toward the other. */
+  const float tiny = 1e-4f * total;
   if (u <= 0.0f) {
-    const float2 d = direction(p[0], length(p[1] - p[0]) > 1e-9f ? p[1] : p[2], chord);
+    const float2 d = direction(p[0], length(p[1] - p[0]) > tiny ? p[1] : p[2], chord);
     return p[0] + d * (u * total);
   }
   if (u >= 1.0f) {
-    const float2 d = direction(length(p[2] - p[3]) > 1e-9f ? p[2] : p[1], p[3], chord);
+    const float2 d = direction(length(p[2] - p[3]) > tiny ? p[2] : p[1], p[3], chord);
     return p[3] + d * ((u - 1.0f) * total);
   }
   const float want = u * total;
@@ -1074,6 +1076,39 @@ static float2 line_at(const std::vector<float2> &line, float u)
   return line.back();
 }
 
+float stretch_smooth_progress(const std::vector<Key<float2>> &keys, size_t i, int frame)
+{
+  if (i == 0 || i >= keys.size()) {
+    return 0.0f;
+  }
+  const Key<float2> &a = keys[i - 1], &b = keys[i];
+  const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
+  if (frame <= start) {
+    return 0.0f;
+  }
+  const int interval = std::max(a.interval, 1);
+  const int f = std::min(start + (frame - start) / interval * interval, b.frame);
+  const float t = float(f - start) / float(std::max(b.frame - start, 1));
+  /* Smooth runs along the Bezier its handles make by the curve's own timing: as far along it by length as that
+   * Bezier has gone at the frame's place on it, measured finely (a straight piece per frame cuts its corners). */
+  float2 in, out, unused;
+  key_path_handles(keys, i - 1, unused, out);
+  key_path_handles(keys, i, in, unused);
+  const float2 p[4] = {a.value, a.value + out, b.value + in, b.value};
+  constexpr int PIECES = 256;
+  float total = 0.0f, upto = 0.0f;
+  float2 prev = p[0];
+  for (int j = 1; j <= PIECES; j++) {
+    const float from = float(j - 1) / PIECES, to = float(j) / PIECES;
+    const float2 q = bezier(p, to);
+    const float l = length(q - prev);
+    total += l;
+    upto += l * std::clamp((t - from) * PIECES, 0.0f, 1.0f);
+    prev = q;
+  }
+  return total > 1e-9f ? upto / total : t;
+}
+
 /* While set, Channel::evaluate leaves control points out (the stretch as it would go without them). */
 static thread_local bool g_controls_off = false;
 
@@ -1100,6 +1135,9 @@ static float2 controls_evaluate(const Channel<float2> &ch, size_t i, int frame)
     settings.interp = interp;
     const float u = interp == Interp::Custom ? custom_progress(b.speeds, t) : interp_curve(settings, t);
     return line_at(stretch_control_line(ch.keys, i), u);
+  }
+  if (interp_smooth(interp)) {
+    return line_at(stretch_control_line(ch.keys, i), stretch_smooth_progress(ch.keys, i, frame));
   }
   g_controls_off = true;
   std::vector<float2> plain;

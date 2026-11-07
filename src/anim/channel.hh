@@ -333,6 +333,9 @@ std::vector<float2> stretch_control_line(const std::vector<Key<float2>> &keys, s
  * keys either side get handles that run as theirs did, the new key the split's, and the control points their sides
  * with their handles set as they ran. False, changing nothing, where the key isn't on that curve. */
 bool key_curve_split(std::vector<Key<float2>> &keys, size_t i, const StretchPoints &old);
+/* How far along its path by length a Smooth stretch arriving at keys[i] has gone on `frame` (0 to 1): along the
+ * Bezier its key handles make, by that curve's own timing. A stretch with control points goes as far along them. */
+float stretch_smooth_progress(const std::vector<Key<float2>> &keys, size_t i, int frame);
 /* A control point put on the path of the stretch arriving at key `i` where it is at `v`: the curve split there, so its
  * shape (and every dot on it) stays; the keys' handles and the other control points' are set as they ran. Its index in
  * `path_controls` in `r_index`. False, changing nothing, where `v` isn't on the curve (past a key, in an overshoot). */

@@ -2761,31 +2761,34 @@ bool motion_path_timing_stretch(const Document &doc, const std::vector<MotionPat
   return true;
 }
 
-bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int frame)
+bool key_add_in_place(Channel<float2> &pos, int frame)
 {
-  if (frame < 1) {
+  if (frame < 1 || pos.key_at(frame)) {
     return false;
   }
-  bool added = false;
-  /* A position key added between two: handles along the path's way there, as long as its speed there makes them (a
-   * third of each stretch, as a Bezier's), so adding it bends nothing: Auto would take a slope from its new
-   * neighbours and crease the path. */
-  Channel<float2> *pos = handle_channel(doc, target);
-  const Key<float2> *before = nullptr, *after = nullptr;
-  float2 speed{0.0f, 0.0f};
-  if (pos && !pos->key_at(frame)) {
-    for (const Key<float2> &k : pos->keys) {
-      if (k.frame < frame) {
-        before = &k;
-      }
-      else if (!after) {
-        after = &k;
-      }
-    }
-    if (before && after) {
-      speed = (pos->evaluate(frame + 1) - pos->evaluate(frame - 1)) * 0.5f;
+  int bi = -1;
+  for (size_t i = 0; i < pos.keys.size(); i++) {
+    if (pos.keys[i].frame > frame) {
+      bi = int(i);
+      break;
     }
   }
+  if (bi <= 0) {
+    /* Before the first key or after the last: it holds what the channel holds there. */
+    pos.set_key(frame, pos.evaluate(frame));
+    return true;
+  }
+  /* The keys either side keep the handles they have (their Auto ones taken as their own), so the stretches beyond them
+   * stay as they are: Auto would take new slopes from the new neighbour. */
+  const bool handles = pos.keys[size_t(bi - 1)].path_handles != PathHandles::Auto ||
+                       pos.keys[size_t(bi)].path_handles != PathHandles::Auto;
+  key_path_handles_freeze(pos.keys, size_t(bi - 1));
+  key_path_handles_freeze(pos.keys, size_t(bi));
+  const Key<float2> &a = pos.keys[size_t(bi - 1)], &b = pos.keys[size_t(bi)];
+  /* Handles along the path's way there, as long as its speed there makes them (a third of each stretch, as a
+   * Bezier's), so adding it bends nothing. */
+  const float2 speed = (pos.evaluate(frame + 1) - pos.evaluate(frame - 1)) * 0.5f;
+  const int span_in = frame - a.frame, span_out = b.frame - frame;
   /* On a stretch that runs along a curve of its own (dragged handles, control points) or is timed along it (Linear's
    * way with handles, the eases, Custom...): that curve split at the key and its timing shared out between the two, so
    * no dot moves. A plain Smooth or Linear stretch already keeps its way with the handles above. */
@@ -2795,61 +2798,47 @@ bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int fram
   bool split = false, curve_timed = false;
   int over = 0;
   float old_length = 0.0f;
-  KeySettings arriving;
-  int interval = 1;
-  if (before && after) {
-    const Key<float2> &a = *before, &b = *after;
-    const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
-    const bool handles = a.path_handles != PathHandles::Auto || b.path_handles != PathHandles::Auto;
-    const bool controls = !b.path_controls.empty();
-    const bool moves = b.interp != Interp::Step && b.interp != Interp::Pose && b.interp != Interp::Cycle &&
-                       b.interp != Interp::Noisy && a.interp != Interp::Cycle && frame > start;
-    const bool plain = (b.interp == Interp::Smooth || b.interp == Interp::Linear) && !handles && !controls;
-    if (moves && !plain) {
-      const size_t bi = size_t(&b - pos->keys.data());
-      const int n = b.frame - start;
-      old_points = stretch_points(pos->keys, bi);
-      old_u = speeds_progress(stretch_speeds(*pos, bi, start, n));
-      old_length = stretch_path_length(pos->keys, bi);
-      old_k = frame - start;
-      arriving = key_settings(b);
-      interval = a.interval;
-      /* Smooth along dragged handles is timed by the curve itself, which the split keeps; the rest by length, shared
-       * out (not where the key is at, or past, either end: there is nothing to share). */
-      curve_timed = b.interp == Interp::Smooth && !controls;
-      const float uk = old_u[size_t(old_k)];
-      /* Past the key (an overshoot) or back before the start: off the curve, on its straight way on. */
-      over = uk > 1.0f + 1e-4f ? 1 : uk < -1e-4f ? -1 : 0;
-      split = curve_timed || (uk > 0.02f && uk < 0.98f) || over != 0;
-    }
+  /* The new key ends the first half: it arrives as the old stretch did (its interpolation and settings), and plays on
+   * as the key before it did (its interval), holding nothing. */
+  const KeySettings arriving = key_settings(b);
+  const int interval = a.interval;
+  const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
+  const bool controls = !b.path_controls.empty();
+  const bool moves = b.interp != Interp::Step && b.interp != Interp::Pose && b.interp != Interp::Cycle &&
+                     b.interp != Interp::Noisy && a.interp != Interp::Cycle && frame > start;
+  const bool plain = (b.interp == Interp::Smooth || b.interp == Interp::Linear) && !handles && !controls;
+  if (moves && !plain) {
+    const int n = b.frame - start;
+    old_points = stretch_points(pos.keys, size_t(bi));
+    old_u = speeds_progress(stretch_speeds(pos, size_t(bi), start, n));
+    old_length = stretch_path_length(pos.keys, size_t(bi));
+    old_k = frame - start;
+    /* Smooth along dragged handles is timed by the curve itself, which the split keeps; the rest by length, shared
+     * out (all the way to the ends: a dot nearly there still has its share to keep). */
+    curve_timed = b.interp == Interp::Smooth && !controls;
+    const float uk = old_u[size_t(old_k)];
+    /* Past the key (an overshoot) or back before the start: off the curve, on its straight way on. */
+    over = uk > 1.0f + 1e-4f ? 1 : uk < -1e-4f ? -1 : 0;
+    split = curve_timed || (uk > 1e-3f && uk < 1.0f - 1e-3f) || over != 0;
   }
-  const int span_in = before ? frame - before->frame : 0, span_out = after ? after->frame - frame : 0;
-  with_path_channel(doc, target, [&](auto &ch) {
-    if (!ch.key_at(frame)) {
-      Key<std::decay_t<decltype(ch.keys[0].value)>> &k = ch.set_key(frame, ch.evaluate(frame));
-      if constexpr (std::is_same_v<std::decay_t<decltype(ch.keys[0].value)>, float2>) {
-        /* The control points of the stretch it splits stay where they are. */
-        if (!split || static_cast<void *>(&ch) != static_cast<void *>(pos)) {
-          key_controls_split(ch.keys, size_t(&k - ch.keys.data()));
-        }
-      }
-      added = true;
-    }
-  });
-  Key<float2> *k = added && pos ? pos->key_at(frame) : nullptr;
-  const size_t ki = k ? size_t(k - pos->keys.data()) : 0;
-  if (k && over != 0 && key_overshoot_split(pos->keys, ki, old_points, over > 0)) {
-    k = &pos->keys[ki];
+  pos.set_key(frame, pos.evaluate(frame));
+  const size_t ki = size_t(bi);
+  Key<float2> *k = &pos.keys[ki];
+  const auto settle = [&]() {
+    k = &pos.keys[ki];
     key_settings_apply(*k, arriving);
     k->hold = 0;
     k->interval = interval;
     k->type = KeyType::Key;
+  };
+  if (over != 0 && key_overshoot_split(pos.keys, ki, old_points, over > 0)) {
+    settle();
     /* Each dot as far along its new stretch as it went along the old way: by length, the old stretch's past its ends
      * (the straight way on), the new curves' own measure on them. */
     const int n = int(old_u.size()) - 1;
     const float uk = old_u[size_t(old_k)];
-    const float l1 = std::max(stretch_path_length(pos->keys, ki), 1e-9f);
-    const float l2 = std::max(stretch_path_length(pos->keys, ki + 1), 1e-9f);
+    const float l1 = std::max(stretch_path_length(pos.keys, ki), 1e-9f);
+    const float l2 = std::max(stretch_path_length(pos.keys, ki + 1), 1e-9f);
     std::vector<float> u1(size_t(old_k + 1)), u2(size_t(n - old_k + 1));
     if (over > 0) {
       const float e = l2, curve = std::max(l1 - e, 1e-9f);
@@ -2878,22 +2867,17 @@ bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int fram
     u1.back() = 1.0f;
     u2.front() = 0.0f;
     u2.back() = 1.0f;
-    key_speeds_set(pos->keys, ki, progress_speeds(u1));
-    key_speeds_set(pos->keys, ki + 1, progress_speeds(u2));
-    channel_keys_changed();
+    key_speeds_set(pos.keys, ki, progress_speeds(u1));
+    key_speeds_set(pos.keys, ki + 1, progress_speeds(u2));
   }
-  else if (k && split && over == 0 && key_curve_split(pos->keys, ki, old_points)) {
-    k = &pos->keys[ki];
-    key_settings_apply(*k, arriving);
-    k->hold = 0;
-    k->interval = interval;
-    k->type = KeyType::Key;
+  else if (split && over == 0 && key_curve_split(pos.keys, ki, old_points)) {
+    settle();
     if (!curve_timed) {
       const int n = int(old_u.size()) - 1;
       const float at = old_u[size_t(old_k)];
       /* Along each curve the same share of the way; past an end (an overshoot past the key, or back before the
        * start), on along it as far as before, by each one's own length. */
-      const float l1 = stretch_path_length(pos->keys, ki), l2 = stretch_path_length(pos->keys, ki + 1);
+      const float l1 = stretch_path_length(pos.keys, ki), l2 = stretch_path_length(pos.keys, ki + 1);
       const float beyond1 = l1 > 1e-9f ? old_length / l1 : 1.0f / at;
       const float beyond2 = l2 > 1e-9f ? old_length / l2 : 1.0f / (1.0f - at);
       std::vector<float> u1(size_t(old_k + 1)), u2(size_t(n - old_k + 1));
@@ -2905,24 +2889,49 @@ bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int fram
         const float u = old_u[size_t(old_k + j)];
         u2[size_t(j)] = u > 1.0f ? 1.0f + (u - 1.0f) * beyond2 : (u - at) / (1.0f - at);
       }
-      key_speeds_set(pos->keys, ki, progress_speeds(u1));
-      key_speeds_set(pos->keys, ki + 1, progress_speeds(u2));
+      key_speeds_set(pos.keys, ki, progress_speeds(u1));
+      key_speeds_set(pos.keys, ki + 1, progress_speeds(u2));
     }
-    channel_keys_changed();
   }
   else {
-    if (k && split) {
-      key_controls_split(pos->keys, ki);
-    }
-    if (added && pos && span_in > 0 && span_out > 0) {
-      if (Key<float2> *kk = pos->key_at(frame)) {
-        kk->path_in = speed * (-float(span_in) / 3.0f);
-        kk->path_out = speed * (float(span_out) / 3.0f);
-        kk->path_handles = PathHandles::Aligned;
-        channel_keys_changed();
-      }
+    settle();
+    /* Its control points stay where they are. */
+    key_controls_split(pos.keys, ki);
+    if (span_in > 0 && span_out > 0) {
+      k->path_in = speed * (-float(span_in) / 3.0f);
+      k->path_out = speed * (float(span_out) / 3.0f);
+      k->path_handles = PathHandles::Aligned;
+      /* The curve cut there: the handles of the keys either side shorten to the part of it each now has (as a
+       * Bezier's cut in two), so the halves run where the whole did. */
+      const float whole = float(span_in + span_out);
+      pos.keys[ki - 1].path_out *= float(span_in) / whole;
+      pos.keys[ki + 1].path_in *= float(span_out) / whole;
     }
   }
+  channel_keys_changed();
+  return true;
+}
+
+bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int frame)
+{
+  if (frame < 1) {
+    return false;
+  }
+  /* The position's key goes in where its dot is, keeping the stretch's way and timing; the other channels the path
+   * keys take their values there too. */
+  Channel<float2> *pos = handle_channel(doc, target);
+  bool added = pos && key_add_in_place(*pos, frame);
+  with_path_channel(doc, target, [&](auto &ch) {
+    if (static_cast<void *>(&ch) == static_cast<void *>(pos) || ch.key_at(frame)) {
+      return;
+    }
+    Key<std::decay_t<decltype(ch.keys[0].value)>> &k = ch.set_key(frame, ch.evaluate(frame));
+    if constexpr (std::is_same_v<std::decay_t<decltype(ch.keys[0].value)>, float2>) {
+      /* The control points of the stretch it splits stay where they are. */
+      key_controls_split(ch.keys, size_t(&k - ch.keys.data()));
+    }
+    added = true;
+  });
   animation_evaluate(doc, doc.frame_current);
   return added;
 }
@@ -3097,9 +3106,25 @@ bool motion_path_control_add(Document &doc, const MotionPathTarget &target, int 
   }
   /* The curve split at the dot, so the path keeps its shape and every dot stays: the dot's frame is timed along it by
    * length, which the split keeps. */
+  /* Smooth is timed by its curve's own parameter, which the split changes (its end handles now run to the control
+   * point): its dots' share of the way kept as speeds instead, as the curve split at a new key shares out its
+   * timing. */
+  const Key<float2> &b = ch->keys[i], &a = ch->keys[i - 1];
+  const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
+  std::vector<float> u;
+  if (b.interp == Interp::Smooth && b.frame - start >= 1) {
+    for (int f = start; f <= b.frame; f++) {
+      u.push_back(stretch_smooth_progress(ch->keys, i, f));
+    }
+  }
   size_t at = 0;
   if (!key_control_split(ch->keys, i, ch->evaluate(frame), &at)) {
     return false;
+  }
+  if (u.size() >= 2) {
+    u.front() = 0.0f;
+    u.back() = 1.0f;
+    key_speeds_set(ch->keys, i, progress_speeds(u));
   }
   channel_keys_changed();
   if (r_end) {

@@ -585,6 +585,24 @@ PENDING = [
     ('src/data/document_layers.cc', '    bones_rebind(moving, rebound);', '    (void)rebound;', 'a layer moved to another bone layer is bound by bone name', 'tests/test_layer_move_rebind.py'),
     ('src/ops/anim_ops.cc', '                      if (C.document->layers == was) {', '                      if (false) {', 'a key move that changes nothing is no undo step', 'tests/test_animation.py'),
     ('src/anim/animation.cc', '        controllers_fold_dials(doc, owner);', '        (void)owner;', "a dial keyed on the setup frame is the knob's at once", 'tests/test_controller_dial_setup_key.py'),
+    ('src/anim/dynamics.cc', '    if (count == 0 || !flat->is_bone_layer() || (only && flat->id != only->id)) {', '    if (!flat->is_bone_layer() || (only && flat->id != only->id)) {', 'a refused Bake Dynamics leaves the dynamics on', 'tests/test_noop_ops.py'),
+    ('src/anim/animation.cc', '  if (removed) {\n    drop_lone_setup_key(ch, value);\n  }', '  drop_lone_setup_key(ch, value);', 'a refused Delete Keyframe keeps a lone setup key', 'tests/test_noop_ops.py'),
+    ('scripts/modules/oanim/__init__.py', '    def bone_set(self, name, /, **values):', '    def bone_set(self, name, **values):', 'bone_set takes name= as the new name', 'tests/test_noop_ops.py'),
+    ('src/anim/animation.cc', '    if ((ch.keyed_by_hand && !ch.animated()) || dials.count(&ch)) {\n      return;\n    }\n    /* Keys hold', '    if (ch.keyed_by_hand && !ch.animated()) {\n      return;\n    }\n    /* Keys hold', 'I keys a linked dial on its knob, not its own', 'tests/test_controller_dial_setup_key.py'),
+    ('src/ops/undo.cc', '  else if (was(); unchanged_since(*previous, doc)) {', '  else if (false) {', 'an operator that changes nothing makes no undo step', 'tests/test_noop_ops.py'),
+    ('src/ops/builtin_ops.cc', '  doc.auto_key = view.auto_key;\n', '', 'undo leaves Auto Keying as it is', 'tests/test_noop_ops.py'),
+    ('src/ops/builtin_ops.cc', '  doc.time_together = view.time_together;\n', '', 'undo leaves Time Together as it is', 'tests/test_noop_ops.py'),
+    ('src/anim/animation.cc', '        const std::string path = clipboard_path_now(*layer, c);', '        const std::string path = c.path;', 'pasted keys go on the point they came from', 'tests/test_paste_keys_points.py'),
+    ('src/anim/animation.cc', '        key_add_in_place(ch, frame);\n      }\n    }\n  }\n  return ch.set_key(frame, base);', '      }\n    }\n  }\n  return ch.set_key(frame, base);', 'I inside a stretch shaped on the path keeps the rest of it', 'tests/test_path_key_add_dots.py'),
+    ('src/anim/animation.cc', '(!b->path_controls.empty() || b->interp == Interp::Custom)) {', 'true) {', 'a key on a plain stretch takes Auto handles, its neighbours too', 'tests/test_motion_paths.py'),
+    ('src/anim/motion_path.cc', '  else {\n    settle();\n    /* Its control points stay where they are. */', '  else {\n    /* Its control points stay where they are. */', 'a path key added on a Linear stretch arrives Linear', 'tests/test_path_key_add_dots.py'),
+    ('src/anim/motion_path.cc', '  key_path_handles_freeze(pos.keys, size_t(bi - 1));\n  key_path_handles_freeze(pos.keys, size_t(bi));\n  const Key<float2> &a', '  const Key<float2> &a', 'a path key added leaves the keys either side as they were', 'tests/test_path_key_add_dots.py'),
+    ('src/anim/motion_path.cc', '    split = curve_timed || (uk > 1e-3f && uk < 1.0f - 1e-3f) || over != 0;', '    split = curve_timed || (uk > 0.02f && uk < 0.98f) || over != 0;', 'a path key added near a stretch end keeps the dots', 'tests/test_path_key_add_dots.py'),
+    ('src/anim/motion_path.cc', '      pos.keys[ki - 1].path_out *= float(span_in) / whole;\n      pos.keys[ki + 1].path_in *= float(span_out) / whole;', '      (void)whole;', "a path key added on plain Smooth shortens the neighbours' handles to their halves", 'tests/test_path_key_add_dots.py'),
+    ('src/anim/motion_path.cc', '    key_speeds_set(ch->keys, i, progress_speeds(u));\n  }\n  channel_keys_changed();\n  if (r_end) {', '  }\n  channel_keys_changed();\n  if (r_end) {', 'a control point added on Smooth keeps its timing', 'tests/test_path_key_add_dots.py'),
+    ('src/anim/channel.cc', '  const float tiny = 1e-4f * total;', '  const float tiny = 1e-9f;', 'backing up before the start goes the way the path leaves', 'tests/test_path_key_add_dots.py'),
+    ('src/anim/animation.cc', '  if (doc.action_bones_applied && posed_after_action_bones(doc)) {', '  if (false) {', 'a frame shows the same whatever frame was shown before', 'tests/test_frame_visit_order.py'),
+    ('src/anim/animation.cc', '        if (c.type == BoneConstraintType::FollowPoint || c.type == BoneConstraintType::LimitShape ||\n            c.type == BoneConstraintType::LookAt)', '        if (c.type == BoneConstraintType::FollowPoint || c.type == BoneConstraintType::LimitShape)', 'a Look At in an Eye Shape plays the knob actions from where it looks', 'tests/test_frame_visit_order.py'),
 ]
 
 
@@ -611,6 +629,15 @@ def main():
             with open(path, "w", encoding="utf-8", newline="") as f:
                 f.write(src.replace(old, new))
             native = not path.endswith(".py")
+            if not native and rebuilt:
+                # The build still holds the last native entry's change: a script-only entry runs on a clean one.
+                shutil.copyfile(backup, path)
+                if not build():
+                    print("The build with every file put back failed: look before going on", flush=True)
+                    sys.exit(2)
+                rebuilt = False
+                with open(path, "w", encoding="utf-8", newline="") as f:
+                    f.write(src.replace(old, new))
             if native:
                 rebuilt = True
                 if not build():

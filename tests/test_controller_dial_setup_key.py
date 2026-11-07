@@ -56,4 +56,18 @@ doc.frame_current = 30
 doc.frame_current = 0
 assert (rig.keyframes('bones["turn"].angle'), rig.keyframes('bones["joy"].position')) == keyed
 
+# On a posed frame the same: Insert Keyframe keys the knob where it is, never the dial from its own value (nothing,
+# the knob's turn being an action's amount), which moved onto the knob took it back to rest.
+doc.frame_current = 40
+rig.bone_set("joy", knob=(45.0, 0.0))
+doc.frame_current = 41
+doc.frame_current = 40
+assert ops.anim.keyframe_insert() == {'FINISHED'}
+at = next(k for k in rig.keyframes('bones["joy"].position') if k["frame"] == 40)["value"]
+assert math.dist(at, (45.0, 0.0)) < 1e-3, ("I keeps the knob's key", at)
+assert not rig.keyframes('bones["turn"].angle'), rig.keyframes('bones["turn"].angle')
+doc.frame_current = 41
+doc.frame_current = 40
+assert math.dist(bone("joy")["knob"], (45.0, 0.0)) < 1e-3, bone("joy")["knob"]
+
 print("test_controller_dial_setup_key: all passed")

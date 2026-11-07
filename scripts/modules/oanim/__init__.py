@@ -419,7 +419,7 @@ class _Layer:
         editing works from, and the viewport draws with Physics Ghosts on)."""
         return _oanim.layer_bones(self._id, True)
 
-    def bone_set(self, name, **values):
+    def bone_set(self, name, /, **values):
         """Pose or edit a bone: position=(x, y), angle, scale=(x, y) (x across the bone, y along
         it; one number sets both), length, strength, name; a controller's knob=(x, y) in frames,
         knob_snap=True (after knob=: where Ctrl takes it, the nearest spot, fix pose, rest or crossing of keys) and

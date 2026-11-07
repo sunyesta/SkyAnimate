@@ -1141,9 +1141,9 @@ int dynamics_bake(Document &doc, Layer *only)
       key(bone->scale_keys, float2(keyed.x, k.scale), bone->scale);
     }
   }
-  /* The keys now hold the motion: the springs stop. */
+  /* The keys now hold the motion: the springs stop (nothing baked, nothing changes: the bake is refused). */
   for (const Layer *flat : document_layers_flat(doc)) {
-    if (!flat->is_bone_layer() || (only && flat->id != only->id)) {
+    if (count == 0 || !flat->is_bone_layer() || (only && flat->id != only->id)) {
       continue;
     }
     for (Bone &b : layer_find(doc, flat->id)->bones) {
