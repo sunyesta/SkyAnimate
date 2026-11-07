@@ -1650,6 +1650,8 @@ void drawing_dissolve_point(VectorDrawing &drawing, int point)
   std::erase_if(drawing.shapes, [](const Shape &shape) { return shape.edges.empty(); });
   drawing_remove_curves(drawing, remove_curve);
   drawing_remove_unused_points(drawing);
+  /* As Delete: the point leaves its groups, and a grid it was a node of is ordinary drawing from then on. */
+  drawing_groups_prune(drawing);
 }
 
 /* Schneider's fit of one cubic from `p0` to `p3`, its handles along `t1` (out of p0) and `t2` (out of

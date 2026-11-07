@@ -70,6 +70,25 @@ layer.select_points([nodes[0]])
 assert oanim.ops.mesh.delete() == {'FINISHED'}
 assert layer.grids == [] and layer.point_count == 11, (layer.grids, layer.point_count)
 
+# A node dissolved, as deleted: no grid any more (none left naming a point that is gone), and saving and opening the
+# file gives back just that.
+oanim.ops.layer.new()
+diss = layers.active
+assert diss.add_primitive("GRID", [(0.0, 0.0), (3.0, 3.0)], columns=3, rows=3)
+nodes = diss.grids[0][3]
+oanim.ops.mesh.select_none()
+diss.select_points([nodes[0], nodes[2], nodes[5], nodes[13]])
+assert oanim.ops.mesh.dissolve_points() == {'FINISHED'}
+assert diss.grids == [], diss.grids
+path = os.path.join(tempfile.mkdtemp(), "dissolved.oanim")
+assert oanim.ops.wm.save_copy(filepath=path) == {'FINISHED'}
+kept = (diss.id, diss.point_count, diss.curve_count)
+assert oanim.ops.wm.open_mainfile(filepath=path) == {'FINISHED'}
+diss = next(l for l in layers.all() if l.id == kept[0])
+assert diss.grids == [] and (diss.id, diss.point_count, diss.curve_count) == kept, (diss.grids, diss.point_count)
+layers.active = diss
+layer = diss
+
 # The Shape tool's Grid, its cells set by the operator.
 assert oanim.ops.wm.tool_shape(shape="GRID", columns="4", rows="2") == {'FINISHED'}
 
