@@ -8,6 +8,7 @@
 #include "anim/deform.hh"
 #include "data/document.hh"
 #include "data/vector.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -118,6 +119,7 @@ std::vector<OnionGhost> onion_ghosts(const Document &doc, const std::vector<uint
 std::vector<OnionWires> onion_wires(const Document &doc, const std::vector<uint64_t> &layers,
                                     const std::vector<OnionGhost> &ghosts)
 {
+  OANIM_PROFILE("onion_wires");
   std::vector<OnionWires> out;
   if (ghosts.empty() || layers.empty()) {
     return out;

@@ -17,6 +17,7 @@
 #include "data/camera.hh"
 #include "data/document.hh"
 #include "data/vector.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -576,6 +577,7 @@ static void path_shape_fill(const Document &doc, MotionPath &p);
 std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector<MotionPathTarget> &targets,
                                           int first, int last)
 {
+  OANIM_PROFILE("motion_paths_make");
   std::vector<MotionPath> paths;
   if (targets.empty() || last < first) {
     return paths;
@@ -1002,6 +1004,7 @@ void path_evaluate(Document &copy, const MotionPathTarget &t, int frame)
 /* Where `t` is on `frame` as its path is drawn (see path_evaluate); `doc` stays as it is. */
 bool path_position(const Document &doc, const MotionPathTarget &t, int frame, float2 &r_at)
 {
+  OANIM_PROFILE("path_position");
   Document copy = doc;
   path_evaluate(copy, t, frame);
   return target_position(copy, t, r_at);
@@ -1478,10 +1481,12 @@ template<typename T> int scale_stretches(Channel<T> &ch, int pivot, float factor
 }
 
 /* How `t` shows on `frame` as the value of its position channel there changes (as key_jacobian, for a frame with or
- * without a key): the channel is held at `value` on a copy and nudged. */
-bool value_jacobian(const Document &doc, const MotionPathTarget &t, int frame, float2 value, float2 &r_at, float2 &r_cx,
-                    float2 &r_cy)
+ * without a key): the channel is held at `value` on a copy and nudged. Without `r_cx` and `r_cy` only where it shows
+ * (a third of the work: on a rig each is a whole frame worked out). */
+bool value_jacobian(const Document &doc, const MotionPathTarget &t, int frame, float2 value, float2 &r_at, float2 *r_cx,
+                    float2 *r_cy)
 {
+  OANIM_PROFILE("value_jacobian");
   Document copy = doc;
   Channel<float2> *ch = handle_channel(copy, t);
   if (!ch || ch->keys.empty()) {
@@ -1494,16 +1499,19 @@ bool value_jacobian(const Document &doc, const MotionPathTarget &t, int frame, f
   held.path_handles = PathHandles::Auto;
   ch->keys = {held};
   copy.frame_current = frame;
-  const float h = 1e-2f;
-  float2 dx, dy;
   ch->keys[0].value = value;
   bool ok = path_position(copy, t, frame, r_at);
+  if (!r_cx || !r_cy) {
+    return ok;
+  }
+  const float h = 1e-2f;
+  float2 dx, dy;
   ch->keys[0].value = value + float2{h, 0.0f};
   ok = ok && path_position(copy, t, frame, dx);
   ch->keys[0].value = value + float2{0.0f, h};
   ok = ok && path_position(copy, t, frame, dy);
-  r_cx = (dx - r_at) / h;
-  r_cy = (dy - r_at) / h;
+  *r_cx = (dx - r_at) / h;
+  *r_cy = (dy - r_at) / h;
   return ok;
 }
 
@@ -1860,6 +1868,7 @@ int motion_path_speed_dab(Document &doc, const std::vector<MotionPathTarget> &ta
 
 bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame, float2 at, const PathSlide &slide)
 {
+  OANIM_PROFILE("motion_path_slide");
   Layer *layer = layer_find(doc, target.layer);
   if (!layer) {
     return false;
@@ -1904,7 +1913,7 @@ bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame,
     /* The mouse in the keys' own space, by how the target moves with the channel's value there. */
     const float2 value = ch->evaluate(frame);
     float2 shown, cx, cy;
-    if (!value_jacobian(doc, target, frame, value, shown, cx, cy)) {
+    if (!value_jacobian(doc, target, frame, value, shown, &cx, &cy)) {
       return false;
     }
     /* Least squares, damped: where the value hardly moves it one way (a pupil Look At holds against its eye's edge),
@@ -2987,6 +2996,7 @@ bool motion_path_handle_stub(const MotionPath &p, int frame, bool out, float2 &r
 bool motion_path_handles(const Document &doc, const MotionPathTarget &target, int frame, float2 &r_key, float2 &r_in,
                          float2 &r_out, PathHandles *r_mode)
 {
+  OANIM_PROFILE("motion_path_handles");
   const Channel<float2> *ch = handle_channel(const_cast<Document &>(doc), target);
   const Key<float2> *key = ch ? ch->key_at(frame) : nullptr;
   float2 cx, cy;
@@ -3050,6 +3060,7 @@ static int stretch_nearest_frame(const Channel<float2> &ch, size_t i, float2 v)
 
 std::vector<MotionPathControl> motion_path_controls(const Document &doc, const MotionPathTarget &target)
 {
+  OANIM_PROFILE("motion_path_controls");
   std::vector<MotionPathControl> out;
   const Channel<float2> *ch = handle_channel(const_cast<Document &>(doc), target);
   if (!ch) {
@@ -3063,9 +3074,9 @@ std::vector<MotionPathControl> motion_path_controls(const Document &doc, const M
       c.index = int(j);
       const float2 v = path_control_value(a.value, b.value, b.path_controls[j]);
       c.near_frame = stretch_nearest_frame(*ch, i, v);
-      float2 cx, cy, unused_x, unused_y;
-      if (!value_jacobian(doc, target, c.near_frame, v, c.at, cx, cy) ||
-          !value_jacobian(doc, target, c.near_frame, ch->evaluate(c.near_frame), c.curve, unused_x, unused_y))
+      float2 cx, cy;
+      if (!value_jacobian(doc, target, c.near_frame, v, c.at, &cx, &cy) ||
+          !value_jacobian(doc, target, c.near_frame, ch->evaluate(c.near_frame), c.curve, nullptr, nullptr))
       {
         continue;
       }
@@ -3132,7 +3143,7 @@ bool motion_path_control_set(Document &doc, const MotionPathTarget &target, int 
   const Key<float2> &a = *(b - 1);
   const float2 v = path_control_value(a.value, b->value, b->path_controls[size_t(index)]);
   float2 p, cx, cy;
-  if (!value_jacobian(doc, target, near_frame, v, p, cx, cy)) {
+  if (!value_jacobian(doc, target, near_frame, v, p, &cx, &cy)) {
     return false;
   }
   const float det = cx.x * cy.y - cx.y * cy.x;
@@ -3213,7 +3224,7 @@ bool motion_path_control_handle_set(Document &doc, const MotionPathTarget &targe
   const Key<float2> &a = ch->keys[i - 1], &b = ch->keys[i];
   const float2 v = path_control_value(a.value, b.value, b.path_controls[j]);
   float2 p, cx, cy;
-  if (!value_jacobian(doc, target, near_frame, v, p, cx, cy)) {
+  if (!value_jacobian(doc, target, near_frame, v, p, &cx, &cy)) {
     return false;
   }
   const float det = cx.x * cy.y - cx.y * cy.x;

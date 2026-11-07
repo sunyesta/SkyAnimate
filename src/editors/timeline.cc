@@ -34,6 +34,7 @@
 #include "wm/context.hh"
 #include "wm/file_drop.hh"
 #include "wm/keymap.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -4601,6 +4602,7 @@ static void timeline_body(Area &area, Context &C)
 
 void timeline_draw(Area &area, Context &C)
 {
+  OANIM_PROFILE("timeline_draw");
   timeline_header(area, C);
   timeline_body(area, C);
 }

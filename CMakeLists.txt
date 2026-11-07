@@ -44,6 +44,7 @@ set(OANIM_SOURCES
   src/core/crash.cc
   src/core/log.cc
   src/core/parallel.cc
+  src/core/profile.cc
   src/data/bones.cc
   src/data/camera.cc
   src/data/detail.cc
@@ -492,6 +493,8 @@ add_test(NAME path_timing_threes
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_path_timing_threes.py)
 add_test(NAME handles_align_keys
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_handles_align_keys.py)
+add_test(NAME profile
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_profile.py)
 add_test(NAME selected_stretch
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_selected_stretch.py)
 add_test(NAME motion_path_pick

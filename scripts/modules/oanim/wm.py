@@ -344,6 +344,32 @@ def motion_path_range():
     return _oanim.motion_path_range()
 
 
+def motion_path_controls():
+    """The control points the Motion Path tool draws on the paths shown: dicts with end (the key ending the stretch),
+    index, near_frame, at (where it is), curve (where the path is on near_frame), in_tip and out_tip."""
+    return _oanim.motion_path_controls()
+
+
+def profile_enable(on=True):
+    """Starts (or stops) timing where the UI's frames go, for profile(). Off when the app starts."""
+    _oanim.profile_enable(bool(on))
+
+
+def profile(frames=60):
+    """Where the UI's last `frames` frames went since profile_enable: [(section, mean ms per frame, slowest ms,
+    calls)], slowest first; "frame" is the whole frame. For finding what makes an edit slow."""
+    return _oanim.profile(int(frames))
+
+
+def profile_clear():
+    _oanim.profile_clear()
+
+
+def profile_frame_end():
+    """Closes a frame of the profile by hand (a background run draws none)."""
+    _oanim.profile_frame_end()
+
+
 def motion_path_snapshot():
     """The kept paths (lists of (x, y)) drawn faintly to compare against (anim.motion_path_snapshot)."""
     return _oanim.motion_path_snapshot()

@@ -9,6 +9,7 @@
 #include "anim/animation.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -910,6 +911,7 @@ std::map<uint64_t, Live> g_live;
 
 void dynamics_live_tick(Document &doc, double seconds, bool allowed)
 {
+  OANIM_PROFILE("dynamics_live_tick");
   const int frame = doc.frame_current;
   for (const Layer *flat : document_layers_flat(doc)) {
     if (!flat->is_bone_layer()) {
@@ -1018,6 +1020,7 @@ void dynamics_clear_cache()
 
 void dynamics_update(Document &doc)
 {
+  OANIM_PROFILE("dynamics_update");
   const int frame = doc.frame_current;
   for (const Layer *flat : document_layers_flat(doc)) {
     if (!flat->is_bone_layer()) {

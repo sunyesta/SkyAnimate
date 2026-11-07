@@ -32,6 +32,7 @@
 #include "data/bones.hh"
 #include "data/camera.hh"
 #include "data/document.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -966,6 +967,7 @@ std::pair<int, int> key_together_release(Document &doc, Layer &group)
 
 void animation_record(Document &doc)
 {
+  OANIM_PROFILE("animation_record");
   /* Switches linked by name: new same-named switches join, renames reach partners. */
   for (const std::string &text : switch_links_update(doc)) {
     report(ReportType::Info, text);
@@ -1277,6 +1279,7 @@ static void evaluate_frame(Document &doc, int frame, bool recorded);
 
 void animation_evaluate(Document &doc, int frame)
 {
+  OANIM_PROFILE("animation_evaluate");
   evaluate_frame(doc, frame, false);
 }
 
@@ -1307,7 +1310,10 @@ static bool posed_after_action_bones(const Document &doc)
 static void evaluate_frame(Document &doc, int frame, bool recorded)
 {
   std::unordered_set<const Layer *> action_bone_layers;
-  evaluate_layers(doc.layers, frame, recorded, recorded ? &action_bone_layers : nullptr);
+  {
+    OANIM_PROFILE("eval_layers");
+    evaluate_layers(doc.layers, frame, recorded, recorded ? &action_bone_layers : nullptr);
+  }
   if (frame == 0) {
     controllers_rest(doc);
   }
@@ -1317,7 +1323,10 @@ static void evaluate_frame(Document &doc, int frame, bool recorded)
   layer_for_each_channel(document_camera(doc), [&](auto &ch, auto &value) { evaluate(ch, value, frame); });
   doc.action_bones_applied = false;
   g_action_bone_layers = recorded ? &action_bone_layers : nullptr;
-  apply_action_bone_actions(doc, frame);
+  {
+    OANIM_PROFILE("eval_action_bones");
+    apply_action_bone_actions(doc, frame);
+  }
   g_action_bone_layers = nullptr;
   /* Drivers on top of keys and action bone actions, before references copy their originals. A driven
    * action bone plays its action bone action, and drivers reading what that moves see it. */
@@ -1326,11 +1335,15 @@ static void evaluate_frame(Document &doc, int frame, bool recorded)
     drivers_evaluate(doc);
   }
   /* References show their originals as they now are. */
-  references_build(doc);
+  {
+    OANIM_PROFILE("eval_references");
+    references_build(doc);
+  }
   /* Bone dynamics swing from the pose the keys and action bone actions give (and set each bone layer's
    * shown frame, for constraints' delays). */
   const int shown = doc.frame_current;
   doc.frame_current = frame;
+  OANIM_PROFILE("eval_after");
   bone_outer_parents_update(doc);
   dynamics_update(doc);
   /* Follow Point and Limit to Shape read what's drawn now, dynamics included. */
@@ -1471,6 +1484,7 @@ void animation_sync(Document &doc)
 
 void animation_sync_playing(Document &doc, uint64_t edits)
 {
+  OANIM_PROFILE("animation_sync_playing");
   if (doc.evaluated_frame == doc.frame_current) {
     animation_sync(doc);
     return;

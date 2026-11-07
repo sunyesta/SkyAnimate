@@ -26,6 +26,7 @@
 #include "ops/undo.hh"
 #include "wm/context.hh"
 #include "wm/keymap.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -1122,6 +1123,7 @@ static void layers_settings_button(Area &area)
 
 void layers_draw(Area &area, Context &C)
 {
+  OANIM_PROFILE("layers_draw");
   Document &doc = *C.document;
   ui_draw_order_pick_update(C);
   ui_mask_pick_update(C);

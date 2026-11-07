@@ -15,6 +15,7 @@
 #include "data/document.hh"
 #include "gpu/scene_renderer.hh"
 #include "media/media.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -111,6 +112,7 @@ void switch_thumbnails_hold(bool hold)
 
 unsigned int switch_thumbnail(Document &doc, const Layer &sw, const Layer &child, int size)
 {
+  OANIM_PROFILE("switch_thumbnail");
   Thumb &thumb = g_thumbs[child.id];
   if (thumb.drawn && g_hold) {
     return thumb.texture;

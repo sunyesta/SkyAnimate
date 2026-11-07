@@ -5,6 +5,7 @@
 #include "anim/animation.hh"
 #include "anim/controller.hh"
 #include "data/bones.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -23,6 +24,7 @@ uint64_t controller_document_generation()
 
 Document controller_posed_copy(const Document &doc, uint64_t armature, uint64_t bone, float2 at)
 {
+  OANIM_PROFILE("controller_posed_copy");
   controller_document_generation();
   Document copy = doc;
   if (copy.frame_current == 0) {

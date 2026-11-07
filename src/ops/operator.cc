@@ -14,6 +14,7 @@
 #include "ops/edit_ops.hh"
 #include "ops/undo.hh"
 #include "wm/context.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -243,6 +244,7 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
   }
   /* Copy: a Python operator may re-register operators while it runs. */
   const OperatorType ot = *found;
+  ProfileScope profile(ot.idname.c_str());
 
   /* The poll sees the arguments too: an operator told which layer to work on (layer=) can run whatever
    * layer is active. */

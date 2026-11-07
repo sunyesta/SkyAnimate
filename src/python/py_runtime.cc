@@ -69,6 +69,7 @@
 #include "editors/editors.hh"
 #include "editors/statistics.hh"
 #include "editors/timeline_path.hh"
+#include "core/profile.hh"
 
 namespace py = pybind11;
 
@@ -781,6 +782,38 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return area;
   });
+  /* Where the UI's last `frames` frames went (core/profile.hh): [(section, mean ms, slowest ms, calls)], slowest first. */
+  m.def("profile", [](int frames) {
+    py::list out;
+    for (const ProfileSection &p : profile_last(frames)) {
+      out.append(py::make_tuple(p.name, p.mean_ms, p.max_ms, p.calls));
+    }
+    return out;
+  });
+  m.def("profile_clear", []() { profile_clear(); });
+  /* The control points the Motion Path tool draws for the paths shown: where each is and where the path is on its
+   * nearest frame, and its handles' tips (document space). */
+  m.def("motion_path_controls", []() {
+    Context &C = current_context();
+    py::list out;
+    for (const MotionPathTarget &t : motion_path_targets(C)) {
+      for (const MotionPathControl &c : motion_path_controls(*C.document, t)) {
+        py::dict d;
+        d["end"] = c.end;
+        d["index"] = c.index;
+        d["near_frame"] = c.near_frame;
+        d["at"] = py::make_tuple(c.at.x, c.at.y);
+        d["curve"] = py::make_tuple(c.curve.x, c.curve.y);
+        d["in_tip"] = py::make_tuple(c.in_tip.x, c.in_tip.y);
+        d["out_tip"] = py::make_tuple(c.out_tip.x, c.out_tip.y);
+        out.append(d);
+      }
+    }
+    return out;
+  });
+  m.def("profile_enable", [](bool on) { profile_enable(on); });
+  /* Closes a "frame" of the profile by hand: a background run has no UI frames. */
+  m.def("profile_frame_end", []() { profile_frame_end(); });
   m.def("render_stats", []() {
     py::list out;
     for (const RenderStats &r : render_stats_take()) {

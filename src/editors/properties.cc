@@ -47,6 +47,7 @@
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "wm/context.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -10330,6 +10331,7 @@ std::vector<PropertiesTabEntry> properties_tabs(Document &doc)
 
 void properties_draw(Area &area, Context &C)
 {
+  OANIM_PROFILE("properties_draw");
   C.wm->mask_area_hover = {};
   C.wm->mask_tab_shown = false;
   /* A property shown from the timeline: its panel opens and its row flashes (see ui_flash_bind). */

@@ -74,6 +74,7 @@
 #include "wm/pen_input.hh"
 #include "wm/file_drop.hh"
 #include "wm/keymap.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -572,6 +573,7 @@ static bool points_overlay_shown(const ViewportOverlays &ov, const ToolSettings 
 /* The onion skins' ghosts: worked out again only when the document, the frame or the ghosts change. */
 static void draw_onion_skins(Context &C, const ViewMapping &view, ImDrawList *dl)
 {
+  OANIM_PROFILE("draw_onion_skins");
   const Document &doc = *C.document;
   const std::vector<uint64_t> layers = onion_layers(doc, editable_layers(C));
   const std::vector<OnionGhost> ghosts = onion_ghosts(doc, layers);
@@ -902,6 +904,7 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
                                    int hover_frame, int first, int last, const PathHandlesShown *hover_handle,
                                    bool hover_out, bool hovered, ImDrawList *dl)
 {
+  OANIM_PROFILE("motion_path_tool_input");
   Document &doc = *C.document;
   ImGuiIO &io = ImGui::GetIO();
   auto &g = g_path_drag;
@@ -2014,6 +2017,7 @@ std::vector<PathLinePiece> motion_path_line_pieces(const Document &doc, const Mo
  * take its clicks. */
 static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, ImDrawList *dl, bool hovered)
 {
+  OANIM_PROFILE("draw_motion_paths");
   const Document &doc = *C.document;
   WindowManager &wm = *C.wm;
   for (const std::vector<float2> &line : wm.path_snapshot) {
@@ -9451,6 +9455,7 @@ static void draw_controller(ImDrawList *dl, const Document &doc, const Layer &ar
 static void draw_bones(ImDrawList *dl, const Document &doc, const Layer &armature, const ViewMapping &view,
                        bool ghost = false, bool highlight_selected = false)
 {
+  OANIM_PROFILE("draw_bones");
   const std::vector<ScreenBone> sbs = screen_bones(doc, armature, view);
   /* Physics ghosts: pale outlines where bone dynamics have the bones, for those they move. */
   if (g_keyed_bones && !ghost && !armature.dynamics_now.empty()) {
@@ -16165,6 +16170,7 @@ static void viewport_draw_contents(Area &area, Context &C);
 
 void viewport_draw(Area &area, Context &C)
 {
+  OANIM_PROFILE("viewport_draw");
   /* The overlays are the project's: changing one (its popover, Shift Z, a script) is unsaved. */
   const ViewportOverlays before = C.document->overlays;
   /* A file opened with its own view: the viewport looks where it was left (none: frames the camera). */
@@ -16625,6 +16631,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     renderer->set_content(content);
     /* Hovering a spot in the Spots panel: the drawing posed there, from a copy (nothing in the document moves). */
     const Document *previewed = controller_preview_document(doc);
+    OANIM_PROFILE("viewport_render");
     rendered = renderer->render(previewed ? *previewed : doc, width_px, height_px, document_to_pixels, doc.viewport_quality,
                                 doc.viewport_samples);
     render_serials[area.id]++;
@@ -16692,6 +16699,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     const uint64_t drawn = render_serials[area.id];
     int w = 0, h = 0;
     if (rb.pending && renderer->read_pixels_take(rb.incoming, &w, &h)) {
+      OANIM_PROFILE("canvas_readback");
       rb.pending = false;
       const uint64_t hash = canvas_hash(rb.incoming, w, h, rb.incoming_to_pixels, doc.background);
       if (hash != rb.hash) {

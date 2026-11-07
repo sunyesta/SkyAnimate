@@ -8,6 +8,7 @@
 #include "core/parallel.hh"
 #include "assets/brush_presets.hh"
 #include "text/text_layer.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -153,6 +154,7 @@ static bool unchanged_since(Document &before, const Document &doc)
 
 void UndoStack::push(const std::string &name, Document &doc)
 {
+  OANIM_PROFILE("undo_push");
   /* A text changed has its letters made again, before the step holds them. */
   document_sync_text(doc);
   /* A linked shape's look changed changes its material, and the step holds every shape using it. */

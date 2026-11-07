@@ -16,6 +16,7 @@
 #include "data/document.hh"
 #include "gpu/scene_renderer.hh"
 #include "media/media.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -70,6 +71,7 @@ bool armature_bounds(const Document &doc, const Layer &armature, float2 *r_min, 
 unsigned int controller_spot_thumbnail(Document &doc, const Layer &armature, const Bone &knob, const ControllerSpot &spot,
                                        int size)
 {
+  OANIM_PROFILE("controller_spot_thumbnail");
   Thumb &thumb = g_thumbs[{armature.id, knob.id, spot.name}];
   const uint64_t generation = controller_document_generation();
   const uint64_t stamp = mix(mix(mix(mix(mix(generation, uint64_t(doc.frame_current)), uint64_t(size)), media_generation()),

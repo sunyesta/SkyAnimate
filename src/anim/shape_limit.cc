@@ -6,6 +6,7 @@
 #include "anim/follow_point.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -56,6 +57,7 @@ static std::vector<float2> convex_hull(std::vector<float2> p)
 
 void shape_limits_update(Document &doc)
 {
+  OANIM_PROFILE("shape_limits_update");
   for (const Layer *rig_c : document_layers_flat(doc)) {
     if (!rig_c->is_bone_layer()) {
       continue;

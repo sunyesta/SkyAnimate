@@ -616,6 +616,8 @@ PENDING = [
     ('src/data/vector.cc', '      new_in = -so / lo * li;', '      new_in = si;', 'Align on a later frame lines up the setup too', 'tests/test_handles_align_keys.py'),
     ('src/data/vector.cc', '          ch->actions[name] = *keys;', '          (void)keys;', "Align makes an action's keys agree", 'tests/test_handles_align_keys.py'),
     ('scripts/modules/oanim/wm.py', 'def motion_path_snapshot():', 'def motion_path_ghost(frame):\n    return []\n\n\ndef motion_path_snapshot():', 'hovering a path dot shows no ghost of the drawing', 'tests/test_motion_paths.py'),
+    ('src/anim/motion_path.cc', '  if (!r_cx || !r_cy) {\n    return ok;\n  }\n', '', "a control point's path place costs one frame worked out, not three", 'tests/test_profile.py'),
+    ('src/core/profile.cc', '  if (!g_on) {\n    return;\n  }\n  const long long t = now_ns();', '  const long long t = now_ns();', 'the profile times nothing until enabled', 'tests/test_profile.py'),
 ]
 
 def build():

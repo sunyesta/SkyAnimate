@@ -51,6 +51,7 @@
 #include "wm/file_drop.hh"
 #include "wm/keymap.hh"
 #include "wm/remote.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -367,7 +368,10 @@ void App::main_loop()
       handle_event(event);
     }
     /* Remote control's requests run here, between frames (screenshots after drawing). */
-    remote_process(ctx_);
+    {
+      OANIM_PROFILE("remote");
+      remote_process(ctx_);
+    }
     if (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) {
       SDL_Delay(10);
       continue;
@@ -396,7 +400,10 @@ void App::main_loop()
     {
       edits = (edits ^ v) * 0x100000001b3ull;
     }
-    animation_sync_playing(doc_, edits);
+    {
+      OANIM_PROFILE("main_sync");
+      animation_sync_playing(doc_, edits);
+    }
     revisions_check_frame(false);
     if (recording) {
       viewport_drag_follow_playback(dragged, doc_);
@@ -476,7 +483,10 @@ void App::main_loop()
     GImGui->ConfigNavEnableTabbing = ImGui::GetIO().WantTextInput && ctx_.area_type != "Viewport";
     ImGui::NewFrame();
     wm_.timeline_drop_areas.clear();
-    draw_ui();
+    {
+      OANIM_PROFILE("draw_ui");
+      draw_ui();
+    }
     revisions_check_frame(true);
     brush_window_draw(ctx_);
     ui_driver_window_draw(ctx_);
@@ -497,10 +507,17 @@ void App::main_loop()
     glViewport(0, 0, width, height);
     glClearColor(0.086f, 0.086f, 0.086f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    {
+      OANIM_PROFILE("imgui_gl");
+      ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    }
     ui_eyedropper_sample(height);
     remote_capture(width, height);
-    SDL_GL_SwapWindow(window_);
+    {
+      OANIM_PROFILE("swap");
+      SDL_GL_SwapWindow(window_);
+    }
+    profile_frame_end();
   }
 }
 

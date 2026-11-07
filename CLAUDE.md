@@ -33,6 +33,10 @@ The desktop and Start menu shortcuts run `tools/run_openanimate.ps1`, which star
 build from `build/run/<build time>/`, so rebuilding works while Open Animate is open (reopen it to
 get the new build). Run the build output directly only for tests.
 
+To find what makes an edit slow, time it: `oanim.wm.profile_enable(True)`, do the edit (in a private copy, or call
+`oanim.wm.profile_frame_end()` per step in a background run), then `oanim.wm.profile(frames)` lists the
+`OANIM_PROFILE("name")` sections (`src/core/profile.hh`) slowest first. Off by default; add sections where needed.
+
 Python is embedded from `C:/Python314` (`OANIM_PYTHON_ROOT`), isolated from PYTHONPATH and user
 site-packages. Scripts load from the source tree's `scripts/` while developing.
 

@@ -28,6 +28,7 @@
 #include "ops/operator.hh"
 #include "ops/undo.hh"
 #include "wm/context.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -224,6 +225,7 @@ void tile_menu(Context &C, Area &area, uint64_t sw_id, uint64_t child_id)
 
 void asset_shelf_draw(Area &area, Context &C)
 {
+  OANIM_PROFILE("asset_shelf_draw");
   Document &doc = *C.document;
   const ImGuiIO &io = ImGui::GetIO();
   area_editor_type_menu(area);

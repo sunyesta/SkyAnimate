@@ -11,6 +11,7 @@
 #include "anim/vector_deform.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
+#include "core/profile.hh"
 
 namespace oanim {
 
@@ -432,6 +433,7 @@ static void follower_gather(Document &doc, Follower &f)
 
 void follow_points_update(Document &doc)
 {
+  OANIM_PROFILE("follow_points_update");
   std::vector<Follower> all;
   for (const Layer *flat : document_layers_flat(doc)) {
     if (!flat->is_bone_layer()) {
