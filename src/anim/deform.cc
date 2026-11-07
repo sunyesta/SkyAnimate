@@ -1123,9 +1123,11 @@ void layer_points_settle(const Document &doc, Layer &layer, const std::vector<Po
         step = t.unskin.apply_vector(off);
       }
       float2 next = stored + step;
-      const float went = length(next - from[i]), most = t.moved * 12.0f;
+      const bool reach = t.has_from && t.reach > 0.0f;
+      const float2 origin = reach ? t.from : from[i];
+      const float went = length(next - origin), most = reach ? t.reach : t.moved * 12.0f;
       if (went > most && went > 0.0f) {
-        next = from[i] + (next - from[i]) * (most / went);
+        next = origin + (next - origin) * (most / went);
       }
       stored = next;
     }

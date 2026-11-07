@@ -94,6 +94,10 @@ struct PointTarget {
    * shows nearer the target. */
   float2 from;
   bool has_from = false;
+  /* With `from`: how far from it the point may be stored at most (0: a dozen times `moved` from where it is now). Where
+   * a deform squashes a place flat, any stored place across the squash shows about the same, and going far for a
+   * little nearer only sends the deforms past it far out. */
+  float reach = 0.0f;
 };
 /* A skin is right only around where a point was: a deform isn't straight, so a point sent far by its skin alone lands
  * off. This moves the points on until they show at their targets, as near as the deforms let them: each step damped

@@ -8,6 +8,7 @@
 #include "anim/animation.hh"
 #include "anim/controller.hh"
 #include "anim/deform.hh"
+#include "core/profile.hh"
 #include "data/bones.hh"
 #include "data/document.hh"
 
@@ -165,6 +166,7 @@ static bool same_skin(const Transform2D &a, const Transform2D &b)
 /* Where a layer's points (and handles) show now: through each point's skin. */
 static DrawingsShown::Layer layer_shown(const Document &doc, const Layer &layer)
 {
+  OANIM_PROFILE("keep_capture_layer");
   DrawingsShown::Layer st;
   st.id = layer.id;
   st.skins = layer_point_skins(doc, layer);
@@ -273,6 +275,53 @@ DrawingsShown drawings_shown_capture_frames(Document &doc, const std::vector<uin
   return out;
 }
 
+/* The square of the skin's larger stretch. */
+static float skin_stretch2(const Transform2D &skin)
+{
+  const float2 x = skin.apply_vector({1.0f, 0.0f}), y = skin.apply_vector({0.0f, 1.0f});
+  const float xx = dot(x, x), xy = dot(x, y), yy = dot(y, y);
+  return 0.5f * (xx + yy) + std::sqrt(0.25f * (xx - yy) * (xx - yy) + xy * xy);
+}
+
+/* The skin's larger stretch (never 0). */
+static float skin_stretch(const Transform2D &skin)
+{
+  return std::max(std::sqrt(skin_stretch2(skin)), 1e-6f);
+}
+
+/* Where a point (a handle: `vector`) stored at `now` goes for `skin` to show it at `want`. Where the skin squashes it
+ * nearly flat (an eye seen edge-on), the inverse would send it units away to make up a little across the squash: every
+ * frame between its keys would show it flying there and back, a Boolean or a deform past it would work that far out
+ * (for seconds a frame), and the skin, true only near where it was, says nothing of where it would show there. So it
+ * goes the whole way along each of the skin's directions but by at most three times as far as an unsquashed skin
+ * would need: exact wherever the skin squashes it less than threefold, as near as that allows where it squashes more. */
+static float2 kept_place(const Transform2D &skin, float2 now, float2 want, bool vector)
+{
+  const float2 x = skin.apply_vector({1.0f, 0.0f}), y = skin.apply_vector({0.0f, 1.0f});
+  const float2 off = want - (vector ? skin.apply_vector(now) : skin.apply(now));
+  /* AᵀA's eigenvalues (the squares of the skin's stretches) and directions. */
+  const float xx = dot(x, x), xy = dot(x, y), yy = dot(y, y);
+  const float big = skin_stretch2(skin);
+  if (!(big > 1e-12f) || length(off) < 1e-7f) {
+    return now;
+  }
+  const float small = std::max(0.0f, xx + yy - big);
+  const float2 v1 = std::fabs(xy) > 1e-6f * big ? normalize(float2(big - yy, xy)) :
+                    xx >= yy                    ? float2(1.0f, 0.0f) :
+                                                  float2(0.0f, 1.0f);
+  const float2 v2(-v1.y, v1.x);
+  const float most = 3.0f * length(off) / std::sqrt(big);
+  float2 move(0.0f, 0.0f);
+  for (const auto &[v, stretch2] : {std::pair{v1, big}, std::pair{v2, small}}) {
+    if (stretch2 <= 1e-12f * big) {
+      continue;
+    }
+    const float along = dot(x * v.x + y * v.y, off) / stretch2;
+    move += v * std::clamp(along, -most, most);
+  }
+  return now + move;
+}
+
 int drawings_shown_keep(Document &doc, const DrawingsShown &before)
 {
   if (before.empty()) {
@@ -292,16 +341,30 @@ int drawings_shown_keep(Document &doc, const DrawingsShown &before)
       if (!layer) {
         continue;
       }
+      OANIM_PROFILE("keep_layer");
       const std::vector<Transform2D> skins = layer_point_skins(doc, *layer);
       VectorDrawing &d = layer->drawing;
+      /* A deform's skin is right only around where a point was: such a point is settled on to where it showed, as
+       * near as the deform lets it, and never left showing farther off than where it was. */
+      std::vector<PointTarget> targets;
       for (size_t i = 0; i < d.points.size() && i < skins.size() && i < st.skins.size(); i++) {
         /* Points the change doesn't bend differently stay as they are. A detail point is bent by its own
          * bones too, so it is put back as any point is (recording takes its offsets from there). */
         if (same_skin(skins[i], st.skins[i]) || length(skins[i].apply(d.points[i].pos) - st.points[i]) < 1e-6f) {
           continue;
         }
-        d.points[i].pos = skins[i].inverted().apply(st.points[i]);
+        const float2 from = d.points[i].pos;
+        d.points[i].pos = kept_place(skins[i], from, st.points[i], false);
+        /* As far as kept_place lets it go. */
+        const float reach = std::max(length(d.points[i].pos - from),
+                                     3.0f * length(st.points[i] - skins[i].apply(from)) / skin_stretch(skins[i]));
+        targets.push_back(
+            {int(i), st.points[i], skins[i].inverted(), length(d.points[i].pos - from), from, true, reach});
         keyed++;
+      }
+      {
+        OANIM_PROFILE("keep_settle");
+        layer_points_settle(doc, *layer, targets);
       }
       size_t h = 0;
       for (Curve &curve : d.curves) {
@@ -312,9 +375,8 @@ int drawings_shown_keep(Document &doc, const DrawingsShown &before)
               (length(skins[pi].apply_vector(cp.handle_in) - st.handles[h].first) >= 1e-6f ||
                length(skins[pi].apply_vector(cp.handle_out) - st.handles[h].second) >= 1e-6f))
           {
-            const Transform2D undo = skins[pi].inverted();
-            cp.handle_in = undo.apply_vector(st.handles[h].first);
-            cp.handle_out = undo.apply_vector(st.handles[h].second);
+            cp.handle_in = kept_place(skins[pi], cp.handle_in, st.handles[h].first, true);
+            cp.handle_out = kept_place(skins[pi], cp.handle_out, st.handles[h].second, true);
           }
           h++;
         }
