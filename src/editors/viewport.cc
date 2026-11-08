@@ -406,6 +406,8 @@ static void weight_select_header(Context &C);
 static void transform_bones_header(Context &C);
 static void transform_points_header(Context &C);
 static void sculpt_header(Context &C);
+static float dyntopo_width(float h, float arrow_w);
+static void dyntopo_buttons(Context &C, float h, float arrow_w);
 static void draw_header(Context &C);
 static OpArgs weight_args();
 static OpArgs weight_automatic_args(Context &C, bool selected_bones);
@@ -5750,6 +5752,18 @@ static void tool_settings_draw(Area &area, Context &C, ImVec2 origin, float widt
   Document &doc = *C.document;
   ToolSettings &ts = C.wm->tool_settings;
   const float row = ImGui::GetFrameHeight() + 8.0f;
+  /* Settings shared by all of a tool's brushes, on a strip of their own at the row's right end, as Blender's tool
+   * header: the Sculpt tool's Dyntopo. The tool's own settings keep to the room left of it. */
+  const float h = ImGui::GetFrameHeight();
+  const float arrow_w = h * 0.75f;
+  const float shared_w = ts.tool == Tool::Sculpt ? dyntopo_width(h, arrow_w) + 16.0f : 0.0f;
+  const ImVec2 shared_at = origin + ImVec2(width - shared_w, 0.0f);
+  if (shared_w > 0.0f) {
+    width = std::max(width - shared_w - 6.0f, 0.0f);
+    ImGui::SetCursorScreenPos(shared_at);
+    ImGui::SetNextItemAllowOverlap();
+    ImGui::InvisibleButton("##tool_settings_shared", ImVec2(shared_w, row));
+  }
   /* Over the viewport's button, so a click between the settings doesn't reach the drawing under them. It has to
    * come before them, so it takes last frame's width. */
   if (area.tool_settings_width > 0.0f) {
@@ -5875,10 +5889,18 @@ static void tool_settings_draw(Area &area, Context &C, ImVec2 origin, float widt
   area.tool_settings_width = settings_w > 0.0f ? settings_w + 16.0f : 0.0f;
   area.tool_settings_scroll = std::clamp(area.tool_settings_scroll, 0.0f,
                                          std::max(area.tool_settings_width - width, 0.0f));
+  if (shared_w > 0.0f) {
+    ImGui::SetCursorScreenPos(shared_at + ImVec2(8.0f, 4.0f));
+    dyntopo_buttons(C, h, arrow_w);
+  }
   dl->ChannelsSetCurrent(0);
   if (area.tool_settings_width > 0.0f) {
     dl->AddRectFilled(origin, origin + ImVec2(std::min(area.tool_settings_width, width), row), COL_HEADER, 6.0f,
                       ImDrawFlags_RoundCornersBottomRight);
+  }
+  if (shared_w > 0.0f) {
+    dl->AddRectFilled(shared_at, shared_at + ImVec2(shared_w, row), COL_HEADER, 6.0f,
+                      ImDrawFlags_RoundCornersBottomLeft);
   }
   dl->ChannelsMerge();
 }
@@ -5934,8 +5956,8 @@ static bool draw_resolution_grid(ImDrawList *dl, const ViewMapping &view, Docume
   return true;
 }
 
-/* The Sculpt tool's Dyntopo, beside mirror as Blender's: the toggle, and its popover (Resolution, Refine Method,
- * Simplify). Off where it can't work on the active layer, saying why. */
+/* The Sculpt tool's Dyntopo, at the right end of the tool settings as Blender's: the toggle, and its popover
+ * (Resolution, Refine Method, Simplify). Off where it can't work on the active layer, saying why. */
 static float dyntopo_width(float h, float arrow_w)
 {
   return ImGui::CalcTextSize("Dyntopo").x + ImGui::GetStyle().FramePadding.x * 2.0f + h * 0.9f + 1.0f + arrow_w;
@@ -5994,7 +6016,8 @@ static void dyntopo_buttons(Context &C, float h, float arrow_w)
   const ImVec2 tip = menu_at + ImVec2(arrow_w * 0.5f, h * 0.5f);
   ImGui::GetWindowDrawList()->AddTriangleFilled(tip + ImVec2(-3.0f, -1.5f), tip + ImVec2(3.0f, -1.5f),
                                                 tip + ImVec2(0.0f, 2.0f), IM_COL32(0xe6, 0xe6, 0xe6, 255));
-  ImGui::SetNextWindowPos(ImVec2(menu_at.x, menu_at.y + h + 2.0f), ImGuiCond_Appearing);
+  /* At the viewport's right edge: the popover opens leftward from its arrow. */
+  ImGui::SetNextWindowPos(ImVec2(menu_at.x + arrow_w, menu_at.y + h + 2.0f), ImGuiCond_Appearing, ImVec2(1.0f, 0.0f));
   if (!ImGui::BeginPopup("##dyntopo_popover")) {
     return;
   }
@@ -6237,10 +6260,8 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
   const float axis_w = ImGui::CalcTextSize("X").x + style.FramePadding.x * 2.0f;
   const float mirror_w = h + 2.0f + axis_w * 2.0f + 1.0f + h * 0.6f;
   const float proportional_w = h + 1.0f + h + arrow_w * 0.6f + h * 0.6f;
-  const bool sculpting = ts.tool == Tool::Sculpt;
-  const float dyntopo_w = sculpting ? dyntopo_width(h, arrow_w) + h * 0.6f : 0.0f;
   ImGui::SameLine();
-  const float middle = origin.x + (width - mirror_w - dyntopo_w - snap_w - proportional_w) * 0.5f;
+  const float middle = origin.x + (width - mirror_w - snap_w - proportional_w) * 0.5f;
   if (ImGui::GetCursorScreenPos().x < middle) {
     ImGui::SetCursorScreenPos(ImVec2(middle, ImGui::GetCursorScreenPos().y));
   }
@@ -6272,10 +6293,6 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
   if (header_toggle("Y", ts.mirror_y, "Mirror Y\nEdits mirror across the layer's horizontal axis")) {
     ts.mirror_y = !ts.mirror_y;
     C.undo->mark_changed();
-  }
-  if (sculpting) {
-    ImGui::SameLine(0.0f, h * 0.6f);
-    dyntopo_buttons(C, h, arrow_w);
   }
   ImGui::SameLine(0.0f, h * 0.6f);
   if (header_toggle("Snap", ts.snap_grid || ts.snap_points, "Snapping options")) {
