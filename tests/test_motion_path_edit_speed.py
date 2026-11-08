@@ -147,6 +147,10 @@ assert key(eased, "position", 20)["interp"] == "CUSTOM" and key(eased, "position
 # Alt S starts it in the viewport (the keymap's), with something selected.
 assert ops.anim.motion_path_select(frame="15", layer=str(eased.id)) == {'FINISHED'}
 assert oanim.wm.event_simulate("S", alt=True, area="Viewport")
+# And over the timeline: the timing chart scales the timing around the ticks and keys picked.
+assert oanim.wm.event_simulate("S", alt=True, area="Timeline"), "Alt S over the timeline with a tick picked"
+assert ops.anim.motion_path_select(none="1") == {'FINISHED'}
+assert not oanim.wm.event_simulate("S", alt=True, area="Timeline"), "nothing picked: nothing to scale around"
 
 # --- A curve: the dot stays on it ---------------------------------------------------------------------------------
 curve = fresh_layer({10: (0.0, 0.0), 20: (1.0, 1.0), 30: (2.0, 0.0)})

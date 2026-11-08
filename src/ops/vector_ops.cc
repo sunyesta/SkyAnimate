@@ -1494,9 +1494,9 @@ void vector_operators_register()
       }
       const Layer *active = C.document ? document_active_layer(*C.document) : nullptr;
       /* A Media or text layer moves, turns and scales as a whole, and so does any layer with the
-       * Transform Layer tool. */
+       * Transform Layer tool or the Motion Path tool's Edit Layer. */
       if (active && (active->is_media() || active->is_text() ||
-                     (kind != 'E' && C.wm->tool_settings.tool == Tool::TransformLayer)))
+                     (kind != 'E' && C.wm->tool_settings.transforms_whole_layer())))
       {
         return !active->locked;
       }

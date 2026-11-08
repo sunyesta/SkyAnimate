@@ -1180,21 +1180,19 @@ static void motion_path_tool_input(Context &C, Area &area, const ViewMapping &vi
 
 static float adjust_reach(float &base_x, bool &slow, float &slow_x, float &slow_reach);
 
-/* Alt S with Edit: the timing around each dot and key selected scaled, the mouse going right spreading the dots out
- * (faster), left bringing them closer (slower); the mouse starts anywhere, so its distance from a dot couldn't say
- * which. Numbers typed set the factor, as Blender's S. */
+/* Alt S with Edit: the timing around each dot and key selected scaled, as Blender's S: by the mouse's distance from
+ * the selection (the middle of the dots and keys selected, on screen) over its distance there when pressed, further
+ * spreading the dots out (faster), nearer bringing them closer (slower). Numbers typed set the factor. */
 static struct {
   bool active = false;
   bool again = false;
   std::vector<std::pair<MotionPathTarget, int>> pivots;
-  float press_x = 0.0f;
+  ImVec2 pivot, press;
   float factor = 1.0f;
   NumInput num;
   PreciseMouse precise;
   Document snapshot;
 } g_path_scale;
-/* Screen pixels to the right for twice the spacing. */
-static constexpr float PATH_SCALE_PX = 150.0f;
 
 /* G R S on the selected keys: one key's handles turned or scaled about it (G moves it), several keys moved, turned or
  * scaled about their centre, their handles going with them. Numbers typed, Ctrl snapping, Shift finer, as Blender's
@@ -1256,7 +1254,12 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
       sc.active = true;
       sc.again = false;
       sc.pivots = std::move(pivots);
-      sc.press_x = io.MousePos.x;
+      ImVec2 c(0.0f, 0.0f);
+      for (const auto &[t, f] : sc.pivots) {
+        c = c + path_dot_screen(doc, view, paths, t, f);
+      }
+      sc.pivot = c * (1.0f / float(sc.pivots.size()));
+      sc.press = io.MousePos;
       sc.factor = 1.0f;
       sc.num = NumInput();
       sc.precise.reset(float2{io.MousePos.x, io.MousePos.y});
@@ -1326,7 +1329,8 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
     const bool confirm = modal_key_take(C, "RET", true) || modal_key_take(C, "KEYPAD_ENTER", true) ||
                          ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     const float2 m = sc.precise.update(float2{io.MousePos.x, io.MousePos.y}, io.KeyShift);
-    float f = std::pow(2.0f, (m.x - sc.press_x) / PATH_SCALE_PX);
+    const float press_r = std::max(std::hypot(sc.press.x - sc.pivot.x, sc.press.y - sc.pivot.y), 1.0f);
+    float f = std::hypot(m.x - sc.pivot.x, m.y - sc.pivot.y) / press_r;
     if (io.KeyCtrl) {
       f = std::round(f * 10.0f) / 10.0f;
     }
@@ -1367,8 +1371,7 @@ static bool motion_path_edit_modals(Context &C, const ViewMapping &view, ImDrawL
       }
       dl->AddCircle(path_dot_screen(doc, view, paths, t, pivot), 6.5f, IM_COL32(255, 160, 40, 255), 0, 2.0f);
     }
-    path_modal_overlay(dl, ImVec2(sc.press_x, io.MousePos.y), io.MousePos,
-                       "Scale Timing " + sc.num.shown(0, sc.factor, "%.2f") + "   (left: closer, right: further)");
+    path_modal_overlay(dl, sc.pivot, io.MousePos, "Scale Timing " + sc.num.shown(0, sc.factor, "%.2f"));
     if (confirm) {
       end(true);
     }
@@ -10389,8 +10392,9 @@ static bool layer_modal_start(Context &C, Area &area, char kind, float2 mouse_do
 {
   Document &doc = *C.document;
   Layer *layer = document_active_layer(doc);
-  /* With the Transform Layer tool, G, R and S are on the layer itself, whatever it holds. */
-  const bool whole = C.wm->tool_settings.tool == Tool::TransformLayer;
+  /* With the Transform Layer tool (or the Motion Path tool's Edit Layer), G, R and S are on the layer itself, whatever
+   * it holds. */
+  const bool whole = C.wm->tool_settings.transforms_whole_layer();
   if (!layer || !(whole || layer->is_media() || layer->is_text()) || layer->locked || kind == 'E') {
     return false;
   }
@@ -13360,7 +13364,7 @@ static SnapSelection snap_selection(Context &C)
     return SnapSelection::None;
   }
   Layer *active = document_active_layer(*C.document);
-  const bool whole = C.wm->tool_settings.tool == Tool::TransformLayer;
+  const bool whole = C.wm->tool_settings.transforms_whole_layer();
   if (active && active->is_bone_layer() && armature_any_picked(*active) && !whole) {
     return SnapSelection::Bones;
   }

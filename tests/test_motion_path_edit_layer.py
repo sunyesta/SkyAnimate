@@ -61,6 +61,17 @@ doc.frame_current = 15
 assert abs(ball.rotation - 0.5) < 1e-5, "kept there"
 
 # Kept in the tool settings: picking another brush leaves it on.
+# G R S and Snap work on the layer itself, as the Transform Layer tool's, never the points picked.
+ball.select_points([0])
+points_was = [tuple(p[:2]) for p in ball.points]
+loc_was = (ball.location_x, ball.location_y)
+wm.set_cursor((0.3, 0.4))
+assert ops.view.snap_selected_to_cursor() == {'FINISHED'}
+assert [tuple(p[:2]) for p in ball.points] == points_was, "on: Snap leaves the points as they were"
+assert (ball.location_x, ball.location_y) != loc_was, ("on: Snap moves the layer", loc_was)
+ops.ed.undo()
+ops.mesh.select_none()
+assert wm.event_simulate("G", area="Viewport"), "on: G moves the layer with no point picked"
 assert ops.anim.motion_path_brush_set(brush="GRAB") == {'FINISHED'}
 assert wm.path_brush_settings()["edit_layer"] is True
 assert ops.anim.motion_path_brush_set(brush="EDIT", edit_layer="0") == {'FINISHED'}

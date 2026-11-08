@@ -75,10 +75,38 @@ static struct {
   Document snapshot;
 } g_blend;
 
+/* Alt S: the timing around the ticks and keys picked scaled, as Alt S on the path, by the mouse's distance sideways
+ * from them (their middle, in the chart's time) over its distance there when pressed: further spreads the ticks out
+ * (faster), nearer brings them closer (slower). Live from the document as it was, then run as
+ * anim.motion_path_scale_spacing when kept, one undo step; the chart's own reach, sized with the wheel. */
+static struct {
+  bool active = false;
+  bool again = false;
+  std::vector<std::pair<MotionPathTarget, int>> pivots;
+  float pivot = 0.0f, press_x = 0.0f, factor = 1.0f;
+  NumInput num;
+  PreciseMouse precise;
+  Document snapshot;
+} g_chart_scale;
+
 bool timeline_path_strip_busy()
 {
-  /* Shift over the chart: the wheel sizes the blend. */
-  return g_tick.active || g_blend.active || ImGui::GetIO().KeyShift;
+  /* Shift over the chart: the wheel sizes the blend; Alt S's wheel sizes its reach. */
+  return g_tick.active || g_blend.active || g_chart_scale.active || ImGui::GetIO().KeyShift;
+}
+
+static bool modal_key_take(Context &C, const char *type);
+
+/* Where a tick (or a key) stands in the chart's time: a key on its frame, a dot where its progress puts it in its
+ * stretch. */
+static float chart_time(const Document &doc, const MotionPathTarget &t, int frame)
+{
+  for (const MotionPathStretch &s : motion_path_stretches(doc, t)) {
+    if (frame > s.start && frame < s.end) {
+      return float(s.start) + float(s.end - s.start) * s.progress[size_t(frame - s.start)];
+    }
+  }
+  return float(frame);
 }
 
 static OpArgs target_args(const Document &doc, const MotionPathTarget &t, int frame);
@@ -288,6 +316,7 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
   const std::vector<MotionPathTarget> targets = strip_targets(C);
   if (targets.empty() || max.y - min.y < 4.0f) {
     g_tick = {};
+    C.wm->path_chart_scale_request = false;
     return;
   }
   Document &doc = *C.document;
@@ -295,6 +324,8 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
   ToolSettings &ts = wm.tool_settings;
   const ImGuiIO &io = ImGui::GetIO();
   const bool edit = timeline_path_strip_ticks_editable(ts);
+  const bool scale_asked = wm.path_chart_scale_request;
+  wm.path_chart_scale_request = false;
   const float keys_w = std::max(max.x - keys_x, 8.0f);
   const auto x_of = [&](float frame) { return keys_x + (frame - view_start) / span * keys_w; };
   const auto frame_of = [&](float x) { return view_start + (x - keys_x) / keys_w * span; };
@@ -471,6 +502,93 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
     key_menu_open(key_hit->first, key_hit->second, "##path_key_menu_chart");
   }
   key_menu(C, "##path_key_menu_chart");
+
+  auto &sc = g_chart_scale;
+  if (scale_asked && !sc.active && !g_tick.active && !g_blend.active) {
+    std::vector<std::pair<MotionPathTarget, int>> pivots = wm.path_dots;
+    for (const auto &k : motion_path_selected_keys(doc, motion_path_targets(C))) {
+      pivots.push_back(k);
+    }
+    if (!pivots.empty()) {
+      float sum = 0.0f;
+      for (const auto &[t, f] : pivots) {
+        sum += chart_time(doc, t, f);
+      }
+      sc.active = true;
+      sc.again = false;
+      sc.pivot = sum / float(pivots.size());
+      sc.pivots = std::move(pivots);
+      sc.press_x = io.MousePos.x;
+      sc.factor = 1.0f;
+      sc.num = NumInput();
+      sc.precise.reset(float2{io.MousePos.x, io.MousePos.y});
+      sc.snapshot = doc;
+      wm.modal_running = true;
+      wm.modal_keys.clear();
+    }
+  }
+  if (sc.active) {
+    const auto end = [&](bool keep) {
+      doc = std::move(sc.snapshot);
+      wm.modal_running = false;
+      wm.modal_keys.clear();
+      const float factor = sc.factor;
+      sc = {};
+      if (keep) {
+        OpArgs args;
+        args["factor"] = std::to_string(factor);
+        args["size"] = std::to_string(ts.path_chart_size);
+        args["proportional"] = ts.path_chart_size > 0.0f ? "1" : "0";
+        operator_call(C, "anim.motion_path_scale_spacing", args);
+      }
+    };
+    if (modal_key_take(C, "ESC") || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+      end(false);
+      return;
+    }
+    const bool typed = num_input_keys(C, sc.num, 1);
+    const bool confirm = modal_key_take(C, "RET") || modal_key_take(C, "KEYPAD_ENTER") ||
+                         ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    const float2 m = sc.precise.update(float2{io.MousePos.x, io.MousePos.y}, io.KeyShift);
+    const float pivot_x = x_of(sc.pivot);
+    float f = std::fabs(m.x - pivot_x) / std::max(std::fabs(sc.press_x - pivot_x), 1.0f);
+    if (io.KeyCtrl) {
+      f = std::round(f * 10.0f) / 10.0f;
+    }
+    if (sc.num.any()) {
+      f = sc.num.value(0, 1.0f);
+    }
+    f = std::max(f, 0.0f);
+    sc.again |= reach_wheel(ts.path_chart_size);
+    if (f != sc.factor || typed || sc.again) {
+      sc.factor = f;
+      sc.again = false;
+      doc = sc.snapshot;
+      /* As anim.motion_path_scale_spacing will, when kept. */
+      PathSlide slide = reach_slide(ts, ts.path_chart_size);
+      slide.keep_order = true;
+      for (const auto &[t, fr] : sc.pivots) {
+        motion_path_scale_spacing(doc, t, fr, f, slide);
+      }
+      C.undo->mark_changed();
+    }
+    /* Its centre, a line down the chart, and a dashed line out to the mouse with the factor by it. */
+    dl->PushClipRect(min, max, true);
+    dl->AddLine(ImVec2(pivot_x, min.y), ImVec2(pivot_x, max.y), IM_COL32(255, 160, 40, 255), 1.5f);
+    const float y = io.MousePos.y;
+    const float a = std::min(pivot_x, io.MousePos.x), b = std::max(pivot_x, io.MousePos.x);
+    for (float x = a; x < b; x += 12.0f) {
+      dl->AddLine(ImVec2(x, y), ImVec2(std::min(x + 6.0f, b), y), IM_COL32(255, 255, 255, 200), 1.5f);
+    }
+    dl->PopClipRect();
+    const std::string text = "Scale Timing " + sc.num.shown(0, sc.factor, "%.2f");
+    ImGui::GetForegroundDrawList()->AddText(ImVec2(io.MousePos.x + 14.0f, io.MousePos.y + 8.0f),
+                                            IM_COL32(255, 255, 255, 255), text.c_str());
+    if (confirm) {
+      end(true);
+    }
+    return;
+  }
   if (stroke) {
     blend_update(C, frame_of(io.MousePos.x));
     return;

@@ -36,7 +36,14 @@ CMAKE = (r"C:/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/Common7/
 EXE = os.path.join("build", "bin", "RelWithDebInfo", "OpenAnimate.exe")
 
 # (file, old, new, name, test)
-PENDING = []
+PENDING = [
+    ('src/wm/context.hh', 'return tool == Tool::TransformLayer || (tool == Tool::MotionPath && path_edit_layer);',
+     'return tool == Tool::TransformLayer || (false && path_edit_layer);',
+     'with the Motion Path tool\'s Edit Layer, G R S and Snap move the layer, not its points', 'motion_path_edit_layer'),
+    ('scripts/startup/oanim_keymap_default.py',
+     '    ("Timeline", "anim.timeline_scale_spacing_modal", "S", {"alt": True}),\n', '',
+     'Alt S over the timeline scales the timing around the ticks and keys picked', 'motion_path_edit_speed'),
+]
 
 def build(root):
     return subprocess.run([CMAKE, "--build", "--preset", "release"], cwd=root, capture_output=True,

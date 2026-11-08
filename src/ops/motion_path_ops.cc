@@ -2364,6 +2364,23 @@ void motion_path_operators_register()
     };
     operators().add(std::move(ot));
   }
+  {
+    OperatorType ot;
+    ot.idname = "anim.timeline_scale_spacing_modal";
+    ot.name = "Scale Path Spacing";
+    ot.description = "Alt S over the timeline: scale the timing around the ticks and keys picked in the timing chart "
+                     "with the mouse (further from them faster, nearer slower; numbers typed; Ctrl snaps to 0.1, Shift "
+                     "is finer, the wheel sizes the reach; click or Enter keeps it, Esc or a right click cancels)";
+    ot.flag = 0;
+    ot.poll = [](Context &C) {
+      return C.document && C.wm && C.document->motion_paths && !path_selection(C).empty();
+    };
+    ot.exec = [](Context &C) {
+      C.wm->path_chart_scale_request = true;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
   for (const char kind : {'G', 'R', 'S'}) {
     OperatorType ot;
     ot.idname = kind == 'G' ? "anim.motion_path_keys_grab" : kind == 'R' ? "anim.motion_path_keys_rotate"

@@ -138,6 +138,7 @@ KEYMAP = (
     # Timeline: keys, as in Blender's.
     ("Timeline", "anim.keys_transform_move", "G", {}),
     ("Timeline", "anim.keys_transform_scale", "S", {}),
+    ("Timeline", "anim.timeline_scale_spacing_modal", "S", {"alt": True}),
     # Cascadeur's: a frame more or fewer in the stretch under the playhead.
     ("Timeline", "anim.span_frame_insert", "EQUAL", {}),
     ("Timeline", "anim.span_frame_insert", "NUMPAD_PLUS", {}),

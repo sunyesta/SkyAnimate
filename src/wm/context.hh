@@ -221,6 +221,12 @@ struct ToolSettings {
    * point picked, the timeline's teal on its transform rows); off, its bones and points (the teal never on its
    * position). */
   bool path_edit_layer = false;
+  /* G R S and Snap work on the active layer as a whole: with the Transform Layer tool, and with the Motion Path tool's
+   * Edit Layer (its paths are the layer's own, so its keys' G R S are too). */
+  bool transforms_whole_layer() const
+  {
+    return tool == Tool::TransformLayer || (tool == Tool::MotionPath && path_edit_layer);
+  }
   /* The timing chart's and the Path Timing graph's own reach (frames either side of a dragged dot that follow it,
    * proportional editing being always on there; 0 the dot alone), sized with the wheel while dragging. */
   float path_chart_size = 3.0f;
@@ -527,6 +533,8 @@ struct WindowManager {
   char path_graph_transform_request = 0;
   bool path_graph_resize_request = false;
   bool path_scale_request = false;
+  /* Alt S over the timeline: the timing chart scales the timing around the ticks and keys picked. */
+  bool path_chart_scale_request = false;
   char path_keys_request = 0;
   char path_adjust_request = 0;
   /* The same for the Draw tool: the line's width ('R') or opacity ('S'). */
