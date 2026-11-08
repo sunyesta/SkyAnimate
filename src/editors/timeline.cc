@@ -3327,6 +3327,8 @@ static void timeline_body(Area &area, Context &C)
   /* The Motion Path tool's timing chart takes the bottom (at most half), its clicks its own. */
   const float strip_h = std::min(timeline_path_strip_height(C, ImGui::GetFrameHeight()), avail.y * 0.5f);
   /* The sidebar (N) takes the right. */
+  /* The graph sets it again while the mouse is over it. */
+  C.wm->path_graph_hovered = false;
   const float sidebar_w = timeline_sidebar_width(C, avail.x);
   const ImVec2 size(avail.x - sidebar_w, avail.y - strip_h);
   const ImVec2 p1 = p0 + size;

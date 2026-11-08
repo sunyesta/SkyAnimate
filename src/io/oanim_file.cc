@@ -200,12 +200,14 @@ template<typename T> static json keys_to_json(const Channel<T> &ch)
     if (k.color != 0) {
       key["color"] = k.color;
     }
-    if (!k.speeds.empty()) {
-      json speeds = json::array();
-      for (const float s : k.speeds) {
-        speeds.push_back(num(s));
+    if (!k.timing.empty()) {
+      /* Each point as [x, y, in x, in y, out x, out y, aligned]. */
+      json timing = json::array();
+      for (const TimingPoint &p : k.timing.points) {
+        timing.push_back(json::array({num(p.co.x), num(p.co.y), num(p.in.x), num(p.in.y), num(p.out.x), num(p.out.y),
+                                      p.aligned ? 1 : 0}));
       }
-      key["speeds"] = std::move(speeds);
+      key["timing"] = std::move(timing);
     }
     if constexpr (std::is_same_v<T, float2>) {
       /* Path handles (the Motion Path tool's), once dragged. */
@@ -1782,10 +1784,28 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
     key.cycle_absolute = get_bool(k, "cycle_absolute", false);
     key.cycle_frame = std::max(0, get_int(k, "cycle_frame", 0));
     key.color = get_int(k, "color", 0);
-    for (const json &s : get_array(k, "speeds")) {
-      if (s.is_number()) {
-        key.speeds.push_back(s.get<float>());
+    for (const json &p : get_array(k, "timing")) {
+      if (p.is_array() && p.size() >= 6 && std::all_of(p.begin(), p.begin() + 6, [](const json &v) { return v.is_number(); })) {
+        TimingPoint tp;
+        tp.co = {p[0].get<float>(), p[1].get<float>()};
+        tp.in = {p[2].get<float>(), p[3].get<float>()};
+        tp.out = {p[4].get<float>(), p[5].get<float>()};
+        tp.aligned = p.size() < 7 || !p[6].is_number() || p[6].get<float>() != 0.0f;
+        key.timing.points.push_back(tp);
       }
+    }
+    if (!timing_valid(key.timing)) {
+      key.timing = {};
+    }
+    if (const json &speeds = get_array(k, "speeds"); !speeds.empty() && key.timing.empty()) {
+      /* Before format 7: a speed for each frame, kept now as the fewest curve points that time them alike. */
+      std::vector<float> s;
+      for (const json &v : speeds) {
+        if (v.is_number()) {
+          s.push_back(v.get<float>());
+        }
+      }
+      key.timing = timing_from_speeds(s);
     }
     if constexpr (std::is_same_v<T, float2>) {
       const auto in = k.find("path_in"), out = k.find("path_out");

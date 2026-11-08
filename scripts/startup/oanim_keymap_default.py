@@ -185,6 +185,10 @@ KEYMAP = (
     ("Sculpt", "sculpt.radius_adjust", "F", {}),
     ("Sculpt", "sculpt.strength_adjust", "F", {"shift": True}),
     ("Sculpt", "sculpt.resolution_adjust", "R", {}),
+    # The Path Timing graph (the timeline's sidebar), under the mouse: X deletes its picked point, F sizes its brush.
+    ("Path Timing Graph", "anim.timing_point_delete", "X", {}),
+    ("Path Timing Graph", "anim.timing_point_delete", "DEL", {}),
+    ("Path Timing Graph", "anim.timing_radius_adjust", "F", {}),
     ("Motion Path", "anim.motion_path_radius_adjust", "F", {}),
     ("Motion Path", "anim.motion_path_strength_adjust", "F", {"shift": True}),
     # The Edit brush: G R S on the selected keys, Alt S the timing around the selection, V handle types, X delete.

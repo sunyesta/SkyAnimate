@@ -1,0 +1,85 @@
+#pragma once
+
+/* A Custom stretch's timing as a curve (the Path Timing graph's): how far along (y: 0 at the stretch's start, 1 at its
+ * key, past either for an overshoot or a backing up) against time through the stretch (x: 0 at its start, 1 at its key,
+ * so the curve stretches with the stretch when its keys move). Bezier points with handles, as a drawing's: each handle
+ * an offset from its point, the two in line while `aligned` (moving one turns the other). It is always a function of
+ * time: no segment's handles reach past its other end, and the curve goes left to right.
+ *
+ * Kept with as few points as hold every frame's dot where it was: whatever made the timing (a brush, a dot slid, a
+ * shape) gives a progress for each frame, and timing_fit makes the fewest points that put every frame within
+ * TIMING_TOLERANCE of it (Dyntopo's Decimate, for timing). Points placed by hand in the graph stay as placed. */
+
+#include <string>
+#include <vector>
+
+#include "core/math.hh"
+
+namespace oanim {
+
+struct TimingPoint {
+  float2 co{};
+  float2 in{}, out{};
+  bool aligned = true;
+  bool operator==(const TimingPoint &) const = default;
+};
+
+struct TimingCurve {
+  /* In order left to right, the first at (0, 0) and the last at (1, 1). None: even (a straight line). */
+  std::vector<TimingPoint> points;
+  bool empty() const { return points.size() < 2; }
+  bool operator==(const TimingCurve &) const = default;
+};
+
+/* How far a frame's dot may be from where the timing put it, as a share of the stretch's way: under half a pixel on a
+ * path 2000 pixels long. */
+inline constexpr float TIMING_TOLERANCE = 0.0002f;
+
+/* How far along the curve is `t` (0-1) of the way through the stretch's time; an empty curve goes evenly. */
+float timing_progress(const TimingCurve &curve, float t);
+/* Its progress at each of a stretch's `n` + 1 frames (0 to n). */
+std::vector<float> timing_frame_progress(const TimingCurve &curve, int n);
+/* Its speed on each of `n` frames: each frame's step along, as a share of the even step (they average 1). */
+std::vector<float> timing_speeds(const TimingCurve &curve, int n);
+
+/* As few points as put each of the `progress` (one a frame, 0 to n; the first 0 and the last 1) within
+ * `tolerance` of it, each with smooth handles a third of the way to its neighbours. Even progress: an empty curve. */
+TimingCurve timing_fit(const std::vector<float> &progress, float tolerance = TIMING_TOLERANCE);
+/* timing_fit of per-frame speeds (any scale, signed: only how they compare counts). Speeds that add up to nothing go
+ * evenly. */
+TimingCurve timing_from_speeds(const std::vector<float> &speeds);
+/* A curve as a file or a script may give it: at least two points, all finite, going left to right from (0, 0) to
+ * (1, 1). */
+bool timing_valid(const TimingCurve &curve);
+/* A straight curve with its two end points, for editing an even stretch. */
+TimingCurve timing_even();
+
+/* Point `i`'s handles as the curve uses them: each reaching at most across its segment, the two of a segment at most
+ * that far together (both shortened alike, as Blender's F-curve handles), so the curve stays a function of time. */
+void timing_point_handles(const TimingCurve &curve, size_t i, float2 &r_in, float2 &r_out);
+/* A point put on the curve at time `x` (0-1, strictly inside), the segment split so its shape stays. Its index, or -1
+ * on an empty curve or an `x` at a point already. */
+int timing_point_insert(TimingCurve &curve, float x);
+/* Moves point `i` to `co`, kept between its neighbours in time; its handles come with it. The ends never move (their
+ * time and progress are the keys'). */
+void timing_point_move(TimingCurve &curve, size_t i, float2 co);
+/* Sets point `i`'s handle (`out` or in) to offset `h`, as a drawing's handle is dragged: an aligned point's other handle
+ * turns to stay in line, keeping its length, unless `free` (Alt), which moves this one alone. */
+void timing_handle_set(TimingCurve &curve, size_t i, bool out, float2 h, bool free);
+/* Takes out point `i` (never an end); the curve fitted again over the frames it spanned would be another edit. */
+bool timing_point_remove(TimingCurve &curve, size_t i);
+
+/* Grab and Smooth, the Path Timing graph's Sculpt mode, on a stretch of `n` frames: the curve sampled finely (four
+ * places a frame), each stroke place `path` (x in frames from the stretch's start, y the way along) moving the samples
+ * within `radius` frames of where the brush is (Grab: those within reach of its first place, by the mouse's move;
+ * Smooth: toward their neighbours), `aspect` frames to a whole way along (how the graph shows them, so the brush is a
+ * circle there), `strength` how much, `lock_x` none moving in time. The result fitted again (timing_fit). */
+enum class TimingBrush { Grab, Smooth };
+TimingCurve timing_sculpt(const TimingCurve &curve, int n, TimingBrush brush, const std::vector<float2> &path,
+                          float radius, float strength, float aspect, bool lock_x);
+/* A stroke's places as anim.timing_sculpt takes them, "frame,along;frame,along": parsed with `start` taken off each
+ * frame (so from the stretch's start), and written. */
+std::vector<float2> timing_stroke_parse(const std::string &text, float start);
+std::string timing_stroke_string(const std::vector<float2> &path);
+
+}  // namespace oanim

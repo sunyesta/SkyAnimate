@@ -57,6 +57,10 @@ bool wm_handle_key_event(Context &C, const KeyEvent &event, bool area_only)
   if (C.area_type == "Viewport" && C.wm->tool_settings.tool == Tool::Draw && try_keymap(C, "Draw", event)) {
     return true;
   }
+  /* Over the Path Timing graph its own (X deletes its picked point, F sizes its brush) before the timeline's. */
+  if (C.area_type == "Timeline" && C.wm->path_graph_hovered && try_keymap(C, "Path Timing Graph", event)) {
+    return true;
+  }
   if (C.area_type != "Window" && try_keymap(C, C.area_type, event)) {
     return true;
   }

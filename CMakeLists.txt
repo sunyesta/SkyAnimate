@@ -33,6 +33,7 @@ set(OANIM_SOURCES
   src/anim/layer_pick.cc
   src/anim/dynamics.cc
   src/anim/sculpt.cc
+  src/anim/timing_curve.cc
   src/anim/onion.cc
   src/anim/motion_path.cc
   src/anim/reference.cc
@@ -447,6 +448,8 @@ add_test(NAME sculpt
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_sculpt.py)
 add_test(NAME decimate_curve
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_decimate_curve.py)
+add_test(NAME timing_curve
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timing_curve.py)
 add_test(NAME sculpt_dyntopo
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_sculpt_dyntopo.py)
 add_test(NAME sculpt_collapse

@@ -506,7 +506,7 @@ struct KeyTiming {
         noise_frequency = 0.0f;
   int cycle_back = 0, cycle_frame = 0;
   bool cycle_absolute = false;
-  std::vector<float> speeds;
+  TimingCurve timing;
   BezierHandles bezier = BEZIER_DEFAULT;
   bool operator==(const KeyTiming &) const = default;
 };
@@ -515,7 +515,7 @@ template<typename T> static KeyTiming key_timing(const Key<T> &k)
 {
   return {k.interp,         k.type,           k.hold,            k.interval,      k.ease,
           k.overshoot,      k.elastic_amplitude, k.elastic_period, k.noise_amplitude, k.noise_frequency,
-          k.cycle_back,     k.cycle_frame,    k.cycle_absolute,  k.speeds,          k.bezier};
+          k.cycle_back,     k.cycle_frame,    k.cycle_absolute,  k.timing,          k.bezier};
 }
 
 template<typename T> static void key_timing_set(Key<T> &k, const KeyTiming &t)
@@ -533,7 +533,7 @@ template<typename T> static void key_timing_set(Key<T> &k, const KeyTiming &t)
   k.cycle_back = t.cycle_back;
   k.cycle_frame = t.cycle_frame;
   k.cycle_absolute = t.cycle_absolute;
-  k.speeds = t.speeds;
+  k.timing = t.timing;
   k.bezier = t.bezier;
 }
 
@@ -560,7 +560,11 @@ template<typename T> static uint32_t key_sig(const Key<T> &k, bool with_value)
   h = sig_add(h, ints, sizeof(ints));
   h = sig_add(h, floats, sizeof(floats));
   h = sig_add(h, k.bezier.data(), sizeof(k.bezier));
-  return k.speeds.empty() ? h : sig_add(h, k.speeds.data(), k.speeds.size() * sizeof(float));
+  for (const TimingPoint &p : k.timing.points) {
+    const float v[] = {p.co.x, p.co.y, p.in.x, p.in.y, p.out.x, p.out.y, p.aligned ? 1.0f : 0.0f};
+    h = sig_add(h, v, sizeof(v));
+  }
+  return h;
 }
 
 /* Filler keys edited since they were added (their value or timing, or the timing of the stretch after them while the

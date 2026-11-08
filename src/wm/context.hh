@@ -9,6 +9,7 @@
 
 #include "anim/path_brush.hh"
 #include "anim/sculpt.hh"
+#include "anim/timing_curve.hh"
 #include "core/math.hh"
 #include "data/annotations.hh"
 #include "data/document.hh"
@@ -228,6 +229,14 @@ struct ToolSettings {
   float path_blend_smoothing = 0.5f;
   int path_blend_repeat = 1;
   float path_blend_radius = 3.0f;
+  /* The Path Timing graph's mode: Edit (its curve's points and handles) or Sculpt (Grab and Smooth on the curve). */
+  bool path_graph_sculpt = false;
+  TimingBrush path_timing_brush = TimingBrush::Grab;
+  /* Each of its brushes' (Grab, Smooth) radius in frames and strength. */
+  float path_timing_radius[2] = {2.0f, 2.0f};
+  float path_timing_strength[2] = {1.0f, 0.5f};
+  /* Lock X: the brushes move the curve up and down only, never in time. */
+  bool path_timing_lock_x = false;
 };
 
 /* A key press during a modal transform, by Blender event name ("E", "RET", "ESC"). */
@@ -498,6 +507,14 @@ struct WindowManager {
   int path_timing_frame = 0;
   /* The timeline's sidebar (N), with its Path Timing tab. */
   bool timeline_sidebar = false;
+  /* The Path Timing graph: the mouse over it (the timeline clears it each redraw, the graph sets it), so its keys come
+   * before the timeline's; its Edit mode's picked curve point (-1: none), of the stretch ending on
+   * `path_timing_point_end` of `path_timing_point_target`; F's request to size its Sculpt brush. */
+  bool path_graph_hovered = false;
+  MotionPathTarget path_timing_point_target;
+  int path_timing_point_end = 0;
+  int path_timing_point = -1;
+  bool path_graph_resize_request = false;
   bool path_scale_request = false;
   char path_keys_request = 0;
   char path_adjust_request = 0;

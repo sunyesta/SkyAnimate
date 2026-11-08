@@ -21,8 +21,9 @@ namespace oanim {
  * Angle and Length, the change from the setup pose. 4: a key's interpolation is for the stretch
  * arriving at it (before, the stretch after it). 5: a Cage Deform's cage_method "ENVELOPE" is the Envelope
  * method (before, it was Outline's old name). 6: a path control point (Key::path_controls) and its handles are stored where
- * they are (before, relative to their stretch's keys, so they rode with them). */
-inline constexpr int OANIM_FILE_VERSION = 6;
+ * they are (before, relative to their stretch's keys, so they rode with them). 7: a Custom key's timing is a curve
+ * ("timing": its points; before, "speeds", one a frame, read as the curve they make). */
+inline constexpr int OANIM_FILE_VERSION = 7;
 
 /* Writes through a temporary file and renames it into place, so a failed save never damages
  * the existing file. Returns false and sets r_error on failure. */

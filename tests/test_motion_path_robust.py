@@ -131,9 +131,10 @@ assert close(shown(box, 10), played(box, 10, 20, 0.0, 1.0)), "as it was painted,
 ops.anim.keys_deselect_all()
 assert ops.anim.keys_select(frame_start="20", layers=str(box.id)) == {'FINISHED'}
 assert ops.anim.keys_offset(frames="-4") == {'FINISHED'}
-assert key(box, 16)["interp"] == 'CUSTOM' and len(key(box, 16)["speeds"]) == 10, "its 10 speeds kept for 6 frames"
+# Its timing is a curve through the stretch's time, so it stretches with the stretch: Ease In over 6 frames.
+assert key(box, 16)["interp"] == 'CUSTOM' and len(key(box, 16)["speeds"]) == 6, "its curve played over 6 frames"
 plays = played(box, 10, 16, 0.0, 1.0)
-assert close(plays, [0.0, 0.03, 0.1133, 0.25, 0.4467, 0.6967, 1.0]), ("the 10 speeds played over 6 frames", plays)
+assert close(plays, [(f / 6) ** 2 for f in range(7)]), ("the Ease In curve played over 6 frames", plays)
 assert close(shown(box, 10), plays), ("the timing shown is how it plays now", shown(box, 10), plays)
 assert ops.anim.motion_path_timing_blend(frame="13", smoothing="0", repeat="1", radius="0", **args) == {'FINISHED'}
 assert close(played(box, 10, 16, 0.0, 1.0), plays), ("blending with no smoothing leaves every dot where it was",
@@ -146,7 +147,7 @@ assert ops.anim.motion_path_stretch_shape(shape="EASE_IN", frame="15", layer=str
 doc.frame_current = 15
 assert ops.anim.span_frames_add(amount="-3") == {'FINISHED'}
 end = [k for k in ball.keyframes("position") if k["frame"] > 10][0]
-assert end["frame"] == 17 and len(end["speeds"]) == 10, (end["frame"], len(end["speeds"]))
+assert end["frame"] == 17 and len(end["speeds"]) == 7, (end["frame"], len(end["speeds"]))
 plays = played(ball, 10, 17, 0.0, 1.0)
 assert close(shown(ball, 10), plays), ("after -, the timing shown is how it plays", shown(ball, 10), plays)
 

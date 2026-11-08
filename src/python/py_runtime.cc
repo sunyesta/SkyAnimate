@@ -1887,6 +1887,12 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["chart_size"] = ts.path_chart_size;
     d["graph_size"] = ts.path_graph_size;
     d["blend"] = py::make_tuple(ts.path_blend_smoothing, ts.path_blend_repeat, ts.path_blend_radius);
+    /* The Path Timing graph's mode and its brushes' (radius in frames, strength). */
+    d["graph_mode"] = ts.path_graph_sculpt ? "SCULPT" : "EDIT";
+    d["timing_brush"] = ts.path_timing_brush == TimingBrush::Grab ? "GRAB" : "SMOOTH";
+    d["timing_brushes"] = py::dict(py::arg("GRAB") = py::make_tuple(ts.path_timing_radius[0], ts.path_timing_strength[0]),
+                                   py::arg("SMOOTH") = py::make_tuple(ts.path_timing_radius[1], ts.path_timing_strength[1]));
+    d["lock_x"] = ts.path_timing_lock_x;
     return d;
   });
   /* The Sculpt tool's settings, and its presets (assets/sculpt_presets.hh). */
@@ -2826,13 +2832,27 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
           d["path_control_handles"] = control_handles;
         }
         d["interp"] = interp_identifier(k.interp);
-        if (!k.speeds.empty()) {
-          /* Custom: how far it goes each frame of the stretch into it. */
-          py::list speeds;
-          for (const float v : k.speeds) {
-            speeds.append(v);
+        if (!k.timing.empty()) {
+          /* Custom: its timing curve's points, (x, y, in, out, aligned), and how far it goes each frame of the stretch
+           * into it by them. */
+          py::list timing;
+          for (const TimingPoint &p : k.timing.points) {
+            timing.append(py::make_tuple(p.co.x, p.co.y, py::make_tuple(p.in.x, p.in.y),
+                                         py::make_tuple(p.out.x, p.out.y), p.aligned));
           }
-          d["speeds"] = speeds;
+          d["timing"] = timing;
+          const size_t i = size_t(&k - ch.keys.data());
+          if (i > 0) {
+            const auto &a = ch.keys[i - 1];
+            const int n = k.frame - std::min(a.frame + std::max(a.hold, 0), k.frame);
+            if (n >= 1) {
+              py::list speeds;
+              for (const float v : timing_speeds(k.timing, n)) {
+                speeds.append(v);
+              }
+              d["speeds"] = speeds;
+            }
+          }
         }
         d["type"] = key_type_identifier(k.type);
         if (k.filler) {
@@ -2850,13 +2870,6 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         d["noise_amplitude"] = k.noise_amplitude;
         d["noise_frequency"] = k.noise_frequency;
         d["cycle_back"] = k.cycle_back;
-        if (!k.speeds.empty()) {
-          py::list speeds;
-          for (const float s : k.speeds) {
-            speeds.append(s);
-          }
-          d["speeds"] = speeds;
-        }
         result.append(d);
       }
     };
@@ -2996,7 +3009,28 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
             const float v = s.cast<float>();
             speeds.push_back(std::isfinite(v) ? v : 0.0f);
           }
-          key_speeds_set(ch.keys, size_t(key - ch.keys.data()), std::move(speeds));
+          key_speeds_set(ch.keys, size_t(key - ch.keys.data()), speeds);
+        }
+        else if (name == "timing") {
+          /* Points as keyframes() gives them: (x, y, (in x, in y), (out x, out y), aligned); none, even. */
+          TimingCurve curve;
+          for (const py::handle p : value) {
+            const py::sequence q = p.cast<py::sequence>();
+            if (q.size() < 4) {
+              throw py::value_error("a timing point is (x, y, in, out[, aligned])");
+            }
+            TimingPoint tp;
+            tp.co = {q[0].cast<float>(), q[1].cast<float>()};
+            const py::sequence in = q[2].cast<py::sequence>(), out = q[3].cast<py::sequence>();
+            tp.in = {in[0].cast<float>(), in[1].cast<float>()};
+            tp.out = {out[0].cast<float>(), out[1].cast<float>()};
+            tp.aligned = q.size() < 5 || q[4].cast<bool>();
+            curve.points.push_back(tp);
+          }
+          if (!curve.points.empty() && !timing_valid(curve)) {
+            throw py::value_error("a timing curve goes left to right from (0, 0) to (1, 1)");
+          }
+          key_timing_set(ch.keys, size_t(key - ch.keys.data()), std::move(curve));
         }
         else if (name == "path_handles" || name == "path_in" || name == "path_out") {
           if constexpr (std::is_same_v<std::decay_t<decltype(key->value)>, float2>) {

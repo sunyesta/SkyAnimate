@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "anim/motion_path.hh"
+#include "anim/timing_curve.hh"
 #include "data/document.hh"
 #include "data/vector.hh"
 #include "editors/ui.hh"
@@ -576,24 +577,79 @@ float timeline_sidebar_width(Context &C, float avail_w)
   return std::min(ImGui::GetFontSize() * 17.0f, avail_w * 0.5f);
 }
 
-/* A graph dot dragged up or down: slid from the document as it was pressed, one undo step. */
+/* Joined buttons, Blender's expanded enum: the chosen one blue. Returns the one clicked (not the chosen), or -1. */
+static int segmented_buttons(const char *id, int value, int count, const char *const *names, const char *const *tips,
+                             float total, float h)
+{
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float each = std::floor((total - float(count - 1)) / float(count));
+  int clicked = -1;
+  ImGui::PushID(id);
+  ImDrawList *dl = ImGui::GetWindowDrawList();
+  for (int k = 0; k < count; k++) {
+    if (k > 0) {
+      ImGui::SameLine(0, 1);
+    }
+    const float seg_w = k == count - 1 ? total - (each + 1.0f) * float(count - 1) : each;
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    ImGui::PushID(k);
+    if (ImGui::InvisibleButton("##segment", ImVec2(seg_w, h)) && k != value) {
+      clicked = k;
+    }
+    const bool on = k == value, hovered = ImGui::IsItemHovered();
+    const ImU32 back = ImGui::GetColorU32(on ? ImGuiCol_ButtonActive : hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+    const ImDrawFlags corners = k == 0 ? ImDrawFlags_RoundCornersLeft
+                                : k == count - 1 ? ImDrawFlags_RoundCornersRight
+                                                 : ImDrawFlags_RoundCornersNone;
+    dl->AddRectFilled(at, ImVec2(at.x + seg_w, at.y + h), back, style.FrameRounding, corners);
+    const ImVec2 text = ImGui::CalcTextSize(names[k]);
+    dl->AddText(ImVec2(at.x + std::floor((seg_w - text.x) * 0.5f), at.y + std::floor((h - text.y) * 0.5f)),
+                ImGui::GetColorU32(on ? ImVec4(1, 1, 1, 1) : style.Colors[ImGuiCol_Text]), names[k]);
+    if (tips && tips[k] && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("%s", tips[k]);
+    }
+    ImGui::PopID();
+  }
+  ImGui::PopID();
+  return clicked;
+}
+
+/* The Path Timing graph's Edit mode: a curve point (side 0) or one of its handles (-1 in, 1 out) dragged, the curve
+ * worked out from the one pressed on, live on the document as it was pressed; run as its operator once let go (one
+ * undo step). */
 static struct {
   bool active = false;
   bool dragging = false;
-  bool changed = false;
   MotionPathTarget target;
-  int frame = 0;
-  float press_y = 0.0f;
-  std::optional<OpArgs> select_on_release;
+  int frame = 0, n = 1;
+  int point = -1, side = 0;
+  ImVec2 press;
+  float2 was{};
+  float2 now{};
+  bool free = false;
+  TimingCurve curve;
   Document snapshot;
-} g_graph;
+} g_edit;
 
-/* Alt S over the graph: the spacing around the selected dots scaled by the mouse's left and right. */
+/* Its Sculpt mode: a stroke going on (its places in frames and the way along), shown live, run as anim.timing_sculpt
+ * once let go; and F sizing the brush (Blender's: the circle stays where it was, the mouse's distance its radius). */
 static struct {
   bool active = false;
-  float press_x = 0.0f;
+  MotionPathTarget target;
+  int frame = 0, start = 0, n = 1;
+  TimingBrush brush = TimingBrush::Grab;
+  float aspect = 1.0f;
+  std::vector<float2> path;
+  ImVec2 last;
+  TimingCurve curve;
   Document snapshot;
-} g_graph_scale;
+} g_stroke;
+
+static struct {
+  bool active = false;
+  ImVec2 center;
+  float was = 0.0f;
+} g_resize;
 
 /* The graph's view: frames across, the way along up. It fits the stretch whenever a different one is shown, and is
  * otherwise the user's (wheel zoom, middle drag pan, Ctrl middle drag stretch, Home to fit again), so edits on the
@@ -632,6 +688,25 @@ static void graph_fit(const MotionPathTarget &t, const MotionPathStretch &s)
   v.nav = false;
 }
 
+/* Whether the graph's picked point is one of the stretch shown, and its index. */
+static int picked_point(const WindowManager &wm, const MotionPathTarget &t, const MotionPathStretch &s,
+                        const TimingCurve &curve)
+{
+  if (wm.path_timing_point < 0 || !wm.path_timing_point_target.same(t) || wm.path_timing_point_end != s.end ||
+      size_t(wm.path_timing_point) >= curve.points.size())
+  {
+    return -1;
+  }
+  return wm.path_timing_point;
+}
+
+static void point_pick(WindowManager &wm, const MotionPathTarget &t, const MotionPathStretch &s, int point)
+{
+  wm.path_timing_point_target = t;
+  wm.path_timing_point_end = s.end;
+  wm.path_timing_point = point;
+}
+
 static void path_timing_graph(Context &C, const MotionPathTarget &t, const MotionPathStretch &s, ImVec2 min,
                               ImVec2 max)
 {
@@ -656,11 +731,25 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   /* The wheel is the graph's here, not the sidebar's scroll. */
   ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
   const bool hovered = ImGui::IsItemHovered();
+  if (hovered || g_edit.active || g_stroke.active || g_resize.active) {
+    wm.path_graph_hovered = true;
+  }
 
-  /* Navigation, as the viewport's: not while a dot is dragged, when the wheel sizes its reach instead, nor with
-   * Shift held, when it sizes the blend. */
-  const bool stroke = g_blend.active && g_blend.owner == 1;
-  if (!g_graph.active && !g_graph_scale.active && !stroke && !io.KeyShift) {
+  /* The curve: a Custom stretch's own, else the one its timing makes (even: a straight line). A span across
+   * breakdowns is timed by each stretch's own curve, so only shown there. */
+  TimingCurve curve;
+  int start = s.start, frames = n;
+  const bool editable = s.breakdowns.empty() && n >= 2 &&
+                        motion_path_timing_curve(doc, t, s.start + 1, curve, &start, &frames) && frames == n;
+  if (editable && curve.empty()) {
+    curve = timing_even();
+  }
+  const auto curve_screen = [&](float2 p) { return to_screen(float(s.start) + p.x * float(n), p.y); };
+  const bool sculpt = ts.path_graph_sculpt;
+
+  /* Navigation, as the viewport's: not while something is dragged. */
+  const bool busy = g_edit.active || g_stroke.active || g_resize.active;
+  if (!busy) {
     if (hovered && io.MouseWheel != 0.0f) {
       const float factor = std::pow(0.85f, io.MouseWheel);
       const float mf = frame_at(io.MousePos.x), mu = u_at(io.MousePos.y);
@@ -713,12 +802,14 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     keep(v.f0, v.f1, 0.5f, 100000.0f);
     keep(v.y0, v.y1, 0.01f, 100.0f);
   }
+  const float per_frame = w / (v.f1 - v.f0);
+  /* Frames a whole way along is, as shown: the brush's circle is round on screen. */
+  const float aspect = (h / (v.y1 - v.y0)) / per_frame;
 
   ImDrawList *dl = ImGui::GetWindowDrawList();
   dl->PushClipRect(min, max, true);
   dl->AddRectFilled(min, max, IM_COL32(0x1d, 0x1d, 0x1d, 255), 3.0f);
   /* Frame lines, thinned out when zoomed far out. */
-  const float per_frame = w / (v.f1 - v.f0);
   const int step = std::max(1, int(std::ceil(5.0f / per_frame)));
   for (int f = int(std::ceil(v.f0 / float(step))) * step; float(f) <= v.f1; f += step) {
     const float x = to_screen(float(f), 0.0f).x;
@@ -736,11 +827,11 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   for (int k = 0; k < 24; k += 2) {
     const float a = float(k) / 24.0f, b = float(k + 1) / 24.0f;
     dl->AddLine(ImVec2(da.x + (db.x - da.x) * a, da.y + (db.y - da.y) * a),
-                ImVec2(da.x + (db.x - da.x) * b, da.y + (db.y - da.y) * b), IM_COL32(150, 150, 150, 160), 1.0f);
+                ImVec2(da.x + (db.x - da.x) * b, da.y + (db.y - da.y) * b), IM_COL32(150, 150, 150, 120), 1.0f);
   }
-  /* The stretches either side, grey: the one before ending at 0, the one after starting at 1. */
+  /* The stretches either side, grey and faint: the one before ending at 0, the one after starting at 1. */
   const Color grey = motion_path_unlit_color();
-  const ImU32 grey_col = ImGui::ColorConvertFloat4ToU32(ImVec4(grey.r, grey.g, grey.b, grey.a * 0.6f));
+  const ImU32 grey_col = ImGui::ColorConvertFloat4ToU32(ImVec4(grey.r, grey.g, grey.b, grey.a * 0.4f));
   for (const MotionPathStretch &o : motion_path_stretches(doc, t)) {
     if (o.end == s.end) {
       continue;
@@ -751,63 +842,75 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
       if (f < v.f0 - 1.0f || f > v.f1 + 1.0f) {
         continue;
       }
-      dl->AddCircleFilled(to_screen(f, before ? o.progress[k] - 1.0f : 1.0f + o.progress[k]), 3.0f, grey_col);
+      dl->AddCircleFilled(to_screen(f, before ? o.progress[k] - 1.0f : 1.0f + o.progress[k]), 2.0f, grey_col);
     }
   }
-  /* The curve through the dots, then the dots. */
-  for (int k = 0; k < n; k++) {
-    dl->AddLine(to_screen(float(s.start + k), s.progress[size_t(k)]),
-                to_screen(float(s.start + k + 1), s.progress[size_t(k + 1)]), IM_COL32(110, 110, 110, 255), 1.5f);
+  /* The curve, then each frame's dot on it, small and faint (where the frames land). */
+  if (editable) {
+    const int samples = std::clamp(int(w / 2.0f), 32, 600);
+    ImVec2 prev = curve_screen({0.0f, 0.0f});
+    for (int j = 1; j <= samples; j++) {
+      const float x = float(j) / float(samples);
+      const ImVec2 p = curve_screen({x, timing_progress(curve, x)});
+      dl->AddLine(prev, p, IM_COL32(200, 200, 200, 255), 1.6f);
+      prev = p;
+    }
   }
-  const bool blending = stroke || (hovered && !g_graph.active && !g_graph_scale.active && !g_blend.active && !v.nav &&
-                                   io.KeyShift && !io.KeyCtrl && !io.KeyAlt);
-  const float size = ts.path_graph_size;
-  std::optional<int> hover;
-  float best = 9.0f;
-  /* Dots out of view: an arrow at the edge toward each; clicking one fits the view again. */
-  bool on_arrow = false;
+  else {
+    for (int k = 0; k < n; k++) {
+      dl->AddLine(to_screen(float(s.start + k), s.progress[size_t(k)]),
+                  to_screen(float(s.start + k + 1), s.progress[size_t(k + 1)]), IM_COL32(200, 200, 200, 255), 1.6f);
+    }
+  }
   for (int k = 1; k < n; k++) {
-    const int frame = s.start + k;
     if (s.held(k)) {
       continue;
     }
-    const ImVec2 p = to_screen(float(frame), s.progress[size_t(k)]);
-    if (p.x < min.x || p.x > max.x || p.y < min.y || p.y > max.y) {
-      const ImVec2 e(std::clamp(p.x, min.x + 7.0f, max.x - 7.0f), std::clamp(p.y, min.y + 7.0f, max.y - 7.0f));
-      float ax = p.x - e.x, ay = p.y - e.y;
-      const float len = std::max(std::hypot(ax, ay), 1e-3f);
-      ax /= len;
-      ay /= len;
-      const Color c = motion_path_time_color(float(k) / float(n));
-      dl->AddTriangleFilled(ImVec2(e.x + ax * 6.0f, e.y + ay * 6.0f),
-                            ImVec2(e.x - ax * 3.0f - ay * 4.5f, e.y - ay * 3.0f + ax * 4.5f),
-                            ImVec2(e.x - ax * 3.0f + ay * 4.5f, e.y - ay * 3.0f - ax * 4.5f),
-                            ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 0.9f)));
-      on_arrow |= hovered && std::hypot(io.MousePos.x - e.x, io.MousePos.y - e.y) < 8.0f;
-      continue;
-    }
-    const bool picked = std::any_of(wm.path_dots.begin(), wm.path_dots.end(),
-                                    [&](const auto &d) { return d.first.same(t) && d.second == frame; });
-    const bool ringed = (g_graph.active && g_graph.frame == frame) ||
-                        (ImGui::GetFrameCount() - wm.path_hover_tick <= 1 && wm.path_hover_target.same(t) &&
-                         wm.path_hover_frame == frame);
     const Color c = motion_path_time_color(float(k) / float(n));
-    dl->AddCircleFilled(p, 5.0f, ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 1.0f)));
-    dl->AddCircle(p, 5.0f, IM_COL32(20, 20, 20, 220), 0, 1.5f);
-    if (picked || ringed) {
-      dl->AddCircle(p, 7.5f, picked ? IM_COL32(255, 160, 40, 255) : IM_COL32(255, 255, 255, 220), 0, 1.6f);
-    }
-    /* The dots the dragged one pulls along: a faint ring, fainter as they follow less. */
-    else if (g_graph.active && g_graph.dragging) {
-      const float wt = reach_weight(ts, frame - g_graph.frame, size);
-      if (wt > 0.0f) {
-        dl->AddCircle(p, 7.5f, IM_COL32(255, 255, 255, int(40.0f + 110.0f * wt)), 0, 1.0f);
+    dl->AddCircleFilled(to_screen(float(s.start + k), s.progress[size_t(k)]), 2.5f,
+                        ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 0.55f)));
+  }
+
+  /* Edit mode: the curve's points (its ends are the keys' diamonds) and their handles, as a drawing's. */
+  const int picked = editable ? picked_point(wm, t, s, curve) : -1;
+  struct Hit {
+    int point = -1, side = 0;
+  };
+  std::optional<Hit> hit;
+  float best = 8.0f;
+  const bool can_edit = editable && !sculpt && !g_stroke.active;
+  if (can_edit) {
+    for (size_t i = 0; i < curve.points.size(); i++) {
+      const TimingPoint &p = curve.points[i];
+      const ImVec2 at = curve_screen(p.co);
+      float2 in, out;
+      timing_point_handles(curve, i, in, out);
+      for (const int side : {-1, 1}) {
+        if ((side < 0 && i == 0) || (side > 0 && i + 1 == curve.points.size())) {
+          continue;
+        }
+        const ImVec2 tip = curve_screen(p.co + (side < 0 ? in : out));
+        const bool on = int(i) == picked || (g_edit.active && g_edit.point == int(i));
+        dl->AddLine(at, tip, on ? IM_COL32(255, 175, 90, 230) : IM_COL32(160, 160, 160, 170), 1.0f);
+        dl->AddCircleFilled(tip, 3.0f, on ? IM_COL32(255, 175, 90, 255) : IM_COL32(190, 190, 190, 220));
+        const float d = std::hypot(io.MousePos.x - tip.x, io.MousePos.y - tip.y);
+        if (hovered && !g_edit.active && d < best) {
+          best = d;
+          hit = Hit{int(i), side};
+        }
       }
-    }
-    const float d = std::hypot(io.MousePos.x - p.x, io.MousePos.y - p.y);
-    if (hovered && !g_graph.active && !blending && d < best) {
-      best = d;
-      hover = frame;
+      if (i == 0 || i + 1 == curve.points.size()) {
+        continue;
+      }
+      const bool on = int(i) == picked;
+      dl->AddCircleFilled(at, 4.5f, on ? IM_COL32(255, 160, 40, 255) : IM_COL32(235, 235, 235, 255));
+      dl->AddCircle(at, 4.5f, IM_COL32(20, 20, 20, 220), 0, 1.2f);
+      const float d = std::hypot(io.MousePos.x - at.x, io.MousePos.y - at.y);
+      /* A point under the mouse wins over a handle tip just as near. */
+      if (hovered && !g_edit.active && d < best + 1.0f) {
+        best = d;
+        hit = Hit{int(i), 0};
+      }
     }
   }
   std::optional<int> key_hit;
@@ -828,78 +931,35 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     const bool sel = k > 0 && motion_path_key_selected(doc, t, k);
     diamond(dl, p, 5.5f, sel ? IM_COL32(255, 160, 40, 255) : IM_COL32(240, 240, 240, 255),
             IM_COL32(20, 20, 20, 220));
-    if (hovered && k > 0 && std::hypot(io.MousePos.x - p.x, io.MousePos.y - p.y) < 8.0f) {
+    if (hovered && k > 0 && !hit && std::hypot(io.MousePos.x - p.x, io.MousePos.y - p.y) < 8.0f) {
       key_hit = k;
     }
   }
-  /* The reach as a circle: Shift's blend in blue around the mouse; else the proportional circle around the dot
-   * dragged or under the mouse. */
-  const auto circle = [&](ImVec2 c, float reach, ImU32 fill, ImU32 edge) {
-    const float r = std::max(reach * per_frame, 3.0f);
-    dl->AddCircleFilled(c, r, fill, 48);
-    dl->AddCircle(c, r, edge, 48, 1.0f);
-    reach_label(dl, ImVec2(c.x + r * 0.72f + 2.0f, c.y - r * 0.72f - ImGui::GetFontSize() * 0.8f), reach, edge);
-  };
-  if (blending) {
-    circle(io.MousePos, ts.path_blend_radius, BLEND_FILL, BLEND_EDGE);
-  }
-  else if (g_graph.active && g_graph.dragging) {
-    circle(to_screen(float(g_graph.frame), s.progress[size_t(g_graph.frame - s.start)]), size, REACH_FILL,
-           REACH_EDGE);
-  }
-  else if (hover) {
-    circle(to_screen(float(*hover), s.progress[size_t(*hover - s.start)]), size, REACH_FILL, REACH_EDGE);
+
+  /* Sculpt mode: the brush (Shift swaps it while held), its circle and the falloff's half-way ring. */
+  const TimingBrush brush = g_stroke.active ? g_stroke.brush
+                            : io.KeyShift   ? (ts.path_timing_brush == TimingBrush::Grab ? TimingBrush::Smooth
+                                                                                        : TimingBrush::Grab)
+                                            : ts.path_timing_brush;
+  const int bi = int(brush);
+  if (editable && sculpt && (hovered || g_stroke.active || g_resize.active)) {
+    const ImVec2 c = g_resize.active ? g_resize.center : io.MousePos;
+    const float r = std::max(ts.path_timing_radius[bi] * per_frame, 3.0f);
+    const ImU32 edge = brush == TimingBrush::Grab ? IM_COL32(255, 255, 255, 200) : IM_COL32(140, 190, 255, 220);
+    dl->AddCircle(c, r, edge, 64, 1.4f);
+    dl->AddCircle(c, r * 0.5f, (edge & 0x00ffffffu) | (90u << 24), 48, 1.0f);
   }
   dl->PopClipRect();
 
-  if (hover) {
-    wm.path_hover_target = t;
-    wm.path_hover_frame = *hover;
-    wm.path_hover_tick = ImGui::GetFrameCount();
-    const float u = s.progress[size_t(*hover - s.start)];
-    ImGui::SetTooltip("Frame %d: %.0f%% along", *hover, u * 100.0f);
+  if (hit && !busy) {
+    const TimingPoint &p = curve.points[size_t(hit->point)];
+    if (hit->side == 0) {
+      ImGui::SetTooltip("Frame %.2f: %.1f%% along", double(float(s.start) + p.co.x * float(n)), double(p.co.y * 100.0f));
+    }
   }
 
-  if (stroke) {
-    blend_update(C, frame_at(io.MousePos.x));
-    return;
-  }
-  /* Shift held: the wheel sizes the blend. */
-  if (blending) {
-    reach_wheel(ts.path_blend_radius);
-  }
-  /* Alt S: scale the spacing around the selected dots, as in the viewport, with the graph's reach. */
-  auto &sc = g_graph_scale;
-  if (!sc.active && hovered && !g_graph.active && io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_S, false) &&
-      !wm.path_dots.empty())
-  {
-    sc.active = true;
-    sc.press_x = io.MousePos.x;
-    sc.snapshot = doc;
-  }
-  if (sc.active) {
-    const float factor = std::max(0.0f, 1.0f + (io.MousePos.x - sc.press_x) / 150.0f);
-    PathSlide slide = reach_slide(ts, size);
-    slide.keep_order = true;
-    doc = sc.snapshot;
-    for (const auto &[dt, df] : wm.path_dots) {
-      motion_path_scale_spacing(doc, dt, df, factor, slide);
-    }
-    C.undo->mark_changed();
-    ImGui::SetTooltip("Scale Spacing: %.2f", factor);
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-      doc = std::move(sc.snapshot);
-      sc = {};
-    }
-    else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Enter)) {
-      C.undo->push("Scale Path Spacing", doc);
-      sc = {};
-    }
-    return;
-  }
-
-  /* The right click's menu: the stretch's shapes, Even Spacing for the dots picked. */
-  if (hovered && !g_graph.active && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
+  /* The right click's menu: the stretch's shapes, Even Spacing for the dots picked; on a key, the key's. */
+  if (hovered && !busy && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
       !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right))
   {
     if (key_hit) {
@@ -931,95 +991,201 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     ui_menu_end();
   }
 
-  auto &g = g_graph;
-  if (!g.active) {
-    if (!hovered || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+  /* F: the brush sized by the mouse's distance from where the circle was. */
+  auto &rs = g_resize;
+  if (wm.path_graph_resize_request) {
+    wm.path_graph_resize_request = false;
+    if (editable && sculpt && !g_stroke.active) {
+      rs.active = true;
+      rs.center = hovered ? io.MousePos : ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+      rs.was = ts.path_timing_radius[bi];
+    }
+  }
+  if (rs.active) {
+    ts.path_timing_radius[bi] = std::clamp(
+        std::hypot(io.MousePos.x - rs.center.x, io.MousePos.y - rs.center.y) / std::max(per_frame, 1e-3f), 0.1f,
+        500.0f);
+    ImGui::SetTooltip("Radius: %.1f frames", double(ts.path_timing_radius[bi]));
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+      ts.path_timing_radius[bi] = rs.was;
+      rs = {};
+    }
+    else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+      rs = {};
+    }
+    return;
+  }
+
+  /* A sculpt stroke. */
+  auto &st = g_stroke;
+  if (st.active) {
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+      doc = std::move(st.snapshot);
+      st = {};
       return;
     }
-    if (key_hit && !blending && motion_path_is_key(doc, t, *key_hit)) {
-      OpArgs args = target_args(doc, t, *key_hit);
-      if (io.KeyCtrl) {
-        args["extend"] = "1";
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      doc = std::move(st.snapshot);
+      std::vector<float2> path = st.path;
+      for (float2 &p : path) {
+        p.x += float(st.start);
       }
-      operator_call(C, "anim.motion_path_select", args);
+      OpArgs args = target_args(doc, st.target, st.frame);
+      args["brush"] = st.brush == TimingBrush::Grab ? "GRAB" : "SMOOTH";
+      args["path"] = timing_stroke_string(path);
+      args["radius"] = std::to_string(ts.path_timing_radius[int(st.brush)]);
+      args["strength"] = std::to_string(ts.path_timing_strength[int(st.brush)]);
+      args["aspect"] = std::to_string(st.aspect);
+      args["lock_x"] = ts.path_timing_lock_x ? "1" : "0";
+      st = {};
+      operator_call(C, "anim.timing_sculpt", args);
       return;
     }
-    if (on_arrow) {
-      graph_fit(t, s);
+    if (std::hypot(io.MousePos.x - st.last.x, io.MousePos.y - st.last.y) >= 1.0f) {
+      st.last = io.MousePos;
+      st.path.push_back({frame_at(io.MousePos.x) - float(st.start), u_at(io.MousePos.y)});
+      doc = st.snapshot;
+      motion_path_timing_curve_set(doc, st.target, st.frame,
+                                   timing_sculpt(st.curve, st.n, st.brush, st.path, ts.path_timing_radius[int(st.brush)],
+                                                 ts.path_timing_strength[int(st.brush)], st.aspect,
+                                                 ts.path_timing_lock_x));
+      C.undo->mark_changed();
+    }
+    return;
+  }
+
+  /* An Edit drag. */
+  auto &g = g_edit;
+  if (g.active) {
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+      if (g.dragging) {
+        doc = std::move(g.snapshot);
+      }
+      g = {};
       return;
     }
-    if (blending) {
-      blend_begin(C, 1, t, int(std::lround(frame_at(io.MousePos.x))), s.start, s.end);
-      return;
-    }
-    if (!hover) {
-      if (!io.KeyShift && !io.KeyCtrl) {
-        operator_call(C, "anim.motion_path_select", {{"none", "1"}});
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      if (g.dragging) {
+        doc = std::move(g.snapshot);
+        OpArgs args = target_args(doc, g.target, g.frame);
+        args["index"] = std::to_string(g.point);
+        args["x"] = std::to_string(g.now.x);
+        args["y"] = std::to_string(g.now.y);
+        if (g.side != 0) {
+          args["side"] = g.side < 0 ? "IN" : "OUT";
+          if (g.free) {
+            args["free"] = "1";
+          }
+        }
+        const char *op = g.side == 0 ? "anim.timing_point_move" : "anim.timing_handle_move";
+        g = {};
+        operator_call(C, op, args);
+      }
+      else {
+        g = {};
       }
       return;
     }
-    OpArgs args = target_args(doc, t, *hover);
-    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-      args["go"] = "1";
-      operator_call(C, "anim.motion_path_select", args);
+    if (!g.dragging && std::hypot(io.MousePos.x - g.press.x, io.MousePos.y - g.press.y) < 3.0f) {
       return;
     }
-    if (io.KeyCtrl) {
-      args["extend"] = "1";
-      operator_call(C, "anim.motion_path_select", args);
-      return;
-    }
-    g.select_on_release.reset();
-    const bool picked = std::any_of(wm.path_dots.begin(), wm.path_dots.end(),
-                                    [&](const auto &d) { return d.first.same(t) && d.second == *hover; });
-    if (picked) {
-      g.select_on_release = args;
+    g.dragging = true;
+    /* The mouse's move in the curve's terms: a share of the stretch's time across, the way along up. */
+    const float2 move{(frame_at(io.MousePos.x) - frame_at(g.press.x)) / float(g.n), u_at(io.MousePos.y) - u_at(g.press.y)};
+    TimingCurve moved = g.curve;
+    g.free = io.KeyAlt;
+    if (g.side == 0) {
+      timing_point_move(moved, size_t(g.point), g.was + move);
+      g.now = moved.points[size_t(g.point)].co;
     }
     else {
-      operator_call(C, "anim.motion_path_select", args);
+      timing_handle_set(moved, size_t(g.point), g.side > 0, g.was + move, g.free);
+      g.now = g.side > 0 ? moved.points[size_t(g.point)].out : moved.points[size_t(g.point)].in;
     }
-    g.active = true;
-    g.dragging = false;
-    g.changed = false;
-    g.target = t;
-    g.frame = *hover;
-    g.press_y = io.MousePos.y;
-    g.snapshot = doc;
+    doc = g.snapshot;
+    motion_path_timing_curve_set(doc, g.target, g.frame, moved);
+    C.undo->mark_changed();
     return;
   }
-  if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-    if (g.dragging) {
-      doc = std::move(g.snapshot);
-    }
-    g = {};
+
+  if (!hovered || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     return;
   }
-  if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-    if (g.changed) {
-      C.undo->push("Slide Path Dot", doc);
+  if (key_hit && motion_path_is_key(doc, t, *key_hit)) {
+    OpArgs args = target_args(doc, t, *key_hit);
+    if (io.KeyCtrl) {
+      args["extend"] = "1";
     }
-    else if (!g.dragging && g.select_on_release) {
-      operator_call(C, "anim.motion_path_select", *g.select_on_release);
-    }
-    g = {};
+    operator_call(C, "anim.motion_path_select", args);
     return;
   }
-  if (!g.dragging && std::fabs(io.MousePos.y - g.press_y) < 3.0f) {
+  if (!editable) {
     return;
   }
-  /* The wheel while dragging sizes the reach, the dots around following at once. */
-  if (g.dragging) {
-    reach_wheel(ts.path_graph_size);
+  if (sculpt) {
+    animation_sync(doc);
+    st.active = true;
+    st.target = t;
+    st.frame = s.start + 1;
+    st.start = s.start;
+    st.n = n;
+    st.brush = brush;
+    st.aspect = aspect;
+    st.curve = curve;
+    st.snapshot = doc;
+    st.last = io.MousePos;
+    st.path = {{frame_at(io.MousePos.x) - float(s.start), u_at(io.MousePos.y)}};
+    return;
   }
-  g.dragging = true;
-  doc = g.snapshot;
-  /* Up is further along; Ctrl puts it on the even line. */
-  float progress = u_at(io.MousePos.y);
-  if (io.KeyCtrl) {
-    progress = float(g.frame - s.start) / float(std::max(n, 1));
+  if (!hit) {
+    if (io.KeyCtrl) {
+      /* Ctrl click: a point there, on the curve's time under the mouse. */
+      const float x = (frame_at(io.MousePos.x) - float(s.start)) / float(n);
+      OpArgs args = target_args(doc, t, s.start + 1);
+      args["x"] = std::to_string(x);
+      args["y"] = std::to_string(u_at(io.MousePos.y));
+      if (operator_call(C, "anim.timing_point_add", args) == OpStatus::Finished) {
+        TimingCurve now;
+        if (motion_path_timing_curve(doc, t, s.start + 1, now)) {
+          int nearest = -1;
+          float d = 1e9f;
+          for (size_t i = 1; i + 1 < now.points.size(); i++) {
+            if (std::abs(now.points[i].co.x - x) < d) {
+              d = std::abs(now.points[i].co.x - x);
+              nearest = int(i);
+            }
+          }
+          point_pick(wm, t, s, nearest);
+        }
+      }
+      return;
+    }
+    point_pick(wm, t, s, -1);
+    return;
   }
-  g.changed = motion_path_slide_progress(doc, g.target, g.frame, progress, reach_slide(ts, ts.path_graph_size));
-  C.undo->mark_changed();
+  point_pick(wm, t, s, hit->point);
+  animation_sync(doc);
+  g.active = true;
+  g.dragging = false;
+  g.target = t;
+  g.frame = s.start + 1;
+  g.n = n;
+  g.point = hit->point;
+  g.side = hit->side;
+  g.press = io.MousePos;
+  g.curve = curve;
+  const TimingPoint &p = curve.points[size_t(hit->point)];
+  if (hit->side == 0) {
+    g.was = p.co;
+  }
+  else {
+    /* From the handle as the curve shows it (kept within its segment). */
+    float2 in, out;
+    timing_point_handles(curve, size_t(hit->point), in, out);
+    g.was = hit->side > 0 ? out : in;
+  }
+  g.now = g.was;
+  g.snapshot = doc;
 }
 
 bool timeline_sidebar_tab(ImVec2 min, ImVec2 max, bool open, ImVec2 &r_min, ImVec2 &r_max)
@@ -1102,55 +1268,9 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
     }
     operator_call(C, "anim.motion_path_timing_step", {{"step", "1"}});
   }
-  /* The graph: as tall as there is room for, under the fields and buttons. */
-  const float below = ImGui::GetFrameHeightWithSpacing() * 5.0f;
-  const float graph_h = std::clamp(ImGui::GetContentRegionAvail().y - below, ImGui::GetFontSize() * 4.0f,
-                                   ImGui::GetFontSize() * 16.0f);
-  const ImVec2 g0 = ImGui::GetCursorScreenPos();
-  path_timing_graph(C, t, s, g0, ImVec2(g0.x + w, g0.y + graph_h));
-  ImGui::SetCursorScreenPos(ImVec2(g0.x, g0.y + graph_h + ImGui::GetStyle().ItemSpacing.y));
-
-  /* The selected dot of this stretch (the last picked): its % along and speed. A drag shows its value and changes
-   * the dot once let go, one undo step. */
-  int dot = 0;
-  for (const auto &[dt, df] : wm.path_dots) {
-    if (dt.same(t) && df > s.start && df < s.end) {
-      dot = df;
-    }
-  }
-  if (dot) {
-    static float along_edit = 0.0f, speed_edit = 1.0f;
-    static bool along_live = false, speed_live = false;
-    if (!along_live) {
-      along_edit = s.progress[size_t(dot - s.start)] * 100.0f;
-    }
-    if (!speed_live) {
-      speed_edit = motion_path_dot_speed(doc, t, dot);
-    }
-    ImGui::Text("Frame %d", dot);
-    ImGui::SetNextItemWidth(w);
-    ImGui::DragFloat("##along", &along_edit, 0.25f, -100.0f, 200.0f, "Along %.1f%%");
-    along_live = ImGui::IsItemActive();
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-      OpArgs args = target_args(doc, t, dot);
-      args["progress"] = std::to_string(along_edit / 100.0f);
-      operator_call(C, "anim.motion_path_slide", args);
-    }
-    ImGui::SetNextItemWidth(w);
-    ImGui::DragFloat("##speed", &speed_edit, 0.01f, -float(s.end - s.start), float(s.end - s.start) * 0.5f,
-                     "Speed %.2f");
-    speed_live = ImGui::IsItemActive();
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-      OpArgs args = target_args(doc, t, dot);
-      args["speed"] = std::to_string(speed_edit);
-      operator_call(C, "anim.motion_path_dot_speed", args);
-    }
-  }
-  else {
-    ImGui::TextDisabled("Click a dot for its %% along and speed");
-  }
-  /* The stretch's shapes. */
-  const float bw = (w - ImGui::GetStyle().ItemSpacing.x) * 0.5f;
+  /* The stretch's shapes, at the top. */
+  const ImGuiStyle &style = ImGui::GetStyle();
+  const float bw = (w - style.ItemSpacing.x) * 0.5f;
   int i = 0;
   for (const auto &[label, id] : {std::pair{"Even", "EVEN"}, std::pair{"Ease In", "EASE_IN"},
                                   std::pair{"Ease Out", "EASE_OUT"}, std::pair{"Ease In-Out", "EASE_IN_OUT"}})
@@ -1162,6 +1282,106 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
       OpArgs args = target_args(doc, t, s.start + 1);
       args["shape"] = id;
       operator_call(C, "anim.motion_path_stretch_shape", args);
+    }
+  }
+  ToolSettings &ts = wm.tool_settings;
+  const bool sculpt = ts.path_graph_sculpt;
+  /* The graph: as tall as there is room for, over the mode buttons and the mode's settings. */
+  const float row = ImGui::GetFrameHeightWithSpacing();
+  const float below = row * (sculpt ? 5.0f : 2.0f) + style.ItemSpacing.y * 3.0f + 1.0f;
+  const float graph_h = std::clamp(ImGui::GetContentRegionAvail().y - below, ImGui::GetFontSize() * 4.0f,
+                                   ImGui::GetFontSize() * 16.0f);
+  const ImVec2 g0 = ImGui::GetCursorScreenPos();
+  path_timing_graph(C, t, s, g0, ImVec2(g0.x + w, g0.y + graph_h));
+  ImGui::SetCursorScreenPos(ImVec2(g0.x, g0.y + graph_h + style.ItemSpacing.y));
+
+  /* Edit and Sculpt, right under the graph. */
+  const char *modes[] = {"Edit", "Sculpt"};
+  const char *mode_tips[] = {"Move the curve's points and handles, as a drawing's: Alt drag frees a handle, Ctrl click "
+                             "adds a point, X deletes the one picked",
+                             "Brush the curve: Grab moves it, Smooth evens it out (Shift swaps them while held, F "
+                             "sizes the brush); it keeps as few points as hold every frame after each stroke"};
+  const int mode = segmented_buttons("##graph_mode", sculpt ? 1 : 0, 2, modes, mode_tips, w, ImGui::GetFrameHeight());
+  if (mode >= 0) {
+    operator_call(C, "anim.timing_graph_set", {{"mode", mode == 1 ? "SCULPT" : "EDIT"}});
+  }
+  /* A thin line, then the mode's settings. */
+  const ImVec2 line = ImGui::GetCursorScreenPos();
+  dl->AddLine(ImVec2(line.x, line.y + 1.0f), ImVec2(line.x + w, line.y + 1.0f), IM_COL32(0x48, 0x48, 0x48, 255));
+  ImGui::Dummy(ImVec2(w, 3.0f));
+
+  if (!ts.path_graph_sculpt) {
+    /* The picked point's frame and how far along it is; a drag shows its value and moves the point once let go. */
+    TimingCurve curve;
+    const bool has = s.breakdowns.empty() && motion_path_timing_curve(doc, t, s.start + 1, curve) && !curve.empty();
+    const int picked = has ? picked_point(wm, t, s, curve) : -1;
+    const bool movable = picked > 0 && size_t(picked) + 1 < curve.points.size();
+    static float frame_edit = 0.0f, along_edit = 0.0f;
+    static bool frame_live = false, along_live = false;
+    const int n = s.end - s.start;
+    if (movable && !frame_live) {
+      frame_edit = float(s.start) + curve.points[size_t(picked)].co.x * float(n);
+    }
+    if (movable && !along_live) {
+      along_edit = curve.points[size_t(picked)].co.y * 100.0f;
+    }
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Point");
+    ImGui::SameLine();
+    const float field_w = (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x) * 0.5f;
+    ImGui::BeginDisabled(!movable);
+    const auto apply = [&](float x, float y) {
+      OpArgs args = target_args(doc, t, s.start + 1);
+      args["index"] = std::to_string(picked);
+      args["x"] = std::to_string(x);
+      args["y"] = std::to_string(y);
+      operator_call(C, "anim.timing_point_move", args);
+    };
+    ImGui::SetNextItemWidth(field_w);
+    ImGui::DragFloat("##point_frame", &frame_edit, 0.02f, float(s.start), float(s.end), movable ? "%.2f" : "Frame");
+    frame_live = ImGui::IsItemActive();
+    if (movable && ImGui::IsItemDeactivatedAfterEdit()) {
+      apply((frame_edit - float(s.start)) / float(std::max(n, 1)), curve.points[size_t(picked)].co.y);
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("The picked point's frame (it stays between its neighbours)");
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(field_w);
+    ImGui::DragFloat("##point_along", &along_edit, 0.25f, -100.0f, 200.0f, movable ? "%.1f%%" : "%%");
+    along_live = ImGui::IsItemActive();
+    if (movable && ImGui::IsItemDeactivatedAfterEdit()) {
+      apply(curve.points[size_t(picked)].co.x, along_edit / 100.0f);
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip("How far along the picked point is (100%% at the key)");
+    }
+    ImGui::EndDisabled();
+  }
+  else {
+    /* The brushes: a small pair of their own, under their label, apart from the modes. */
+    ImGui::TextUnformatted("Brush");
+    const char *brushes[] = {"Grab", "Smooth"};
+    const char *brush_tips[] = {"Moves the curve under the brush with the mouse, in time too unless Lock X",
+                                "Evens out the curve under the brush"};
+    const float pair_w = std::min(w, ImGui::GetFontSize() * 8.0f);
+    const int b = segmented_buttons("##timing_brush", int(ts.path_timing_brush), 2, brushes, brush_tips, pair_w,
+                                    std::floor(ImGui::GetFrameHeight() * 0.85f));
+    if (b >= 0) {
+      operator_call(C, "anim.timing_graph_set", {{"brush", b == 0 ? "GRAB" : "SMOOTH"}});
+    }
+    const int bi = int(ts.path_timing_brush);
+    ImGui::SetNextItemWidth(w);
+    ui_slider_float("##timing_radius", &ts.path_timing_radius[bi], 0.5f, 20.0f, "Radius %.1f frames", 0, 0.1f,
+                    500.0f);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("How many frames either side the brush reaches (F over the graph sizes it)");
+    }
+    ImGui::SetNextItemWidth(w);
+    ui_slider_float("##timing_strength", &ts.path_timing_strength[bi], 0.0f, 1.0f, "Strength %.2f");
+    ImGui::Checkbox("Lock X", &ts.path_timing_lock_x);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("The brushes move the curve up and down only, never in time");
     }
   }
   ImGui::EndChild();

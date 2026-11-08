@@ -250,6 +250,14 @@ enum class PathShape { Even, EaseIn, EaseOut, EaseInOut };
 bool path_shape_from_identifier(const std::string &id, PathShape &r_shape);
 /* The stretch `frame` is strictly inside made Custom with that shape, the keys staying on their frames. */
 bool motion_path_stretch_shape(Document &doc, const MotionPathTarget &target, int frame, PathShape shape);
+/* The Path Timing graph's curve of the stretch `frame` is strictly inside (anim/timing_curve.hh): a Custom stretch's
+ * own, else one fitted to how it goes now (none: even); its first frame and how many it has. False off a stretch that
+ * moves. */
+bool motion_path_timing_curve(const Document &doc, const MotionPathTarget &target, int frame, TimingCurve &r_curve,
+                              int *r_start = nullptr, int *r_frames = nullptr);
+/* That stretch made Custom with `curve` as it is (none: even), the drawing's other channels alike, the keys staying on
+ * their frames. */
+bool motion_path_timing_curve_set(Document &doc, const MotionPathTarget &target, int frame, const TimingCurve &curve);
 /* The dot on `frame` made to go `speed` (as motion_path_dot_speed gives it: 1 even, under 0 going back), the rest of
  * its stretch taking up the time it gains or loses, each frame by its share; false off a stretch, or when the rest
  * can't (the most it can go is less than the stretch's frames). */

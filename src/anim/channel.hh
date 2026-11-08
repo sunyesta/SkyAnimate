@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "anim/timing_curve.hh"
 #include "core/math.hh"
 
 namespace oanim {
@@ -37,8 +38,9 @@ enum class Interp : uint8_t {
   Cycle,
   /* Holds a pose from an action; until actions arrive (milestone 4) it holds like Step. */
   Pose,
-  /* Painted with the Motion Path tool's speed brushes: a speed for each frame of the stretch (Key::speeds), the
-   * value going along the same way (a position along its path) at that speed, arriving on the key's frame. */
+  /* Timed by its own curve (Key::timing: the Path Timing graph's, made by the speed brushes, dots slid and timing
+   * shapes), the value going along the same way (a position along its path) as far as the curve says each frame,
+   * arriving on the key's frame. */
   Custom,
 };
 inline constexpr int INTERP_COUNT = 14;
@@ -129,9 +131,9 @@ template<typename T> struct Key {
    * as it always has (key_path_handles works out what they would be). */
   PathHandles path_handles = PathHandles::Auto;
   T path_in{}, path_out{};
-  /* Custom: how fast the stretch arriving at this key goes on each of its frames (any scale: only how they compare
-   * counts; one for each frame from the key before, after its hold). Empty: evenly. */
-  std::vector<float> speeds;
+  /* Custom: how far along the stretch arriving at this key is through its time (from the key before, after its hold):
+   * a curve of as few points as hold each frame where its timing put it (anim/timing_curve.hh). Empty: evenly. */
+  TimingCurve timing;
   /* Position keys only: the control points of the stretch arriving at this key (the Motion Path tool's Alt click),
    * in order along it. They shape its path only (no frame, no timing: its dots go the same share of the way each
    * frame as without them). Each is where it is, in the keys' own space: a key moved leaves them where they are, the
@@ -296,10 +298,11 @@ bool interp_path_smooth(Interp interp);
  * become. */
 void key_path_handles_freeze(std::vector<Key<float2>> &keys, size_t i);
 
-/* Custom's progress (0..1) `t` of the way through a stretch of `speeds`, each frame's taking its share. */
-float custom_progress(const std::vector<float> &speeds, float t);
-/* Makes the stretch arriving at key `i` Custom with `speeds`. */
-template<typename T> void key_speeds_set(std::vector<Key<T>> &keys, size_t i, std::vector<float> speeds);
+/* Makes the stretch arriving at key `i` Custom with `speeds` (one a frame, any scale), kept as the fewest curve points
+ * that time each frame as they do (timing_from_speeds). */
+template<typename T> void key_speeds_set(std::vector<Key<T>> &keys, size_t i, const std::vector<float> &speeds);
+/* Makes it Custom with the timing `curve`, as it is. */
+template<typename T> void key_timing_set(std::vector<Key<T>> &keys, size_t i, TimingCurve curve);
 /* Where the stretch arriving at key `i` is `u` (0-1) of the way along its path by length, as Custom goes along it (in
  * the keys' own space); past either end (an overshoot), on along the end's direction. */
 float2 stretch_path_point(const std::vector<Key<float2>> &keys, size_t i, float u);

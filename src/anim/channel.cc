@@ -435,44 +435,24 @@ void key_path_handles_freeze(std::vector<Key<float2>> &keys, size_t i)
   keys_changed();
 }
 
-float custom_progress(const std::vector<float> &speeds, float t)
+template<typename T> void key_speeds_set(std::vector<Key<T>> &keys, size_t i, const std::vector<float> &speeds)
 {
-  const size_t n = speeds.size();
-  if (n == 0) {
-    return t;
-  }
-  /* Speeds are signed: a negative one goes back along the path, so the dot can pass its key and come back to it
-   * (overshoot) or back up before setting off (anticipation); over the stretch they still add up to arriving. */
-  float total = 0.0f;
-  for (const float s : speeds) {
-    total += s;
-  }
-  if (total <= 1e-9f) {
-    return t;
-  }
-  const float x = std::clamp(t, 0.0f, 1.0f) * float(n);
-  float done = 0.0f;
-  size_t i = 0;
-  for (; i < n && float(i + 1) <= x; i++) {
-    done += speeds[i];
-  }
-  if (i < n) {
-    done += speeds[i] * (x - float(i));
-  }
-  return done / total;
+  key_timing_set(keys, i, timing_from_speeds(speeds));
 }
+template void key_speeds_set(std::vector<Key<float>> &keys, size_t i, const std::vector<float> &speeds);
+template void key_speeds_set(std::vector<Key<float2>> &keys, size_t i, const std::vector<float> &speeds);
 
-template<typename T> void key_speeds_set(std::vector<Key<T>> &keys, size_t i, std::vector<float> speeds)
+template<typename T> void key_timing_set(std::vector<Key<T>> &keys, size_t i, TimingCurve curve)
 {
   if (i >= keys.size()) {
     return;
   }
   keys[i].interp = Interp::Custom;
-  keys[i].speeds = std::move(speeds);
+  keys[i].timing = std::move(curve);
   keys_changed();
 }
-template void key_speeds_set(std::vector<Key<float>> &keys, size_t i, std::vector<float> speeds);
-template void key_speeds_set(std::vector<Key<float2>> &keys, size_t i, std::vector<float> speeds);
+template void key_timing_set(std::vector<Key<float>> &keys, size_t i, TimingCurve curve);
+template void key_timing_set(std::vector<Key<float2>> &keys, size_t i, TimingCurve curve);
 
 void key_path_handles(const std::vector<Key<float2>> &keys, size_t i, float2 &r_in, float2 &r_out)
 {
@@ -1126,7 +1106,7 @@ static float2 controls_evaluate(const Channel<float2> &ch, size_t i, int frame)
     const float t = float(f - start) / float(std::max(b.frame - start, 1));
     KeySettings settings = key_settings(b);
     settings.interp = interp;
-    const float u = interp == Interp::Custom ? custom_progress(b.speeds, t) : interp_curve(settings, t);
+    const float u = interp == Interp::Custom ? timing_progress(b.timing, t) : interp_curve(settings, t);
     return line_at(stretch_control_line(ch.keys, i), u);
   }
   if (interp_smooth(interp)) {
@@ -1335,7 +1315,7 @@ template<typename T> T Channel<T>::evaluate(int frame) const
           u = ease_elastic(t, b.elastic_amplitude, b.elastic_period);
           break;
         case Interp::Custom:
-          u = custom_progress(b.speeds, t);
+          u = timing_progress(b.timing, t);
           break;
         case Interp::Bezier:
           u = bezier_ease(b.bezier, t);
@@ -1366,7 +1346,7 @@ template<typename T> T Channel<T>::evaluate(int frame) const
     case Interp::Noisy:
       return a.value + (b.value - a.value) * t + noise_of(a.value, b, float(frame));
     case Interp::Custom:
-      return a.value + (b.value - a.value) * custom_progress(b.speeds, t);
+      return a.value + (b.value - a.value) * timing_progress(b.timing, t);
     case Interp::Bezier:
       return a.value + (b.value - a.value) * bezier_ease(b.bezier, t);
     case Interp::Smooth:

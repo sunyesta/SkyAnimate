@@ -1277,19 +1277,9 @@ template<typename T> std::vector<float> stretch_speeds(const Channel<T> &ch, siz
   if constexpr (std::is_same_v<T, float2>) {
     shaped = shaped && b.path_controls.empty();
   }
-  if (b.interp == Interp::Custom && !b.speeds.empty()) {
-    if (b.speeds.size() == size_t(n)) {
-      s = b.speeds;
-    }
-    else {
-      /* Painted for a stretch of another length (its keys moved since): as it plays now, each frame's step. */
-      float before = 0.0f;
-      for (int j = 0; j < n; j++) {
-        const float now = custom_progress(b.speeds, float(j + 1) / float(n));
-        s[size_t(j)] = (now - before) * float(n);
-        before = now;
-      }
-    }
+  if (b.interp == Interp::Custom && !b.timing.empty()) {
+    /* Its curve at each frame (whatever length the stretch is now: the curve stretches with it). */
+    s = timing_speeds(b.timing, n);
   }
   else if (shaped) {
     /* Its mode's progress, signed: Back and Elastic go past the key and come back to it. */
@@ -1315,7 +1305,7 @@ template<typename T> std::vector<float> stretch_speeds(const Channel<T> &ch, siz
     }
   }
   /* A Custom or shaped stretch's speeds keep their signs (going back past a key); measured ones are how far it went. */
-  const bool custom = (b.interp == Interp::Custom && !b.speeds.empty()) || shaped;
+  const bool custom = (b.interp == Interp::Custom && !b.timing.empty()) || shaped;
   float total = 0.0f;
   for (float &v : s) {
     if (!custom) {
@@ -1623,7 +1613,7 @@ static bool held_copy(const Document &doc, const MotionPathTarget &t, Document &
   }
   Key<float2> held = ch->keys.front();
   held.interp = Interp::Linear;
-  held.speeds.clear();
+  held.timing = {};
   held.path_handles = PathHandles::Auto;
   ch->keys = {held};
   return true;
@@ -2600,7 +2590,7 @@ template<typename F> static bool with_path_channels(Document &doc, const MotionP
   }
   Layer *layer = layer_find(doc, t.layer);
   bool found = false;
-  using Timing = std::tuple<int, Interp, std::vector<float>>;
+  using Timing = std::tuple<int, Interp, TimingCurve>;
   std::vector<Timing> changed;
   std::vector<int> first_before, first_after;
   if (layer) {
@@ -2611,13 +2601,13 @@ template<typename F> static bool with_path_channels(Document &doc, const MotionP
       if (!found) {
         std::vector<Timing> before;
         for (const auto &k : ch.keys) {
-          before.push_back({k.frame, k.interp, k.speeds});
+          before.push_back({k.frame, k.interp, k.timing});
           first_before.push_back(k.frame);
         }
         f(ch);
         found = true;
         for (const auto &k : ch.keys) {
-          Timing now{k.frame, k.interp, k.speeds};
+          Timing now{k.frame, k.interp, k.timing};
           first_after.push_back(k.frame);
           if (std::find(before.begin(), before.end(), now) == before.end()) {
             changed.push_back(std::move(now));
@@ -2636,9 +2626,9 @@ template<typename F> static bool with_path_channels(Document &doc, const MotionP
           ch.keys[j].frame = first_after[j];
         }
       }
-      for (const auto &[frame, interp, speeds] : changed) {
-        if (auto *k = ch.key_at(frame); k && k->interp == interp && k->speeds.size() == speeds.size()) {
-          k->speeds = speeds;
+      for (const auto &[frame, interp, timing] : changed) {
+        if (auto *k = ch.key_at(frame); k && k->interp == interp) {
+          k->timing = timing;
         }
       }
       return true;
@@ -2832,6 +2822,49 @@ bool motion_path_stretch_shape(Document &doc, const MotionPathTarget &target, in
     /* Each frame at least the speed brushes' least on, so no dot sits on a key. */
     order_progress(u, 0, 0.02f / float(n));
     key_speeds_set(ch.keys, i, progress_speeds(u));
+    done = true;
+  });
+  animation_evaluate(doc, doc.frame_current);
+  return done;
+}
+
+bool motion_path_timing_curve(const Document &doc, const MotionPathTarget &target, int frame, TimingCurve &r_curve,
+                              int *r_start, int *r_frames)
+{
+  bool found = false;
+  with_path_channel(const_cast<Document &>(doc), target, [&](auto &ch) {
+    size_t i = 0;
+    int start = 0, n = 0;
+    if (found || !stretch_of(ch, frame, i, start, n)) {
+      return;
+    }
+    const auto &b = ch.keys[i];
+    r_curve = b.interp == Interp::Custom ? b.timing : timing_fit(speeds_progress(stretch_speeds(ch, i, start, n)));
+    if (r_start) {
+      *r_start = start;
+    }
+    if (r_frames) {
+      *r_frames = n;
+    }
+    found = true;
+  });
+  return found;
+}
+
+bool motion_path_timing_curve_set(Document &doc, const MotionPathTarget &target, int frame, const TimingCurve &curve)
+{
+  if (!curve.points.empty() && !timing_valid(curve)) {
+    return false;
+  }
+  bool done = false;
+  with_timing_channels(doc, target, [&](auto &ch) {
+    size_t i = 0;
+    int start = 0, n = 0;
+    if (!stretch_of(ch, frame, i, start, n)) {
+      return;
+    }
+    stretch_make_custom(ch, i, start, n);
+    key_timing_set(ch.keys, i, curve);
     done = true;
   });
   animation_evaluate(doc, doc.frame_current);
@@ -4167,9 +4200,9 @@ std::vector<float> stretch_length_speeds(const Channel<float2> &ch, size_t i)
   if (n < 1 || b.interp == Interp::Step || b.interp == Interp::Pose || b.interp == Interp::Cycle || a.interp == Interp::Cycle) {
     return {};
   }
-  if (b.interp == Interp::Custom && !b.speeds.empty()) {
+  if (b.interp == Interp::Custom && !b.timing.empty()) {
     /* Already by length along it. */
-    return b.speeds;
+    return timing_speeds(b.timing, n);
   }
   if (interp_timed_by_mode(b.interp)) {
     /* Its mode's progress by length along it, signed: Back, Bounce and Elastic go past the key and back. */
@@ -4455,7 +4488,7 @@ bool motion_path_stretch_reset(Document &doc, const MotionPathTarget &target, in
   if (timing) {
     if (shape) {
       b.interp = Interp::Linear;
-      b.speeds.clear();
+      b.timing = {};
     }
     else if (!motion_path_even_spacing(doc, target, end - 1)) {
       return false;
@@ -4616,7 +4649,7 @@ int motion_path_sculpt_dab(Document &doc, PathSculptStroke &stroke, const Sculpt
     for (size_t i = 1; i < n; i++) {
       if ((moved[i] || moved[i - 1]) && reshaped(i) && !tg.speeds[i].empty()) {
         keys[i].interp = Interp::Custom;
-        keys[i].speeds = tg.speeds[i];
+        keys[i].timing = timing_from_speeds(tg.speeds[i]);
       }
     }
     ch->keys = std::move(keys);
