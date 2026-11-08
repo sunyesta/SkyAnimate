@@ -4,6 +4,8 @@ above has its own row; its keys would split stretches the row can't retime. A po
 
 import oanim
 
+oanim.data.document.auto_freeze_keys = False  # keyed channel by channel here, not holding the poses either side
+
 ops, doc, layers = oanim.ops, oanim.data.document, oanim.data.layers
 
 
@@ -24,6 +26,7 @@ def bone(rig, name):
 
 
 ops.wm.read_homefile()
+oanim.data.document.auto_freeze_keys = False  # keyed channel by channel here, not holding the poses either side
 doc.auto_key = True
 doc.frame_current = 0
 ops.layer.new_bone()

@@ -9,6 +9,8 @@ import tempfile
 
 import oanim
 
+oanim.data.document.auto_freeze_keys = False  # keyed channel by channel here, not holding the poses either side
+
 doc = oanim.data.document
 layer = oanim.data.layers.active
 layer.key_whole_drawing = False  # keyed point by point here

@@ -12,6 +12,8 @@ import tempfile
 
 import oanim
 
+oanim.data.document.auto_freeze_keys = False  # keyed channel by channel here, not holding the poses either side
+
 doc = oanim.data.document
 layers = oanim.data.layers
 paths = oanim.wm.motion_paths
@@ -174,6 +176,7 @@ try:
     path = os.path.join(folder, "paths.oanim")
     assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
     assert oanim.ops.wm.read_homefile() == {'FINISHED'}
+    oanim.data.document.auto_freeze_keys = False  # keyed channel by channel here, not holding the poses either side
     assert not oanim.data.document.motion_paths
     assert oanim.ops.wm.open_mainfile(filepath=path) == {'FINISHED'}
     doc = oanim.data.document

@@ -4,14 +4,17 @@ modes, and Auto-Freeze Keys (a channel keyed holds at its layer's poses either s
 Run with:  OpenAnimate --background --python tests/test_auto_key_options.py
 """
 
+import json
 import os
 import shutil
 import tempfile
+import zipfile
 
 import oanim
 
 doc = oanim.data.document
-assert doc.auto_key and doc.auto_key_mode == "ADD_REPLACE" and not doc.auto_freeze_keys, "the defaults"
+assert doc.auto_key and doc.auto_key_mode == "ADD_REPLACE" and doc.auto_freeze_keys, "the defaults"
+doc.auto_freeze_keys = False  # the modes first, channel by channel
 
 doc.frame_current = 0
 oanim.ops.layer.new_bone()
@@ -130,6 +133,18 @@ doc.auto_freeze_keys = False
 oanim.ops.wm.open_mainfile(filepath=path, confirmed="1")
 doc = oanim.data.document
 assert doc.auto_key_mode == "REPLACE" and doc.auto_freeze_keys, (doc.auto_key_mode, doc.auto_freeze_keys)
+
+# A file saved before Auto-Freeze Keys was on for new files opens with it off, as it was; a new file has it on.
+with zipfile.ZipFile(path) as z:
+    data = json.loads(z.read("document.json"))
+data["document"].pop("auto_freeze_keys")
+old = os.path.join(os.path.dirname(path), "old.oanim")
+with zipfile.ZipFile(old, "w") as z:
+    z.writestr("document.json", json.dumps(data))
+oanim.ops.wm.open_mainfile(filepath=old, confirmed="1")
+assert not oanim.data.document.auto_freeze_keys, "an older file keeps it off"
+oanim.ops.wm.read_homefile(confirmed="1")
+assert oanim.data.document.auto_freeze_keys, "a new file has it on"
 
 shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 print("auto key options: ok")

@@ -11,6 +11,8 @@ import tempfile
 
 import oanim
 
+oanim.data.document.auto_freeze_keys = False  # keyed channel by channel here, not holding the poses either side
+
 ops, doc, layers = oanim.ops, oanim.data.document, oanim.data.layers
 doc.auto_key = True
 

@@ -142,12 +142,12 @@ struct Document {
    * -1 before the first evaluation. Not saved. */
   int evaluated_frame = -1;
   /* Edits at frames other than 0 add keys (Blender's record button, on by default), as `auto_key_mode`
-   * says (its dropdown). Auto-Freeze Keys (Moho's): a bone keyed by an edit keys every other bone of
-   * its bone layer shown there on that frame too, and a point keyed every point of its drawing, so the whole
-   * pose and shape hold there. */
+   * says (its dropdown). Auto-Freeze Keys: a channel keyed by an edit first gets a key at its layer's poses
+   * either side, holding what it showed there (hold_poses_around in animation.cc). On for new files; a file saved
+   * without it opens with it off. */
   bool auto_key = true;
   AutoKeyMode auto_key_mode = AutoKeyMode::AddReplace;
-  bool auto_freeze_keys = false;
+  bool auto_freeze_keys = true;
   /* Time Together (the timeline's chain toggle): changing the timing of keys changes it the same way on the linked
    * channels, those of the selected layers and bones keyed on the same frames at both ends of the stretch edited
    * (time_together_* in anim/animation.hh). */

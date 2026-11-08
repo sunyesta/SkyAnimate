@@ -8,6 +8,8 @@ import math
 
 import oanim
 
+oanim.data.document.auto_freeze_keys = False  # keyed channel by channel here, not holding the poses either side
+
 ops, doc, layers = oanim.ops, oanim.data.document, oanim.data.layers
 doc.auto_key = True
 
@@ -140,6 +142,7 @@ doc.action = ""
 
 # --- Two action bone actions that turn each other don't hang, and each plays once ------------------------------------------
 ops.wm.read_homefile(confirmed="1")
+oanim.data.document.auto_freeze_keys = False  # keyed channel by channel here, not holding the poses either side
 doc, layers = oanim.data.document, oanim.data.layers
 doc.auto_key = True
 ops.layer.new_bone()

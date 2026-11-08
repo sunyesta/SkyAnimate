@@ -91,6 +91,10 @@ PENDING = [
      'Auto-Freeze Keys holds a channel keyed at its layer\'s poses either side', 'auto_key_options'),
     ('src/anim/animation.cc', 'if (at_after != INT32_MIN && !ch.key_at(at_after)) {', 'if (false) {',
      'Auto-Freeze Keys holds the pose after the edit too, not only the one before', 'auto_key_options'),
+    ('src/data/document.hh', '  bool auto_freeze_keys = true;', '  bool auto_freeze_keys = false;',
+     'Auto-Freeze Keys is on for new files', 'auto_key_options'),
+    ('src/io/oanim_file.cc', 'get_bool(j, "auto_freeze_keys", false)', 'get_bool(j, "auto_freeze_keys", true)',
+     'a file saved without Auto-Freeze Keys opens with it off', 'auto_key_options'),
 ]
 
 def build(root):

@@ -16,6 +16,8 @@ import tempfile
 
 import oanim
 
+oanim.data.document.auto_freeze_keys = False  # keyed channel by channel here, not holding the poses either side
+
 doc = oanim.data.document
 layers = oanim.data.layers
 ops = oanim.ops
@@ -41,6 +43,7 @@ def finite(v):
 def start(timing=False):
     """A fresh document with the Motion Path tool; `timing` as the timing tests have it (the Edit brush, no falloff)."""
     assert ops.wm.read_homefile() == {'FINISHED'}
+    oanim.data.document.auto_freeze_keys = False  # keyed channel by channel here, not holding the poses either side
     doc.motion_paths = True
     doc.path_before, doc.path_after = 3, 3
     doc.auto_key = False
