@@ -2265,9 +2265,9 @@ static void timeline_header(Area &area, Context &C)
     }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-      ImGui::SetTooltip("Keying a bone keys every other bone of its bone layer shown there on that frame too, and "
-                        "keying a point every point of its drawing, so the whole pose and shape hold there (Moho's). "
-                        "Not with Replace, which adds no keys");
+      ImGui::SetTooltip("A channel keyed first gets a key at its layer's poses either side (the frames keyed anywhere "
+                        "on the layer), holding what it showed there, so the edit changes it only between them and "
+                        "the poses hold. Not with Replace, which adds no keys");
     }
     ImGui::EndPopup();
   }

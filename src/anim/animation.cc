@@ -342,8 +342,10 @@ template<typename T> static void fillers_hold_around(Channel<T> &ch, int frame)
 }
 
 /* Turns a change to `ch` since it was last evaluated into a key at `frame` (auto-key on). Replace
- * (Blender's auto-keying mode) only changes a key already on the frame. Returns whether it keyed. */
-template<typename T> static bool record(Channel<T> &ch, const T &value, int frame, bool auto_key, bool replace = false)
+ * (Blender's auto-keying mode) only changes a key already on the frame. `before(ch)` runs just before the key goes
+ * in (the channel animated by then, holding what it had). Returns whether it keyed. */
+template<typename T, typename Before>
+static bool record_with(Channel<T> &ch, const T &value, int frame, bool auto_key, bool replace, Before &&before)
 {
   if (!ch.has_last) {
     /* New data (a point just drawn): it is simply there, on every frame. */
@@ -372,6 +374,7 @@ template<typename T> static bool record(Channel<T> &ch, const T &value, int fram
       ch.set_key(0, ch.last - ch.from_action_bones);
     }
     fillers_hold_around(ch, frame);
+    before(ch);
     key_put(ch, frame, base);
     ch.last = value;
     return true;
@@ -380,19 +383,41 @@ template<typename T> static bool record(Channel<T> &ch, const T &value, int fram
   return false;
 }
 
-/* Auto-Freeze Keys: a key at `frame` holding what the channel has now, unless it has one there. */
-template<typename T> static void freeze(Channel<T> &ch, const T &value, int frame)
+template<typename T> static bool record(Channel<T> &ch, const T &value, int frame, bool auto_key, bool replace = false)
 {
-  if (ch.key_at(frame)) {
-    return;
+  return record_with(ch, value, frame, auto_key, replace, [](Channel<T> &) {});
+}
+
+/* A layer's poses: the frames keyed anywhere on it (its own channels, its bones', its drawing's points'), sorted. */
+static std::vector<int> layer_pose_frames(Layer &layer)
+{
+  std::set<int> frames;
+  layer_for_each_channel<false>(layer, [&](auto &ch, auto & /*value*/) {
+    for (const auto &k : ch.keys) {
+      frames.insert(k.frame);
+    }
+  });
+  return {frames.begin(), frames.end()};
+}
+
+/* Auto-Freeze Keys: before `ch` is keyed on `frame`, a key at the layer's pose either side (`poses`) holding what it
+ * shows there, unless it has one, so the edit changes it only between those poses. The frame keyed is a pose from
+ * then on, which later edits nearby hold in turn: the poses stay without every channel keyed on every one. */
+template<typename T> static void hold_poses_around(Channel<T> &ch, const std::vector<int> &poses, int frame)
+{
+  const auto after = std::upper_bound(poses.begin(), poses.end(), frame);
+  auto before = std::lower_bound(poses.begin(), poses.end(), frame);
+  const int at_before = before != poses.begin() ? *std::prev(before) : INT32_MIN;
+  const int at_after = after != poses.end() ? *after : INT32_MIN;
+  /* Both worked out before either goes in. */
+  const T held_before = at_before != INT32_MIN ? ch.evaluate(at_before) : T{};
+  const T held_after = at_after != INT32_MIN ? ch.evaluate(at_after) : T{};
+  if (at_before != INT32_MIN && !ch.key_at(at_before)) {
+    key_put(ch, at_before, held_before);
   }
-  const T base = value - ch.from_action_bones;
-  if (!ch.animated()) {
-    ch.set_key(0, base);
+  if (at_after != INT32_MIN && !ch.key_at(at_after)) {
+    key_put(ch, at_after, held_after);
   }
-  key_put(ch, frame, base);
-  ch.last = value;
-  ch.has_last = true;
 }
 
 template<typename T> static void evaluate(Channel<T> &ch, T &value, int frame)
@@ -1116,33 +1141,34 @@ void animation_record(Document &doc)
     }
   });
   const bool replace = doc.auto_key_mode == AutoKeyMode::Replace;
-  /* The channels an edit keyed, for Auto-Freeze Keys (only then: keying every point of a big drawing puts
-   * hundreds of thousands here), sorted once recording is done. */
+  /* Auto-Freeze Keys: a channel keyed holds at its layer's poses either side first (hold_poses_around). Not in
+   * Replace, which adds no keys, nor on the setup frame. */
   const bool freezing = auto_key && doc.auto_freeze_keys && !replace && frame != 0;
-  std::vector<const void *> keyed_list;
-  struct Keyed {
-    const std::vector<const void *> &list;
-    bool empty() const { return list.empty(); }
-    size_t count(const void *ch) const { return std::binary_search(list.begin(), list.end(), ch) ? 1 : 0; }
-  } keyed{keyed_list};
   /* A media or text layer with Don't Auto Key on is changed but never auto-keyed. Each layer's channels on their
-   * own (what each keyed gathered apart, then together). */
-  std::vector<std::vector<const void *>> keyed_by_layer(flat.size());
+   * own. */
   parallel_for(flat.size(), 16, [&](size_t begin, size_t end) {
     for (size_t i = begin; i < end; i++) {
       Layer &layer = *flat[i];
       const bool keys = auto_key && !(layer.is_media() && layer.media.no_auto_key) &&
                         !(layer.is_text() && layer.text.no_auto_key);
+      /* The layer's poses, worked out once something on it is keyed (most layers have no edit). Keys put on the
+       * frame meanwhile don't change which poses lie either side of it. */
+      std::vector<int> poses;
+      bool poses_known = false;
       layer_for_each_channel(layer, [&](auto &ch, auto &value) {
-        if (record(ch, value, frame, keys, replace) && freezing) {
-          keyed_by_layer[i].push_back(&ch);
-        }
+        record_with(ch, value, frame, keys, replace, [&](auto &keyed) {
+          if (!freezing) {
+            return;
+          }
+          if (!poses_known) {
+            poses = layer_pose_frames(layer);
+            poses_known = true;
+          }
+          hold_poses_around(keyed, poses, frame);
+        });
       });
     }
   });
-  for (const std::vector<const void *> &list : keyed_by_layer) {
-    keyed_list.insert(keyed_list.end(), list.begin(), list.end());
-  }
   /* Key Whole Drawing: a point keyed here keys every point here; turned on, the keys agree from then on (their
    * timing once). */
   std::vector<int> settled(flat.size(), 0);
@@ -1220,85 +1246,6 @@ void animation_record(Document &doc)
   layer_for_each_channel(doc.simulation, [&](auto &ch, auto &value) { record(ch, value, frame, auto_key, replace); });
   layer_for_each_channel(document_camera(doc),
                          [&](auto &ch, auto &value) { record(ch, value, frame, auto_key, replace); });
-  /* Auto-Freeze Keys (Moho's): a bone keyed here keys every bone of its bone layer shown here, so
-   * the pose holds on this frame whatever is changed elsewhere later; and a point keyed here (where it
-   * is, its width, curvature or handles) keys every point of its drawing, so the whole shape holds. Not
-   * in Replace, which adds no keys. */
-  std::sort(keyed_list.begin(), keyed_list.end());
-  if (freezing && !keyed.empty()) {
-    const auto freeze_points = [&](Layer &layer) {
-      if (layer.is_reference()) {
-        bool shaped = false;
-        for (auto &[id, o] : layer.reference.points) {
-          shaped = shaped || keyed.count(&o.offset_keys);
-        }
-        for (auto &[key, o] : layer.reference.handles) {
-          shaped = shaped || keyed.count(&o.offset_keys);
-        }
-        if (shaped) {
-          for (auto &[id, o] : layer.reference.points) {
-            freeze(o.offset_keys, o.offset, frame);
-          }
-          for (auto &[key, o] : layer.reference.handles) {
-            freeze(o.offset_keys, o.offset, frame);
-          }
-        }
-        return;
-      }
-      VectorDrawing &drawing = layer.drawing;
-      bool shaped = std::any_of(drawing.points.begin(), drawing.points.end(), [&](const MeshPoint &p) {
-        return keyed.count(&p.pos_keys) || keyed.count(&p.radius_keys);
-      });
-      for (const Curve &curve : drawing.curves) {
-        for (const CurvePoint &cp : curve.points) {
-          shaped = shaped || keyed.count(&cp.curvature_keys) || keyed.count(&cp.handle_in_keys) ||
-                   keyed.count(&cp.handle_out_keys);
-        }
-      }
-      if (!shaped) {
-        return;
-      }
-      /* Keys hold the change from the setup shape, as recording takes them. */
-      drawing_changes_from_values(drawing);
-      for (MeshPoint &p : drawing.points) {
-        freeze(p.pos_keys, p.transform, frame);
-        freeze(p.radius_keys, p.radius, frame);
-      }
-      for (Curve &curve : drawing.curves) {
-        for (CurvePoint &cp : curve.points) {
-          freeze(cp.curvature_keys, cp.curvature, frame);
-          freeze(cp.handle_in_keys, cp.change_in, frame);
-          freeze(cp.handle_out_keys, cp.change_out, frame);
-        }
-      }
-    };
-    const auto freeze_layers = [&](auto &&self, std::vector<Layer> &layers) -> void {
-      for (Layer &layer : layers) {
-        const bool posed = std::any_of(layer.bones.begin(), layer.bones.end(), [&](const Bone &b) {
-          return keyed.count(&b.position_keys) || keyed.count(&b.angle_keys) || keyed.count(&b.scale_keys);
-        });
-        if (posed) {
-          for (Bone &bone : layer.bones) {
-            if (!bone_shown(layer, bone)) {
-              continue;
-            }
-            bone_changes_from_values(bone);
-            freeze(bone.position_keys, bone.transform, frame);
-            /* A linked dial's turn is its knob's key (a key of its own would be folded onto the knob, at rest), and a
-             * controller has nothing to turn or scale. */
-            if (bone_is_controller(bone) || controller_of_dial(layer, bone)) {
-              continue;
-            }
-            freeze(bone.angle_keys, bone.turn, frame);
-            freeze(bone.scale_keys, bone.scale, frame);
-          }
-        }
-        freeze_points(layer);
-        self(self, layer.children);
-      }
-    };
-    freeze_layers(freeze_layers, doc.layers);
-  }
 }
 
 /* Every layer's channels evaluated on `frame`. Just after animation_record (`recorded`: every value is as the

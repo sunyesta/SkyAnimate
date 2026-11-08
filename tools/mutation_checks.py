@@ -87,6 +87,10 @@ PENDING = [
      'keyed between poses while keying together, the poses either side hold', 'key_together_fold'),
     ('src/anim/animation.cc', '      k->filler = false;', '      k->filler = true;',
      'the held poses either side of an edit stay when Key Together is off', 'key_together_fold'),
+    ('src/anim/animation.cc', '          hold_poses_around(keyed, poses, frame);', '',
+     'Auto-Freeze Keys holds a channel keyed at its layer\'s poses either side', 'auto_key_options'),
+    ('src/anim/animation.cc', 'if (at_after != INT32_MIN && !ch.key_at(at_after)) {', 'if (false) {',
+     'Auto-Freeze Keys holds the pose after the edit too, not only the one before', 'auto_key_options'),
 ]
 
 def build(root):

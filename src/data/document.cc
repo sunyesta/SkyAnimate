@@ -58,9 +58,9 @@ const rna::StructRNA &Document::rna()
             "already on the frame",
             &Document::auto_key_mode, {{"ADD_REPLACE", "Add & Replace"}, {"REPLACE", "Replace"}}),
         def_bool<Document>("auto_freeze_keys", "Auto-Freeze Keys",
-                           "Keying a bone keys every other bone of its bone layer shown there on that frame too, "
-                           "and keying a point every point of its drawing, so the whole pose and shape hold there "
-                           "(Moho's)",
+                           "A channel keyed first gets a key at its layer's poses either side (the frames keyed "
+                           "anywhere on the layer), holding what it showed there, so the edit changes it only "
+                           "between them and the poses hold",
                            &Document::auto_freeze_keys),
         def_bool<Document>("time_together", "Time Together",
                            "Changing the timing of keys changes it the same way on the selected layers' and bones' "

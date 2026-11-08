@@ -1,5 +1,5 @@
 """Auto-keying's options (the dropdown beside the record button): Blender's Add & Replace and Replace
-modes, and Moho's Auto-Freeze Keys. Saved with the project.
+modes, and Auto-Freeze Keys (a channel keyed holds at its layer's poses either side). Saved with the project.
 
 Run with:  OpenAnimate --background --python tests/test_auto_key_options.py
 """
@@ -49,18 +49,32 @@ pose(30, "b", 0.4)
 assert frames("b") == [], "an unanimated bone isn't keyed in Replace"
 doc.auto_key_mode = "ADD_REPLACE"
 
-# Auto-Freeze Keys: keying one bone keys the others shown in its bone layer on that frame too.
+# Auto-Freeze Keys: only the channel edited is keyed, first holding at its layer's poses either side (the frames keyed
+# anywhere on the layer), so the edit changes it only between them.
 doc.auto_freeze_keys = True
 pose(40, "a", 0.2)
-assert 40 in frames("a") and 40 in frames("b") and 40 in frames("c"), (frames("a"), frames("b"), frames("c"))
-assert 40 in frames("b", "position") and 40 in frames("c", "scale"), "angle, position and scale all held"
-# The frozen bones keep the pose they had there.
-doc.frame_current = 40
-b_angle = [b for b in rig.bones if b["name"] == "b"][0]["angle"]
-pose(50, "b", 1.0)
-doc.frame_current = 40
-assert abs([b for b in rig.bones if b["name"] == "b"][0]["angle"] - b_angle) < 1e-5, "frame 40 holds"
-# Not on the setup frame, and nothing when no bone was keyed.
+assert frames("a") == [0, 10, 40] and frames("b") == [] and frames("c") == [], \
+    ("no other bone keyed", frames("a"), frames("b"), frames("c"))
+
+
+def angle(bone, frame):
+    doc.frame_current = frame
+    return [b for b in rig.bones if b["name"] == bone][0]["angle"]
+
+
+# b, never keyed, turned on 25 (between the poses on 10 and 40): held at both, so it turns only between them.
+b10, b40 = angle("b", 10), angle("b", 40)
+pose(25, "b", 1.0)
+assert frames("b") == [0, 10, 25, 40], frames("b")
+assert abs(angle("b", 10) - b10) < 1e-5 and abs(angle("b", 40) - b40) < 1e-5 and abs(angle("b", 25) - 1.0) < 1e-5, \
+    ("the poses either side hold", angle("b", 10), b10, angle("b", 40), b40)
+assert frames("b", "position") == [], "only the channel edited"
+# Past the last pose: held at the one before only.
+c25, c40 = angle("c", 25), angle("c", 40)
+pose(50, "c", 1.0)
+assert frames("c") == [0, 40, 50], frames("c")
+assert abs(angle("c", 40) - c40) < 1e-5 and abs(angle("c", 25) - c25) < 1e-5, "frame 40 holds, and so before it"
+# Nothing when nothing was keyed.
 before = frames("c")
 doc.frame_current = 60
 doc.frame_current = 61
@@ -71,27 +85,40 @@ pose(10, "a", 0.7)
 assert 10 not in frames("c"), "Replace never adds keys, frozen or not"
 doc.auto_key_mode = "ADD_REPLACE"
 
-# A point keyed keys every point of its drawing on that frame, so the whole shape holds.
+# Points too: a drawing posed on 60 (its last point moved), then its first point moved on 70: held on 60.
 oanim.ops.layer.new()
 drawing = oanim.data.layers.active
 drawing.key_whole_drawing = False  # keyed point by point here
 drawing.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
 oanim.ops.mesh.select_none()
+
+
+def point_keys(i, what="pos"):
+    try:
+        return [k["frame"] for k in drawing.keyframes("points[%d].%s" % (i, what))]
+    except KeyError:
+        return []
+
+
+doc.auto_freeze_keys = False
+doc.frame_current = 60
+oanim.ops.sculpt.stroke(brush="GRAB", path="2,0;2,0.5", radius=0.3, strength=1.0, falloff="CONSTANT")
+doc.frame_current = 61
+assert point_keys(2) == [0, 60] and point_keys(0) == [], (point_keys(2), point_keys(0))
+doc.auto_freeze_keys = True
 doc.frame_current = 70
 oanim.ops.sculpt.stroke(brush="GRAB", path="0,0;0,0.5", radius=0.3, strength=1.0, falloff="CONSTANT")
 doc.frame_current = 71
-point_keys = lambda i, what="pos": [k["frame"] for k in drawing.keyframes("points[%d].%s" % (i, what))]
-assert 70 in point_keys(0), point_keys(0)
-assert 70 in point_keys(1) and 70 in point_keys(2), ("the others are frozen", point_keys(1), point_keys(2))
-assert 70 in point_keys(2, "radius"), "widths too"
-doc.frame_current = 70
-assert abs(drawing.points[2][1]) < 1e-6, "a frozen point keeps where it was"
-# Without Auto-Freeze, only the point that moved.
+assert point_keys(0) == [0, 60, 70], point_keys(0)
+assert point_keys(1) == [], ("an untouched point gets no keys", point_keys(1))
+doc.frame_current = 60
+assert abs(drawing.points[0][1]) < 1e-6, "the pose on 60 holds"
+# Without Auto-Freeze, only the key on the frame.
 doc.auto_freeze_keys = False
-doc.frame_current = 80
-oanim.ops.sculpt.stroke(brush="GRAB", path="0,0.5;0,0.8", radius=0.3, strength=1.0, falloff="CONSTANT")
-doc.frame_current = 81
-assert 80 in point_keys(0) and 80 not in point_keys(2), (point_keys(0), point_keys(2))
+doc.frame_current = 85
+oanim.ops.sculpt.stroke(brush="GRAB", path="1,0;1,0.5", radius=0.3, strength=1.0, falloff="CONSTANT")
+doc.frame_current = 86
+assert point_keys(1) == [0, 85], point_keys(1)
 doc.auto_freeze_keys = True
 
 # Saved with the project.

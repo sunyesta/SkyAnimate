@@ -103,7 +103,7 @@ r.settle()
 assert close(r.bone("joy")["knob"], (45.0, 0.0)), ("the knob's key stays", r.keys('bones["joy"].position'))
 assert not r.keys('bones["turn_r"].angle') and not r.keys('bones["turn_l"].angle'), "a linked bone is the knob's"
 assert not r.keys('bones["joy"].angle') and not r.keys('bones["joy"].scale'), "a controller has nothing to turn or scale"
-assert any(f == 10 for f, _ in r.keys('bones["head"].angle')), "the other bones are frozen as ever"
+assert not any(f == 10 for f, _ in r.keys('bones["head"].angle')), "only the channel edited: no other bone keyed"
 
 # --- Apply Pose as Rest Pose leaves the box where it rests ------------------------------------------------------------
 r = Rig()
