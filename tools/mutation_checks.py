@@ -71,6 +71,12 @@ PENDING = [
     ('src/anim/sculpt.cc', "                             sl.stored_start[size_t(point)], true});",
      "                             sl.stored_start[size_t(point)], false});",
      'Sculpt Grab settling on a squashed deform also tries where the point was stored', 'deform_settle_squashed'),
+    ('src/anim/sculpt.cc', "    const float step = dab.simplify ? s.spacing : spacing;",
+     "    const float step = s.spacing;",
+     "Dyntopo's stroke adds points at the brush's spacing, not the Resolution's", 'sculpt_dyntopo'),
+    ('src/anim/sculpt.cc', "    if (dab.decimate && sl.tolerance > 0.0f) {",
+     "    if (sl.tolerance > 0.0f) {",
+     "Dyntopo takes out points after a stroke only with Decimate ticked", 'sculpt_dyntopo'),
 ]
 
 def build(root):

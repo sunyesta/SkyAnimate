@@ -606,9 +606,10 @@ def sculpt_settings():
     SURFACE_SMOOTH), preset (the shelf's preset it was picked from), radius (screen pixels), strength (0-1),
     falloff (SMOOTH, SPHERE, CONSTANT), pressure_radius, pressure_strength, selected_only and
     surface_sensitivity (Surface Smooth's Lump Sensitivity: 0-1 with no top, how big a lump it takes out; 1 is a
-    tenth of the canvas's height, whatever its resolution), and Dyntopo's: dyntopo (on or off), resolution (points per
-    unit of each layer's own space: a stroke resamples the line that finely, following the layer's scale, and Collapse
-    keeps it to within a tenth of a step) and refine (SUBDIVIDE, COLLAPSE, SUBDIVIDE_COLLAPSE)."""
+    tenth of the canvas's height, whatever its resolution), and Dyntopo's: dyntopo (on or off), decimate (when a stroke ends,
+    take out the points the line keeps its shape without) and resolution (points per unit of each layer's own space,
+    following the layer's scale: Decimate and Simplify keep the line to within a tenth of a step; a stroke adds points
+    at the brush's own spacing)."""
     return _oanim.sculpt_settings()
 
 

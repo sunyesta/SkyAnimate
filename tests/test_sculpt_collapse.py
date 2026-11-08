@@ -1,11 +1,11 @@
-"""Dyntopo's Collapse and Simplify (anim/sculpt.hh), and what the resample counts as moved:
+"""Dyntopo's Decimate (Collapse after a stroke) and Simplify (anim/sculpt.hh), and what the resample counts as moved:
 
-- a brush far from the line moves none of it, so Dyntopo resamples and collapses nothing (Twist turned by nothing about
+- a brush far from the line moves none of it, so Dyntopo resamples and decimates nothing (Twist turned by nothing about
   a far centre still rounds);
-- Collapse keeps the line's width as well as its place: a Thickness bump stays, after a stroke or Simplify;
-- on a layer squashed and turned (its own or a group's), the line Collapse leaves stays within its tolerance of the line
+- Decimate keeps the line's width as well as its place: a Thickness bump stays, after a stroke or Simplify;
+- on a layer squashed and turned (its own or a group's), the line Decimate leaves stays within its tolerance of the line
   as it was: the spans are fitted where the line shows;
-- Collapse, Simplify and the resample take about as long per point however many there are (not the square of it).
+- Decimate, Simplify and the resample take about as long per point however many there are (not the square of it).
 
 Run with:  OpenAnimate --background --python tests/test_sculpt_collapse.py
 """
@@ -94,13 +94,13 @@ doc.auto_key = False
 
 # --- A brush far from the line moves none of it ------------------------------------------------------------------------
 for brush in ("TWIST", "PINCH", "PUSH"):
-    for refine in ("SUBDIVIDE", "SUBDIVIDE_COLLAPSE"):
+    for decimate in ("0", "1"):
         l = line([(x * 0.5, 0.0) for x in range(9)])
         ops.sculpt.stroke(brush=brush, path=path((20.0, 5.0), (20.0, 5.1)), radius=1.0, strength=1.0, mirror="0",
-                          resolution="40", refine=refine)
-        assert len(l.points) == 9, ("a brush 20 units off changed the line's points", brush, refine, len(l.points))
+                          resolution="40", decimate=decimate)
+        assert len(l.points) == 9, ("a brush 20 units off changed the line's points", brush, decimate, len(l.points))
 
-# --- Collapse keeps the width -------------------------------------------------------------------------------------------
+# --- Decimate keeps the width -------------------------------------------------------------------------------------------
 
 
 def width_at(l, x):
@@ -129,8 +129,8 @@ def keeps_width(l, what, fewer=True):
 
 
 dyn = line([(x * 0.25, 0.0) for x in range(17)])
-assert ops.sculpt.stroke(resolution="12", refine="SUBDIVIDE_COLLAPSE", **thick) == {'FINISHED'}
-# (Thickness moves no point, so it touches none for Collapse to take out)
+assert ops.sculpt.stroke(resolution="12", decimate="1", **thick) == {'FINISHED'}
+# (Thickness moves no point, so it touches none for Decimate to take out)
 keeps_width(dyn, "Dyntopo Thickness", fewer=False)
 simp = line([(x * 0.25, 0.0) for x in range(17)])
 assert ops.sculpt.stroke(**thick) == {'FINISHED'}
@@ -139,15 +139,15 @@ keeps_width(simp, "Simplify")
 push = line([(x * 0.25, 0.0) for x in range(17)])
 assert ops.sculpt.stroke(**thick) == {'FINISHED'}
 assert ops.sculpt.stroke(brush="PUSH", path=path((2.0, 0.0), (2.0, 0.0005)), radius=3.0, strength=1.0, mirror="0",
-                         resolution="12", refine="COLLAPSE") == {'FINISHED'}
-keeps_width(push, "Push with Collapse")
+                         resolution="12", decimate="1") == {'FINISHED'}
+keeps_width(push, "Push with Decimate")
 
-# --- Squashed and turned: Collapse stays within its tolerance of the line ----------------------------------------------
+# --- Squashed and turned: Decimate stays within its tolerance of the line ----------------------------------------------
 PTS = [(-1.5, 0.0), (-0.5, 0.3), (0.5, -0.2), (1.5, 0.1), (2.0, 0.8)]
 RES = 40.0
 
 
-def squashed(refine, place, simplify=False):
+def squashed(decimate, place, simplify=False):
     ops.wm.read_homefile(confirmed="1")
     doc.auto_key = False
     l = line(PTS)
@@ -155,7 +155,7 @@ def squashed(refine, place, simplify=False):
     poly = dense(l)
     m = poly[len(poly) // 3]
     assert ops.sculpt.stroke(brush="TWIST", path=path(*[m] * 8), radius=0.5, strength=0.6, falloff="SMOOTH",
-                             mirror="0", resolution=str(RES), refine=refine) == {'FINISHED'}
+                             mirror="0", resolution=str(RES), decimate=decimate) == {'FINISHED'}
     before = dense(l)
     if simplify:
         assert ops.sculpt.simplify(resolution=str(RES)) == {'FINISHED'}
@@ -181,12 +181,12 @@ def in_group(l):
 
 
 for name, place in (("scaled 3 x 0.4", own_scale), ("in a group scaled 1.5 x 0.8 and turned", in_group)):
-    sub, _, tol, many = squashed("SUBDIVIDE", place)
-    _, both, _, few = squashed("SUBDIVIDE_COLLAPSE", place)
+    sub, _, tol, many = squashed("0", place)
+    _, both, _, few = squashed("1", place)
     dev = apart(sub, both)
-    print("%s: Subdivide %d points, Subdivide Collapse %d, strays %.5f (tolerance %.5f)" % (name, many, few, dev, tol))
-    assert few < many and dev < 1.5 * tol, (name, "Collapse strayed", dev, tol)
-    before, after, tol, left = squashed("SUBDIVIDE", place, simplify=True)
+    print("%s: %d points, decimated %d, strays %.5f (tolerance %.5f)" % (name, many, few, dev, tol))
+    assert few < many and dev < 1.5 * tol, (name, "Decimate strayed", dev, tol)
+    before, after, tol, left = squashed("0", place, simplify=True)
     dev = apart(before, after)
     print("%s: Simplify to %d points, strays %.5f" % (name, left, dev))
     assert left < many and dev < 1.5 * tol, (name, "Simplify strayed", dev, tol)
@@ -211,22 +211,23 @@ def simplify_time(n):
     return best_of(run)
 
 
-def stroke_time(resolution, refine):
+def stroke_time(radius, decimate):
+    """A Grab on a line of one segment, all of it resampled at the brush's spacing: a brush 8 times smaller makes 8
+    times the points."""
     def run():
         ops.wm.read_homefile(confirmed="1")
         doc.auto_key = False
-        l = line([(x * 0.5, 0.0) for x in range(9)])
+        l = line([(0.0, 0.0), (4.0, 0.0)])
         t0 = time.perf_counter()
-        ops.sculpt.stroke(brush="GRAB", path=path(*[(2.0, 0.01 * i) for i in range(20)]), radius=0.6, strength=1.0,
-                          mirror="0", resolution=str(resolution), refine=refine)
+        ops.sculpt.stroke(brush="GRAB", path=path(*[(2.0, 0.002 * i) for i in range(20)]), radius=radius,
+                          strength=1.0, mirror="0", resolution="1000", decimate=decimate)
         return time.perf_counter() - t0
     return best_of(run)
 
 
 for what, small, big in (("Simplify", lambda: simplify_time(250), lambda: simplify_time(2000)),
-                         ("Subdivide", lambda: stroke_time(125, "SUBDIVIDE"), lambda: stroke_time(1000, "SUBDIVIDE")),
-                         ("Subdivide Collapse", lambda: stroke_time(125, "SUBDIVIDE_COLLAPSE"),
-                          lambda: stroke_time(1000, "SUBDIVIDE_COLLAPSE"))):
+                         ("Resample", lambda: stroke_time(0.6, "0"), lambda: stroke_time(0.075, "0")),
+                         ("Resample and Decimate", lambda: stroke_time(0.6, "1"), lambda: stroke_time(0.075, "1"))):
     a, b = small(), big()
     print("%s: %.0f ms, 8 times the points %.0f ms" % (what, a * 1000, b * 1000))
     assert b < 24.0 * a + 0.5, (what, "far worse than linear in the points", a, b)

@@ -58,12 +58,6 @@ const char *sculpt_brush_name(SculptBrush brush);
 const char *sculpt_falloff_id(SculptFalloff falloff);
 bool sculpt_falloff_from_id(const std::string &id, SculptFalloff *r_falloff);
 
-/* Dyntopo's Refine Method, as Blender's: add points, take them out, or both. */
-enum class SculptRefine { Subdivide, Collapse, SubdivideCollapse };
-const char *sculpt_refine_id(SculptRefine refine);
-const char *sculpt_refine_name(SculptRefine refine);
-bool sculpt_refine_from_id(const std::string &id, SculptRefine *r_refine);
-
 /* How much of a brush's effect reaches `t` of the way out from its middle (0 to 1). */
 float sculpt_falloff(SculptFalloff falloff, float t);
 
@@ -91,11 +85,12 @@ struct SculptDab {
   /* Surface Smooth's Lump Sensitivity: 0-1 (no top; 0 takes out nothing), how long a lump it takes out, the same
    * on any canvas whatever its resolution, the brush's size or the zoom (see sculpt_surface_tolerance). */
   float surface_sensitivity = 0.25f;
-  /* Dyntopo: its Resolution, points per unit of each layer's own space (the layer's scale and its groups' count; the
-   * zoom, the canvas and the brush don't), 0 for off; and its Refine Method. Only on layers sculpt_dyntopo_blocked
-   * lets through. */
+  /* Dyntopo: on when its Resolution, points per unit of each layer's own space (the layer's scale and its groups'
+   * count; the zoom, the canvas and the brush don't), is above 0. Grab, Push, Pinch and Twist add points at the
+   * stroke's own samples (the brush's spacing); Decimate then takes out, when the stroke ends, the points the line
+   * keeps its shape without to within the Resolution. Only on layers sculpt_dyntopo_blocked lets through. */
   float resolution = 0.0f;
-  SculptRefine refine = SculptRefine::SubdivideCollapse;
+  bool decimate = false;
   /* Simplify: the curves are sampled at the Resolution's spacing, not the brush's. */
   bool simplify = false;
 };
@@ -157,8 +152,9 @@ struct SculptStroke {
     bool mirror_self = false;
     Transform2D mirror;
     /* Dyntopo works on this layer, and how many points its drawing had when the stroke started (those after are the
-     * stroke's own). `resample`: the stroke resamples the line before moving it (Subdivide, a brush that shapes it).
-     * `spacing`: a Resolution step, and `tolerance`: how far Collapse lets the line stray, both in document units. */
+     * stroke's own). `resample`: the stroke resamples the line before moving it (a brush that shapes it), at its
+     * samples' spacing. `spacing`: a Resolution step, and `tolerance`: how far Decimate lets the line stray, both in
+     * document units. */
     bool dyntopo = false;
     bool resample = false;
     float spacing = 0.0f, tolerance = 0.0f;

@@ -85,7 +85,7 @@ select_only(art)
 before = shown_line(art, 2000)
 mid = before[len(before) // 2]
 assert ops.sculpt.stroke(brush="GRAB", path=path(mid, (mid[0], mid[1] + 1e-4)), radius=0.6, strength=1.0,
-                         falloff="SMOOTH", mirror="0", resolution="20", refine="SUBDIVIDE") == {'FINISHED'}
+                         falloff="SMOOTH", mirror="0", resolution="20", decimate="0") == {'FINISHED'}
 assert len(art.points) > 10, len(art.points)
 after = shown_line(art, 40)
 moved = max(max(off(p, after) for p in before), max(off(p, before) for p in after))

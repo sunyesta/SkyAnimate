@@ -76,13 +76,10 @@ static OpStatus stroke_exec(Context &C)
   dab.mirror_x = op_has_arg(C, "mirror") ? op_arg_bool(C, "mirror") : ts.mirror_x;
   dab.surface_sensitivity = op_has_arg(C, "sensitivity") ? op_arg_float(C, "sensitivity", 0.25f)
                                                          : ts.sculpt_surface_sensitivity;
-  /* Dyntopo: resolution= points per unit of each layer's own space (0 or none: off), refine= its Refine Method. */
+  /* Dyntopo: resolution= points per unit of each layer's own space (0 or none: off), decimate= taking out the points
+   * the line doesn't need when the stroke ends. */
   dab.resolution = std::max(op_arg_float(C, "resolution", 0.0f), 0.0f);
-  dab.refine = ts.sculpt_refine;
-  if (op_has_arg(C, "refine") && !sculpt_refine_from_id(op_arg(C, "refine"), &dab.refine)) {
-    report(ReportType::Error, "refine= is one of SUBDIVIDE, COLLAPSE, SUBDIVIDE_COLLAPSE");
-    return OpStatus::Cancelled;
-  }
+  dab.decimate = op_has_arg(C, "decimate") ? op_arg_bool(C, "decimate") : ts.sculpt_decimate;
   const std::vector<float2> path = parse_path(op_arg(C, "path"));
   if (path.empty()) {
     report(ReportType::Error, "path= gives the stroke's points: \"x,y;x,y;...\" (document space)");
@@ -138,9 +135,10 @@ void sculpt_operators_register()
       "document units, strength=, falloff= SMOOTH, SPHERE or CONSTANT, invert=1 (Ctrl), selected_only=1, "
       "mirror=1 (X mirror), amount= how much of a full step each point of the path is for the brushes that work "
       "on while held (1), sensitivity= Surface Smooth's Lump Sensitivity, 0-1 (default: the tool's), "
-      "keep_poses=1 on frame 0, resolution= Dyntopo's Resolution, points per unit of each layer's own space (the line "
-      "resampled that finely where the stroke moves it, then the points it doesn't need taken out, on drawings without "
-      "animation; none: off), refine= SUBDIVIDE, COLLAPSE or SUBDIVIDE_COLLAPSE (default: the tool's)",
+      "keep_poses=1 on frame 0, resolution= turns Dyntopo on (the line resampled at the stroke's own "
+      "samples where it moves it, on drawings without animation; none: off) and is its Resolution, points per unit of "
+      "each layer's own space, decimate=1 taking out the points the line doesn't need when the stroke ends, to within a "
+      "tenth of a Resolution step (default: the tool's)",
       OPTYPE_REGISTER | OPTYPE_UNDO, has_drawing, stroke_exec);
 
   add("sculpt.simplify", "Simplify",

@@ -198,11 +198,12 @@ struct ToolSettings {
   bool sculpt_selected_only = false;
   /* Surface Smooth's Lump Sensitivity, 0-1 (SculptDab::surface_sensitivity). */
   float sculpt_surface_sensitivity = 0.25f;
-  /* Dyntopo (the header's, beside mirror): points added and taken out as a stroke needs them, on drawings without
-   * animation. Resolution: points per unit of each layer's own space (SculptDab::resolution). */
+  /* Dyntopo (at the tool settings' right end): points added as a stroke needs them, on drawings without animation,
+   * and with Decimate the ones the line doesn't need taken out after it, to within the Resolution: points per unit of
+   * each layer's own space (SculptDab::resolution). */
   bool sculpt_dyntopo = false;
+  bool sculpt_decimate = false;
   float sculpt_resolution = 50.0f;
-  SculptRefine sculpt_refine = SculptRefine::SubdivideCollapse;
   /* The Motion Path tool's brush (its shelf), and each brush's own radius in screen pixels and strength (Shift's
    * brush, path_brush_shifted, uses its own). */
   PathBrush path_brush = PathBrush::Edit;

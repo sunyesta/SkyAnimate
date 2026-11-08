@@ -5957,7 +5957,7 @@ static bool draw_resolution_grid(ImDrawList *dl, const ViewMapping &view, Docume
 }
 
 /* The Sculpt tool's Dyntopo, at the right end of the tool settings as Blender's: the toggle, and its popover
- * (Resolution, Refine Method, Simplify). Off where it can't work on the active layer, saying why. */
+ * (Decimate, Resolution, Simplify). Off where it can't work on the active layer, saying why. */
 static float dyntopo_width(float h, float arrow_w)
 {
   return ImGui::CalcTextSize("Dyntopo").x + ImGui::GetStyle().FramePadding.x * 2.0f + h * 0.9f + 1.0f + arrow_w;
@@ -5985,9 +5985,9 @@ static void dyntopo_buttons(Context &C, float h, float arrow_w)
     ImGui::PopStyleColor(3);
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    std::string tip = "Dynamic Topology\nA stroke adds points where the line can't follow the shape you sculpt, then "
-                      "takes out\nthe ones it keeps its shape without. Only on drawings without animation; the "
-                      "stroke makes no keys";
+    std::string tip = "Dynamic Topology\nA stroke adds points where the line can't follow the shape you sculpt "
+                      "(and with\nDecimate takes out the ones it keeps its shape without after). Only on drawings "
+                      "without\nanimation; the stroke makes no keys";
     if (!works) {
       tip += "\n\nNot on " + (active ? active->name : std::string("this layer")) + ": " + blocked;
     }
@@ -6024,8 +6024,13 @@ static void dyntopo_buttons(Context &C, float h, float arrow_w)
   if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
     ImGui::CloseCurrentPopup();
   }
-  const float label_w = ImGui::CalcTextSize("Refine Method").x + h;
+  const float label_w = ImGui::CalcTextSize("Resolution").x + h;
   const float field_w = h * 7.0f;
+  ImGui::Checkbox("Decimate", &ts.sculpt_decimate);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("When a stroke ends, take out the points it made or moved that the line keeps its shape\n"
+                      "without, to within a tenth of a Resolution step. Off: every point the stroke added stays");
+  }
   ImGui::AlignTextToFramePadding();
   ImGui::TextDisabled("Resolution");
   ImGui::SameLine(label_w);
@@ -6036,28 +6041,10 @@ static void dyntopo_buttons(Context &C, float h, float arrow_w)
     g_resolution_grid_at = ImGui::GetTime();
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-    ImGui::SetTooltip("Points per unit of the layer's own space (Blender's Constant Detail): a stroke puts a point\n"
-                      "every 1/Resolution along the line it moves, so higher is finer. It follows the layer's scale,\n"
-                      "never the zoom, the canvas or the brush; the grid shows a step of it while you set it (R)");
-  }
-  ImGui::AlignTextToFramePadding();
-  ImGui::TextDisabled("Refine Method");
-  ImGui::SameLine(label_w);
-  ImGui::SetNextItemWidth(field_w);
-  if (ImGui::BeginCombo("##refine", sculpt_refine_name(ts.sculpt_refine))) {
-    static const char *const tips[3] = {"Only add points where the line needs them",
-                                        "Only take out the points the line keeps its shape without, when the stroke "
-                                        "ends",
-                                        "Both: add points while sculpting, take out what isn't needed after"};
-    for (int i = 0; i < 3; i++) {
-      if (ImGui::Selectable(sculpt_refine_name(SculptRefine(i)), ts.sculpt_refine == SculptRefine(i))) {
-        ts.sculpt_refine = SculptRefine(i);
-      }
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-        ImGui::SetTooltip("%s", tips[i]);
-      }
-    }
-    ImGui::EndCombo();
+    ImGui::SetTooltip("Points per unit of the layer's own space (Blender's Constant Detail): how closely Decimate\n"
+                      "and Simplify keep the line, to a tenth of a step of 1/Resolution, so higher keeps more points.\n"
+                      "It follows the layer's scale, never the zoom, the canvas or the brush; the grid shows a step\n"
+                      "of it while you set it (R). A stroke adds points at the brush's own spacing, whatever it is");
   }
   ImGui::Separator();
   if (ImGui::Button("Simplify", ImVec2(label_w + field_w - ImGui::GetStyle().ItemSpacing.x, 0.0f))) {
@@ -8916,7 +8903,7 @@ static void sculpt_input(Context &C, Area &area, const ViewMapping &view, bool h
   dab.mirror_x = ts.mirror_x;
   dab.surface_sensitivity = ts.sculpt_surface_sensitivity;
   dab.resolution = ts.sculpt_dyntopo ? ts.sculpt_resolution : 0.0f;
-  dab.refine = ts.sculpt_refine;
+  dab.decimate = ts.sculpt_decimate;
   const std::vector<uint64_t> ids = editable_layer_ids(C);
   /* Dyntopo's grid fading out after the Resolution was set (scrubbed in the popover, or R). */
   if (const double since = ImGui::GetTime() - g_resolution_grid_at; since < RESOLUTION_GRID_FADE && doc.overlays.show) {

@@ -1900,7 +1900,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["surface_sensitivity"] = ts.sculpt_surface_sensitivity;
     d["dyntopo"] = ts.sculpt_dyntopo;
     d["resolution"] = ts.sculpt_resolution;
-    d["refine"] = sculpt_refine_id(ts.sculpt_refine);
+    d["decimate"] = ts.sculpt_decimate;
     return d;
   });
   m.def("sculpt_dyntopo_cell", [](uint64_t id, float resolution) {
@@ -1950,10 +1950,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       else if (key == "resolution") {
         ts.sculpt_resolution = std::clamp(value.cast<float>(), SCULPT_RESOLUTION_MIN, SCULPT_RESOLUTION_MAX);
       }
-      else if (key == "refine") {
-        if (!sculpt_refine_from_id(py::str(value), &ts.sculpt_refine)) {
-          throw py::value_error("refine is one of SUBDIVIDE, COLLAPSE, SUBDIVIDE_COLLAPSE");
-        }
+      else if (key == "decimate") {
+        ts.sculpt_decimate = value.cast<bool>();
       }
       else {
         throw py::value_error("no sculpt setting '" + key + "'");

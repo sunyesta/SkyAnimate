@@ -1,7 +1,7 @@
-"""Dyntopo for the Sculpt tool (anim/sculpt.hh): a stroke resamples the line where it moves it, a point every
-1 / Resolution of the layer's own units (Subdivide), and, once over, takes out the points the line keeps its shape
-without (Collapse); Simplify does the second on its own. Only on drawings without animation, and the stroke makes no
-keys.
+"""Dyntopo for the Sculpt tool (anim/sculpt.hh): a stroke resamples the line where it moves it, a point at each of
+its own samples (a sixth of the brush's radius apart, whatever the Resolution), and, with Decimate, once over takes out
+the points the line keeps its shape without to within a tenth of a Resolution step; Simplify does that on its own. Only
+on drawings without animation, and the stroke makes no keys.
 
 Run with:  OpenAnimate --background --python tests/test_sculpt_dyntopo.py
 """
@@ -56,11 +56,12 @@ def bump(l, **kw):
 doc.auto_key = False
 ops.wm.tool_sculpt()
 s = wm.sculpt_settings()
-assert s["dyntopo"] is False and s["refine"] == "SUBDIVIDE_COLLAPSE" and s["resolution"] == 50.0, s
-wm.set_sculpt(dyntopo=True, resolution=3.0, refine="COLLAPSE")
+# Decimate is off until ticked.
+assert s["dyntopo"] is False and s["decimate"] is False and s["resolution"] == 50.0, s
+wm.set_sculpt(dyntopo=True, resolution=3.0, decimate=True)
 s = wm.sculpt_settings()
-assert s["dyntopo"] and s["refine"] == "COLLAPSE" and abs(s["resolution"] - 3.0) < 1e-6, s
-wm.set_sculpt(dyntopo=False, refine="SUBDIVIDE_COLLAPSE", resolution=50.0)
+assert s["dyntopo"] and s["decimate"] and abs(s["resolution"] - 3.0) < 1e-6, s
+wm.set_sculpt(dyntopo=False, decimate=False, resolution=50.0)
 
 # --- Without it, two points can't make a narrow bump ---------------------------------------------------------------
 plain = line([(0.0, 0.0), (4.0, 0.0)])
@@ -71,12 +72,13 @@ plain_peak = max(y for _, y in o)
 plain_side = max(abs(y) for x, y in o if abs(x - 2.0) > 0.7)
 assert plain_peak < 0.9 or plain_side > 0.05, ("a single segment can't", plain_peak, plain_side)
 
-# --- Subdivide: points go in where the line needs them, and it follows the bump ----------------------------------------
-# Points a twelfth of a unit apart (a sixth of the brush's radius here); Collapse keeps the line within a tenth of that.
+# --- Points go in where the line needs them, and it follows the bump ---------------------------------------------------
+# Points a twelfth of a unit apart (a sixth of the brush's radius); at Resolution 12, Decimate keeps the line within a
+# tenth of a twelfth.
 resolution = 12.0
 detail = 1.0 / resolution / 10.0
 sub = line([(0.0, 0.0), (4.0, 0.0)])
-assert bump(sub, resolution=str(resolution), refine="SUBDIVIDE") == {'FINISHED'}
+assert bump(sub, resolution=str(resolution), decimate="0") == {'FINISHED'}
 assert len(sub.points) > 2, len(sub.points)
 o = outline(sub)
 assert max(y for _, y in o) > 0.95, ("up to the brush", max(y for _, y in o))
@@ -98,14 +100,14 @@ for x, y, *_ in sub.points:
     assert abs(y - lifted(x)) < 1e-4, ("a point where the brush took the line", x, y, lifted(x))
 
 # --- No jumps while dragging: after every dab the line is the shape the brush made so far ----------------------------
-# (a stroke cut short is the drag up to there: Subdivide alone does nothing more when it ends)
+# (a stroke cut short is the drag up to there: without Decimate nothing more happens when it ends)
 for cx in (2.0, 1.55):
     steps = [(cx, 0.05 * i) for i in range(21)]
     was = 0.0
     for k in range(2, len(steps) + 1):
         l = line([(float(x), 0.0) for x in range(5)])
         assert ops.sculpt.stroke(brush="GRAB", path=path(*steps[:k]), radius=0.5, strength=1.0, falloff="SMOOTH",
-                                 mirror="0", resolution=str(resolution), refine="SUBDIVIDE") == {'FINISHED'}
+                                 mirror="0", resolution=str(resolution), decimate="0") == {'FINISHED'}
         lift = 0.05 * (k - 1)
         assert all(abs(p[1] - lift * lifted(p[0], cx)) < 1e-4 for p in l.points), "every point where its sample went"
         ideal = [(i / 400.0, lift * lifted(i / 400.0, cx)) for i in range(1601)]
@@ -123,41 +125,49 @@ for cx in (2.0, 1.55):
 # stays flat.
 edge = line([(float(x), 0.0) for x in range(5)])
 assert ops.sculpt.stroke(brush="GRAB", path=path((1.55, 0.0), (1.55, 0.5), (1.55, 1.0)), radius=0.5, strength=1.0,
-                         falloff="CONSTANT", mirror="0", resolution=str(resolution), refine="SUBDIVIDE") == {'FINISHED'}
+                         falloff="CONSTANT", mirror="0", resolution=str(resolution), decimate="0") == {'FINISHED'}
 flat = max(abs(y) for x, y in outline(edge) if x < 0.9)
 assert flat < 1e-3, ("flat past the brush's edge", flat)
 
-# --- The Resolution is in the layer's own units: it follows the layer's scale -----------------------------------------
-# A layer scaled 2x: the same stroke in the scene puts points a twelfth of the layer's unit apart, a sixth in the scene.
+# --- While sculpting, the brush sets the detail: its samples are the points ---------------------------------------------
+# The Resolution doesn't change a stroke's points (only what Decimate takes out after): coarse or fine, the same line.
+for other in ("1", "200"):
+    l = line([(0.0, 0.0), (4.0, 0.0)])
+    assert bump(l, resolution=other, decimate="0") == {'FINISHED'}
+    assert len(l.points) == subdivided, ("the Resolution changed the stroke's points", other, len(l.points), subdivided)
+    assert all(off(p, sub_outline) < 1e-4 for p in outline(l)), ("the same line", other)
+# Half the brush: its samples, so its points, half as far apart.
+small_brush = line([(0.0, 0.0), (4.0, 0.0)])
+assert ops.sculpt.stroke(brush="GRAB", path=path((2.0, 0.0), (2.0, 0.25), (2.0, 0.5)), radius=0.25, strength=1.0,
+                         falloff="SMOOTH", mirror="0", resolution=str(resolution), decimate="0") == {'FINISHED'}
+assert len(small_brush.points) == 2 * subdivided - 1, (len(small_brush.points), subdivided)
+# A layer scaled 2x: the brush's samples are as far apart in the scene, so half as far in the layer's own units.
 big = line([(0.0, 0.0), (2.0, 0.0)])
 big.scale_x = 2.0
 big.scale_y = 2.0
-cell = wm.sculpt_dyntopo_cell(big.id, resolution)
-assert all(abs(a - b) < 1e-6 for a, b in zip(cell[0] + cell[1], (2.0 / resolution, 0.0, 0.0, 2.0 / resolution))), cell
-assert bump(big, resolution=str(resolution), refine="SUBDIVIDE") == {'FINISHED'}
+assert bump(big, resolution=str(resolution), decimate="0") == {'FINISHED'}
 xs = sorted(p[0] for p in big.points)
 gaps = [b - a for a, b in zip(xs, xs[1:])]
-assert all(abs(g - 1.0 / resolution) < 0.02 for g in gaps), ("a step of the layer's own units", gaps)
-assert len(big.points) == len(sub.points) // 2 + 1, (len(big.points), len(sub.points))
-# The zoom and the brush don't change it: half the brush, the same spacing.
-small_brush = line([(0.0, 0.0), (4.0, 0.0)])
-assert ops.sculpt.stroke(brush="GRAB", path=path((2.0, 0.0), (2.0, 0.25), (2.0, 0.5)), radius=0.25, strength=1.0,
-                         falloff="SMOOTH", mirror="0", resolution=str(resolution), refine="SUBDIVIDE") == {'FINISHED'}
-assert len(small_brush.points) == len(sub.points), (len(small_brush.points), len(sub.points))
-# Coarse: points a unit apart can't make a narrow bump (as Blender's), only lift the one under the brush.
-coarse = line([(0.0, 0.0), (4.0, 0.0)])
-assert bump(coarse, resolution="1", refine="SUBDIVIDE") == {'FINISHED'}
-assert len(coarse.points) == 5, list(coarse.points)
+assert all(abs(g - 0.5 / 12.0) < 0.01 for g in gaps), ("the brush's spacing in the scene", gaps)
+assert len(big.points) == subdivided, (len(big.points), subdivided)
+# The Resolution is in the layer's own units: its step follows the layer's scale.
+cell = wm.sculpt_dyntopo_cell(big.id, resolution)
+assert all(abs(a - b) < 1e-6 for a, b in zip(cell[0] + cell[1], (2.0 / resolution, 0.0, 0.0, 2.0 / resolution))), cell
 
-# --- Subdivide Collapse: the same shape with fewer points ---------------------------------------------------------
+# --- Decimate: the same shape with fewer points ---------------------------------------------------------------------
+# Not ticked, the tool keeps every point the stroke added.
+kept = line([(0.0, 0.0), (4.0, 0.0)])
+assert bump(kept, resolution=str(resolution)) == {'FINISHED'}
+assert len(kept.points) == subdivided, ("Decimate is off unless ticked", len(kept.points), subdivided)
+ops.ed.undo()
 both = line([(0.0, 0.0), (4.0, 0.0)])
-assert bump(both, resolution=str(resolution)) == {'FINISHED'}
+assert bump(both, resolution=str(resolution), decimate="1") == {'FINISHED'}
 assert 2 < len(both.points) < subdivided, (len(both.points), subdivided)
 for p in outline(both):
     # (the outline's chords between samples cut a bend a touch)
     assert off(p, sub_outline) < detail * 3, ("the same shape", p, off(p, sub_outline))
 collapsed = len(both.points)
-print("Subdivide Collapse: %d points (Subdivide alone %d)" % (collapsed, subdivided))
+print("Decimate: %d points (without %d)" % (collapsed, subdivided))
 # One undo step, back to two points.
 ops.ed.undo()
 assert len(both.points) == 2, len(both.points)
@@ -167,13 +177,13 @@ grouped.select_points([0, 1])
 ops.mesh.point_group_add(name="Line")
 assert ops.mesh.point_group_assign() == {'FINISHED'}
 ops.mesh.select_none()
-assert bump(grouped, resolution=str(resolution)) == {'FINISHED'}
+assert bump(grouped, resolution=str(resolution), decimate="1") == {'FINISHED'}
 assert len(grouped.points) == collapsed, ("grouped", len(grouped.points), collapsed)
 
-# --- Collapse alone: nothing added, and a line of many points along the way loses those it doesn't need --------------
+# --- Decimate takes out only what the stroke touched -------------------------------------------------------------------
 many = line([(x * 0.25, 0.0) for x in range(17)])
 assert ops.sculpt.stroke(brush="PUSH", path=path((2.0, 0.0), (2.0, 0.001)), radius=3.0, strength=0.0, mirror="0",
-                         resolution=str(resolution), refine="COLLAPSE") in ({'FINISHED'}, {'CANCELLED'})
+                         resolution=str(resolution), decimate="1") in ({'FINISHED'}, {'CANCELLED'})
 # Push with no strength moves nothing, so nothing was touched: all 17 stay.
 assert len(many.points) == 17
 
@@ -190,7 +200,7 @@ assert ops.sculpt.simplify(resolution="0") == {'CANCELLED'}
 # A real stroke in the middle: the points it reached that the line is straight without go; those it didn't stay.
 reached = line([(x * 0.25, 0.0) for x in range(17)])
 assert ops.sculpt.stroke(brush="PUSH", path=path((2.0, 0.0), (2.0, 0.0005)), radius=0.6, strength=1.0, mirror="0",
-                         resolution=str(resolution), refine="COLLAPSE") == {'FINISHED'}
+                         resolution=str(resolution), decimate="1") == {'FINISHED'}
 xs = sorted(round(p[0], 3) for p in reached.points)
 assert 2 < len(xs) < 17 and 0.25 in xs and 3.75 in xs and 2.0 not in xs, xs
 ops.ed.undo()

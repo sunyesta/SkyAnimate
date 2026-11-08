@@ -20,29 +20,6 @@ static constexpr const char *BRUSH_IDS[SCULPT_BRUSH_COUNT] = {"GRAB", "PUSH", "S
 static constexpr const char *BRUSH_NAMES[SCULPT_BRUSH_COUNT] = {"Grab", "Push", "Smooth", "Thickness", "Pinch", "Twist",
                                                                      "Surface Smooth"};
 static constexpr const char *FALLOFF_IDS[3] = {"SMOOTH", "SPHERE", "CONSTANT"};
-static constexpr const char *REFINE_IDS[3] = {"SUBDIVIDE", "COLLAPSE", "SUBDIVIDE_COLLAPSE"};
-static constexpr const char *REFINE_NAMES[3] = {"Subdivide", "Collapse", "Subdivide Collapse"};
-
-const char *sculpt_refine_id(SculptRefine refine)
-{
-  return REFINE_IDS[std::clamp(int(refine), 0, 2)];
-}
-
-const char *sculpt_refine_name(SculptRefine refine)
-{
-  return REFINE_NAMES[std::clamp(int(refine), 0, 2)];
-}
-
-bool sculpt_refine_from_id(const std::string &id, SculptRefine *r_refine)
-{
-  for (int i = 0; i < 3; i++) {
-    if (id == REFINE_IDS[i]) {
-      *r_refine = SculptRefine(i);
-      return true;
-    }
-  }
-  return false;
-}
 
 const char *sculpt_brush_id(SculptBrush brush)
 {
@@ -419,7 +396,8 @@ SculptStroke sculpt_stroke_begin(const Document &doc, const std::vector<uint64_t
     s.dyntopo = dab.resolution > 0.0f && sculpt_dyntopo_blocked(doc, id, dab.mirror_x).empty();
     s.points_before = drawing.points.size();
     const Transform2D to_document = layer_world_transform(doc, id);
-    /* Dyntopo: a Resolution step in the layer's own units, as long as it shows (its average scale). */
+    /* Dyntopo: a Resolution step in the layer's own units, as long as it shows (its average scale): what Decimate
+     * and Simplify keep the line to. The stroke itself adds points at its own samples' spacing, the brush's. */
     if (s.dyntopo) {
       float2 cx, cy;
       sculpt_dyntopo_cell(doc, id, dab.resolution, &cx, &cy);
@@ -427,10 +405,12 @@ SculptStroke sculpt_stroke_begin(const Document &doc, const std::vector<uint64_t
       s.tolerance = s.spacing * SCULPT_DYNTOPO_TOLERANCE;
       const bool shaping = dab.brush == SculptBrush::Grab || dab.brush == SculptBrush::Push ||
                            dab.brush == SculptBrush::Pinch || dab.brush == SculptBrush::Twist;
-      s.resample = shaping && dab.refine != SculptRefine::Collapse;
+      s.resample = shaping && !dab.simplify;
     }
-    /* Resampled or simplified: samples a Resolution step apart (none between points closer than that). */
+    /* Resampled: samples the brush's step apart, each one a point to be (none between points closer than that);
+     * simplified: a Resolution step apart. */
     const bool stepped = s.dyntopo && (s.resample || dab.simplify);
+    const float step = dab.simplify ? s.spacing : spacing;
     std::vector<Transform2D> skins = layer_point_skins(doc, *layer);
     skins.resize(drawing.points.size());
     s.to_shown.resize(skins.size());
@@ -529,7 +509,7 @@ SculptStroke sculpt_stroke_begin(const Document &doc, const std::vector<uint64_t
           last = q;
         }
         const float seg_length = lengths[table];
-        const int count = stepped ? std::clamp(int(std::ceil(seg_length / s.spacing - 1e-3f)), 1, 4096) :
+        const int count = stepped ? std::clamp(int(std::ceil(seg_length / step - 1e-3f)), 1, 4096) :
                                     std::clamp(int(std::ceil(seg_length / spacing)), 4, 256);
         c.anchor[size_t(a)] = int(c.pos.size());
         const float wa = drawing.points[size_t(pa)].radius, wb = drawing.points[size_t(pb)].radius;
@@ -1379,7 +1359,7 @@ int sculpt_stroke_end(Document &doc, SculptStroke &stroke, const SculptDab &dab)
       continue;
     }
     VectorDrawing &drawing = layer->drawing;
-    if (dab.refine != SculptRefine::Subdivide && sl.tolerance > 0.0f) {
+    if (dab.decimate && sl.tolerance > 0.0f) {
       drawing_ensure_ids(drawing);
       std::vector<int> uses(drawing.points.size(), 0);
       for (const Curve &curve : drawing.curves) {
@@ -1476,7 +1456,7 @@ int sculpt_simplify(Document &doc, const std::vector<uint64_t> &layers, float re
   dab.brush = SculptBrush::Smooth;
   dab.radius = 1.0f;
   dab.resolution = std::max(resolution, 1e-6f);
-  dab.refine = SculptRefine::Collapse;
+  dab.decimate = true;
   dab.simplify = true;
   SculptStroke stroke = sculpt_stroke_begin(doc, layers, dab);
   for (SculptStroke::Layer &sl : stroke.layers) {
