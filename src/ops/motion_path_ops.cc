@@ -2,6 +2,7 @@
  * and a snapshot to compare an edit against. */
 
 #include <algorithm>
+#include <cstdio>
 #include <cmath>
 #include <cstdlib>
 #include <string>
@@ -1470,7 +1471,7 @@ void motion_path_operators_register()
     ot.name = "Add Timing Point";
     ot.description = "The Path Timing graph's Edit mode (Ctrl click): a point put on the timing curve of the stretch "
                      "frame= is in at x= (0-1 of the way through its time), the curve keeping its shape; with y= it "
-                     "goes there. Of what a path traces (layer=, bone=, point=, drawing=1, or the first traced)";
+                     "goes there, and with to_x= to that time (Alt drag on the curve: put there and dragged). Of what a path traces (layer=, bone=, point=, drawing=1, or the first traced)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [timing_curve_of](Context &C) {
@@ -1485,10 +1486,10 @@ void motion_path_operators_register()
         report(ReportType::Warning, "x= is between the curve's points, inside 0-1");
         return OpStatus::Cancelled;
       }
-      if (op_has_arg(C, "y")) {
-        /* A y= that isn't a number leaves the point on the curve, as without one. */
+      if (op_has_arg(C, "y") || op_has_arg(C, "to_x")) {
+        /* A y= or to_x= that isn't a number leaves the point on the curve there, as without one. */
         const float2 on = curve.points[size_t(i)].co;
-        timing_point_move(curve, size_t(i), {on.x, op_arg_float(C, "y", on.y)});
+        timing_point_move(curve, size_t(i), {op_arg_float(C, "to_x", on.x), op_arg_float(C, "y", on.y)});
       }
       if (!motion_path_timing_curve_set(*C.document, t, frame, curve)) {
         return OpStatus::Cancelled;
@@ -1542,14 +1543,65 @@ void motion_path_operators_register()
   }
   {
     OperatorType ot;
+    ot.idname = "anim.timing_decimate";
+    ot.name = "Decimate";
+    ot.description = "The Path Timing graph's Edit mode (its right click menu): take out the timing curve's points the "
+                     "curve changes least without, one at a time (the handles either side fitted again), until ratio= "
+                     "(0-1; default: the one last used) of those between its ends is left, on the stretch frame= is in. "
+                     "Of what a path traces (layer=, bone=, point=, drawing=1, or the first traced)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
+    ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
+    ot.exec = [timing_curve_of](Context &C) {
+      ToolSettings &ts = C.wm->tool_settings;
+      const float ratio = op_arg_float(C, "ratio", ts.timing_decimate_ratio);
+      if (!(ratio >= 0.0f && ratio <= 1.0f)) {
+        report(ReportType::Error, "ratio= is the share of the curve's points to keep, 0 to 1");
+        return OpStatus::Cancelled;
+      }
+      char used[32];
+      std::snprintf(used, sizeof(used), "%g", double(ratio));
+      op_arg_used(C, "ratio", used);
+      MotionPathTarget t;
+      int frame = 0, start = 0, n = 0;
+      TimingCurve curve;
+      if (!timing_curve_of(C, t, frame, curve, &start, &n)) {
+        return OpStatus::Cancelled;
+      }
+      const int inside = curve.empty() ? 0 : int(curve.points.size()) - 2;
+      if (inside <= 0) {
+        report(ReportType::Warning, "The curve has no points between its ends to take out");
+        return OpStatus::Cancelled;
+      }
+      ts.timing_decimate_ratio = ratio;
+      /* Finished even when nothing goes (a Ratio of 1), so raising it in the Adjust Last Operation panel puts back the
+       * points a lower one took out. */
+      const int gone = timing_decimate(curve, n, ratio);
+      if (gone > 0 && !motion_path_timing_curve_set(*C.document, t, frame, curve)) {
+        return OpStatus::Cancelled;
+      }
+      C.wm->path_timing_point = -1;
+      const std::string count = std::to_string(gone) + " of " + std::to_string(inside) +
+                                (inside == 1 ? " point" : " points") + " removed";
+      op_note(count);
+      report(ReportType::Info, "Decimate: " + count);
+      return OpStatus::Finished;
+    };
+    ot.props = {op_float_property("ratio", "Ratio",
+                                  "The share of the curve's points to keep: 1 keeps them all. The ones the curve "
+                                  "changes least without go first",
+                                  "0.5", 0.0f, 1.0f, 0.01f)};
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
     ot.idname = "anim.timing_sculpt";
     ot.name = "Sculpt Timing";
     ot.description = "The Path Timing graph's Sculpt mode: a stroke of brush= GRAB (moves the curve within the radius of "
                      "where it starts, by the stroke) or SMOOTH on the timing curve of the stretch frame= is in, along "
                      "path=\"frame,along;...\" (frames, the way along: 1 at the key), radius= (frames), strength= (0-1), "
                      "aspect= (frames a whole way along is, as the graph shows it, so the brush is a circle there), "
-                     "lock_x=1 to move it up and down only; the curve made again with as few points as hold every "
-                     "frame. Of what a path traces (layer=, bone=, point=, drawing=1, or the first traced)";
+                     "lock_x=1 to move it up and down only, dyntopo=1 to work on the curve finely sampled and make it "
+                     "again with as few points as hold every frame (else its own points and handles move). Of what a path traces (layer=, bone=, point=, drawing=1, or the first traced)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
     ot.exec = [timing_curve_of](Context &C) {
@@ -1576,7 +1628,8 @@ void motion_path_operators_register()
           curve, n, brush, path, std::max(op_arg_float(C, "radius", ts.path_timing_radius[b]), 0.01f),
           std::clamp(op_arg_float(C, "strength", ts.path_timing_strength[b]), 0.0f, 1.0f),
           std::max(op_arg_float(C, "aspect", float(n)), 1e-3f),
-          op_has_arg(C, "lock_x") ? op_arg_bool(C, "lock_x") : ts.path_timing_lock_x);
+          op_has_arg(C, "lock_x") ? op_arg_bool(C, "lock_x") : ts.path_timing_lock_x,
+          op_has_arg(C, "dyntopo") ? op_arg_bool(C, "dyntopo") : ts.path_timing_dyntopo);
       if (!motion_path_timing_curve_set(*C.document, t, frame, sculpted)) {
         return OpStatus::Cancelled;
       }
@@ -1590,7 +1643,7 @@ void motion_path_operators_register()
     ot.name = "Set Path Timing Graph";
     ot.description = "The Path Timing graph's mode= EDIT (its curve's points and handles) or SCULPT (brushes on the "
                      "curve); its brush= GRAB or SMOOTH, that brush's radius= (frames) and strength= (0-1), and "
-                     "lock_x=0/1 (the brushes move the curve up and down only)";
+                     "lock_x=0/1 (the brushes move the curve up and down only) and dyntopo=0/1";
     ot.flag = OPTYPE_REGISTER;
     ot.poll = [](Context &C) { return C.wm != nullptr; };
     ot.exec = [](Context &C) {
@@ -1620,6 +1673,9 @@ void motion_path_operators_register()
       }
       if (op_has_arg(C, "lock_x")) {
         ts.path_timing_lock_x = op_arg_bool(C, "lock_x");
+      }
+      if (op_has_arg(C, "dyntopo")) {
+        ts.path_timing_dyntopo = op_arg_bool(C, "dyntopo");
       }
       return OpStatus::Finished;
     };

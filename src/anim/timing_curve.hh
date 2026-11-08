@@ -8,7 +8,9 @@
  *
  * Kept with as few points as hold every frame's dot where it was: whatever made the timing (a brush, a dot slid, a
  * shape) gives a progress for each frame, and timing_fit makes the fewest points that put every frame within
- * TIMING_TOLERANCE of it (Dyntopo's Decimate, for timing). Points placed by hand in the graph stay as placed. */
+ * TIMING_TOLERANCE of it (Dyntopo's Decimate, for timing): every frame a point to start with, those it keeps the
+ * tolerance without taken out, cheapest first, each piece's handles fitted to its frames. Points placed by hand in the
+ * graph stay as placed. */
 
 #include <string>
 #include <vector>
@@ -34,6 +36,9 @@ struct TimingCurve {
 /* How far a frame's dot may be from where the timing put it, as a share of the stretch's way: under half a pixel on a
  * path 2000 pixels long. */
 inline constexpr float TIMING_TOLERANCE = 0.0002f;
+/* A sculpt stroke's (with Dyntopo): freehand, so held to two pixels on a path 2000 pixels long, not chasing the brush's
+ * own ripples with points. */
+inline constexpr float TIMING_SCULPT_TOLERANCE = 0.001f;
 
 /* How far along the curve is `t` (0-1) of the way through the stretch's time; an empty curve goes evenly. */
 float timing_progress(const TimingCurve &curve, float t);
@@ -45,6 +50,11 @@ std::vector<float> timing_speeds(const TimingCurve &curve, int n);
 /* As few points as put each of the `progress` (one a frame, 0 to n; the first 0 and the last 1) within
  * `tolerance` of it, each with smooth handles a third of the way to its neighbours. Even progress: an empty curve. */
 TimingCurve timing_fit(const std::vector<float> &progress, float tolerance = TIMING_TOLERANCE);
+/* Decimate (the Path Timing graph's Edit mode): the curve's points taken out one at a time, the one whose piece across
+ * its neighbours (their handles fitted again) moves the curve least first, until `ratio` (0-1) of those between the
+ * ends is left; the ends stay, and pieces between points that stay neighbours keep their handles. How many went. `n`:
+ * the stretch's frames (the curve is measured four times a frame). */
+int timing_decimate(TimingCurve &curve, int n, float ratio);
 /* timing_fit of per-frame speeds (any scale, signed: only how they compare counts). Speeds that add up to nothing go
  * evenly. */
 TimingCurve timing_from_speeds(const std::vector<float> &speeds);
@@ -69,14 +79,16 @@ void timing_handle_set(TimingCurve &curve, size_t i, bool out, float2 h, bool fr
 /* Takes out point `i` (never an end); the curve fitted again over the frames it spanned would be another edit. */
 bool timing_point_remove(TimingCurve &curve, size_t i);
 
-/* Grab and Smooth, the Path Timing graph's Sculpt mode, on a stretch of `n` frames: the curve sampled finely (four
- * places a frame), each stroke place `path` (x in frames from the stretch's start, y the way along) moving the samples
- * within `radius` frames of where the brush is (Grab: those within reach of its first place, by the mouse's move;
- * Smooth: toward their neighbours), `aspect` frames to a whole way along (how the graph shows them, so the brush is a
- * circle there), `strength` how much, `lock_x` none moving in time. The result fitted again (timing_fit). */
+/* Grab and Smooth, the Path Timing graph's Sculpt mode, on a stretch of `n` frames along the stroke's places `path` (x
+ * in frames from the stretch's start, y the way along), within `radius` frames of the brush (`aspect` frames to a whole
+ * way along, as the graph shows them, so the brush is a circle there), `strength` how much, `lock_x` up and down only.
+ * Without `dyntopo` the brushes move the curve's own points and handles (Grab by the mouse's move, weighted from its
+ * first place; Smooth toward the curve's average around each), none added or taken out. With it, the curve is sampled
+ * finely (four places a frame): Grab slides the timing along time under the brush and raises it, step by step, so
+ * nothing piles up or crosses; Smooth evens the samples out; the result fitted again (timing_fit). */
 enum class TimingBrush { Grab, Smooth };
 TimingCurve timing_sculpt(const TimingCurve &curve, int n, TimingBrush brush, const std::vector<float2> &path,
-                          float radius, float strength, float aspect, bool lock_x);
+                          float radius, float strength, float aspect, bool lock_x, bool dyntopo);
 /* A stroke's places as anim.timing_sculpt takes them, "frame,along;frame,along": parsed with `start` taken off each
  * frame (so from the stretch's start), and written. */
 std::vector<float2> timing_stroke_parse(const std::string &text, float start);

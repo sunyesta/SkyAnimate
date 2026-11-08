@@ -623,6 +623,9 @@ static struct {
   float2 was{};
   float2 now{};
   bool free = false;
+  /* Alt drag on the curve: a point put there (at `add_x`, 0-1 of the stretch's time) and dragged, one undo step. */
+  bool adding = false;
+  float add_x = 0.0f;
   TimingCurve curve;
   Document snapshot;
 } g_edit;
@@ -723,6 +726,24 @@ static void point_pick(WindowManager &wm, const MotionPathTarget &t, const Motio
   wm.path_timing_point = point;
 }
 
+/* After a point was added at about `x` (0-1): the one nearest it picked. */
+static void point_pick_nearest(Context &C, const MotionPathTarget &t, int frame, const MotionPathStretch &s, float x)
+{
+  TimingCurve now;
+  if (!motion_path_timing_curve(*C.document, t, frame, now)) {
+    return;
+  }
+  int nearest = -1;
+  float d = 1e9f;
+  for (size_t i = 1; i + 1 < now.points.size(); i++) {
+    if (std::abs(now.points[i].co.x - x) < d) {
+      d = std::abs(now.points[i].co.x - x);
+      nearest = int(i);
+    }
+  }
+  point_pick(*C.wm, t, s, nearest);
+}
+
 static void path_timing_graph(Context &C, const MotionPathTarget &t, const MotionPathStretch &s, ImVec2 min,
                               ImVec2 max)
 {
@@ -743,6 +764,8 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   const auto frame_at = [&](float x) { return v.f0 + (x - min.x) / w * (v.f1 - v.f0); };
   const auto u_at = [&](float y) { return v.y0 + (max.y - y) / h * (v.y1 - v.y0); };
   ImGui::SetCursorScreenPos(min);
+  /* The Adjust Last Operation panel, drawn over it later, takes the clicks over it. */
+  ImGui::SetNextItemAllowOverlap();
   ImGui::InvisibleButton("##path_graph", ImVec2(w, h),
                          ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonMiddle);
   /* The wheel is the graph's here, not the sidebar's scroll. */
@@ -1010,6 +1033,12 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
         operator_call(C, "anim.motion_path_even_spacing");
       }
     }
+    if (!sculpt && editable) {
+      ImGui::Separator();
+      if (ui_menu_item("Decimate")) {
+        operator_call(C, "anim.timing_decimate", target_args(doc, t, s.start + 1));
+      }
+    }
     ui_menu_end();
   }
 
@@ -1060,6 +1089,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
       args["strength"] = std::to_string(ts.path_timing_strength[int(st.brush)]);
       args["aspect"] = std::to_string(st.aspect);
       args["lock_x"] = ts.path_timing_lock_x ? "1" : "0";
+      args["dyntopo"] = ts.path_timing_dyntopo ? "1" : "0";
       st = {};
       operator_call(C, "anim.timing_sculpt", args);
       return;
@@ -1071,7 +1101,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
       motion_path_timing_curve_set(doc, st.target, st.frame,
                                    timing_sculpt(st.curve, st.n, st.brush, st.path, ts.path_timing_radius[int(st.brush)],
                                                  ts.path_timing_strength[int(st.brush)], st.aspect,
-                                                 ts.path_timing_lock_x));
+                                                 ts.path_timing_lock_x, ts.path_timing_dyntopo));
       C.undo->mark_changed();
     }
     return;
@@ -1088,7 +1118,24 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
       return;
     }
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-      if (g.dragging) {
+      if (g.adding) {
+        /* The point Alt put on the curve: there, or where it was dragged to. */
+        doc = std::move(g.snapshot);
+        OpArgs args = target_args(doc, g.target, g.frame);
+        args["x"] = std::to_string(g.add_x);
+        if (g.dragging) {
+          args["to_x"] = std::to_string(g.now.x);
+          args["y"] = std::to_string(g.now.y);
+        }
+        const MotionPathTarget target = g.target;
+        const int frame = g.frame;
+        const float at = g.dragging ? g.now.x : g.add_x;
+        g = {};
+        if (operator_call(C, "anim.timing_point_add", args) == OpStatus::Finished) {
+          point_pick_nearest(C, target, frame, s, at);
+        }
+      }
+      else if (g.dragging) {
         doc = std::move(g.snapshot);
         OpArgs args = target_args(doc, g.target, g.frame);
         args["index"] = std::to_string(g.point);
@@ -1170,20 +1217,40 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
       args["x"] = std::to_string(x);
       args["y"] = std::to_string(u_at(io.MousePos.y));
       if (operator_call(C, "anim.timing_point_add", args) == OpStatus::Finished) {
-        TimingCurve now;
-        if (motion_path_timing_curve(doc, t, s.start + 1, now)) {
-          int nearest = -1;
-          float d = 1e9f;
-          for (size_t i = 1; i + 1 < now.points.size(); i++) {
-            if (std::abs(now.points[i].co.x - x) < d) {
-              d = std::abs(now.points[i].co.x - x);
-              nearest = int(i);
-            }
-          }
-          point_pick(wm, t, s, nearest);
-        }
+        point_pick_nearest(C, t, s.start + 1, s, x);
       }
       return;
+    }
+    if (io.KeyAlt) {
+      /* Alt on the curve: a point put there, dragged until let go. */
+      const float x = (frame_at(io.MousePos.x) - float(s.start)) / float(n);
+      float near = 1e9f;
+      for (int k = 0; k <= 400; k++) {
+        const float sx = float(k) / 400.0f;
+        const ImVec2 p = curve_screen({sx, timing_progress(curve, sx)});
+        near = std::min(near, std::hypot(io.MousePos.x - p.x, io.MousePos.y - p.y));
+      }
+      TimingCurve added = curve;
+      const int i = near < 8.0f ? timing_point_insert(added, x) : -1;
+      if (i > 0) {
+        animation_sync(doc);
+        g = {};
+        g.active = true;
+        g.adding = true;
+        g.add_x = x;
+        g.owner = graph_id;
+        g.target = t;
+        g.frame = s.start + 1;
+        g.n = n;
+        g.point = i;
+        g.press = io.MousePos;
+        g.curve = added;
+        g.was = g.now = added.points[size_t(i)].co;
+        g.snapshot = doc;
+        motion_path_timing_curve_set(doc, t, g.frame, added);
+        C.undo->mark_changed();
+        return;
+      }
     }
     point_pick(wm, t, s, -1);
     return;
@@ -1214,7 +1281,22 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   g.snapshot = doc;
 }
 
+static void path_timing_body(Area &area, Context &C);
+
 void path_timing_draw(Area &area, Context &C)
+{
+  /* The editor's whole region below its header, for the Adjust Last Operation panel in its bottom-left corner (over
+   * whatever is there). */
+  const ImVec2 win = ImGui::GetWindowPos();
+  const ImVec2 c0 = ImGui::GetWindowContentRegionMin(), c1 = ImGui::GetWindowContentRegionMax();
+  path_timing_body(area, C);
+  if (C.document && C.wm) {
+    ui_action_panel_draw(C, "Path Timing", "Path Timing/Adjust Last Operation", ImVec2(win.x + c0.x, win.y + c0.y),
+                         ImVec2(c1.x - c0.x, c1.y - c0.y), 4.0f);
+  }
+}
+
+static void path_timing_body(Area &area, Context &C)
 {
   area_editor_type_menu(area);
   ImGui::Separator();
@@ -1285,8 +1367,8 @@ void path_timing_draw(Area &area, Context &C)
 
   /* Edit and Sculpt, right under the graph. */
   const char *modes[] = {"Edit", "Sculpt"};
-  const char *mode_tips[] = {"Move the curve's points and handles, as a drawing's: Alt drag frees a handle, Ctrl click "
-                             "adds a point, X deletes the one picked",
+  const char *mode_tips[] = {"Move the curve's points and handles, as a drawing's: Alt drag frees a handle or, on the "
+                             "curve, adds a point and drags it; Ctrl click adds a point, X deletes the one picked",
                              "Brush the curve: Grab moves it, Smooth evens it out (Shift swaps them while held, F "
                              "sizes the brush); it keeps as few points as hold every frame after each stroke"};
   const int mode = segmented_buttons("##graph_mode", sculpt ? 1 : 0, 2, modes, mode_tips, w, ImGui::GetFrameHeight());
@@ -1370,6 +1452,40 @@ void path_timing_draw(Area &area, Context &C)
     ImGui::Checkbox("Lock X", &ts.path_timing_lock_x);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("The brushes move the curve up and down only, never in time");
+    }
+    /* Dyntopo: a check box in the button, as the viewport's. */
+    const float h = ImGui::GetFrameHeight();
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const bool dyntopo = ts.path_timing_dyntopo;
+    if (dyntopo) {
+      const ImVec4 blue = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
+      const auto lighter = [&](float f) {
+        return ImVec4(std::min(blue.x * f, 1.0f), std::min(blue.y * f, 1.0f), std::min(blue.z * f, 1.0f), blue.w);
+      };
+      ImGui::PushStyleColor(ImGuiCol_Button, blue);
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, lighter(1.15f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, lighter(1.3f));
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(style.FramePadding.x + h * 0.45f, style.FramePadding.y));
+    if (ImGui::Button("Dyntopo##timing_dyntopo")) {
+      operator_call(C, "anim.timing_graph_set", {{"dyntopo", dyntopo ? "0" : "1"}});
+    }
+    ImGui::PopStyleVar();
+    if (dyntopo) {
+      ImGui::PopStyleColor(3);
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("Dynamic Topology\nA stroke works on the curve finely and makes it again with as few points "
+                        "as hold\nevery frame. Off: the brushes move the curve's own points and handles");
+    }
+    const float box = h * 0.42f;
+    const ImVec2 b0(at.x + style.FramePadding.x * 0.6f, at.y + (h - box) * 0.5f);
+    const ImU32 ink = IM_COL32(0xe6, 0xe6, 0xe6, 255);
+    const auto P = [&](float fx, float fy) { return ImVec2(b0.x + box * fx, b0.y + box * fy); };
+    dl->AddRect(b0, P(1.0f, 1.0f), ink, 2.0f, 0, 1.2f);
+    if (dyntopo) {
+      dl->AddLine(P(0.2f, 0.55f), P(0.42f, 0.78f), ink, 1.6f);
+      dl->AddLine(P(0.42f, 0.78f), P(0.82f, 0.22f), ink, 1.6f);
     }
   }
 }

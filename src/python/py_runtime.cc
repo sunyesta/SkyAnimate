@@ -1906,6 +1906,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["timing_brushes"] = py::dict(py::arg("GRAB") = py::make_tuple(ts.path_timing_radius[0], ts.path_timing_strength[0]),
                                    py::arg("SMOOTH") = py::make_tuple(ts.path_timing_radius[1], ts.path_timing_strength[1]));
     d["lock_x"] = ts.path_timing_lock_x;
+    d["timing_dyntopo"] = ts.path_timing_dyntopo;
+    d["timing_decimate_ratio"] = ts.timing_decimate_ratio;
     return d;
   });
   /* The Sculpt tool's settings, and its presets (assets/sculpt_presets.hh). */

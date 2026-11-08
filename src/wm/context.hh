@@ -237,6 +237,11 @@ struct ToolSettings {
   float path_timing_strength[2] = {1.0f, 0.5f};
   /* Lock X: the brushes move the curve up and down only, never in time. */
   bool path_timing_lock_x = false;
+  /* The graph's Dyntopo: the brushes work on a finely sampled curve, made again with as few points as hold every
+   * frame. Off, they move the curve's own points and handles. */
+  bool path_timing_dyntopo = false;
+  /* The graph's Decimate: the Ratio of the curve's points to keep it was last run with (half, the first time). */
+  float timing_decimate_ratio = 0.5f;
 };
 
 /* A key press during a modal transform, by Blender event name ("E", "RET", "ESC"). */

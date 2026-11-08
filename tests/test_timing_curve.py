@@ -94,14 +94,14 @@ box.keyframe_set("position", 30, speeds=speeds)
 k = key(box, 30)
 assert k["interp"] == "CUSTOM"
 print("20 painted speeds:", len(k["timing"]), "curve points")
-assert 2 < len(k["timing"]) < 10, ("a smooth timing needs few points", len(k["timing"]))
+assert 2 < len(k["timing"]) <= 4, ("a smooth timing needs few points", len(k["timing"]))
 assert close(played(box, 10, 30), progress_of(speeds), 5e-4), "every frame where its speeds put it"
 assert k["timing"][0][:2] == (0.0, 0.0) and k["timing"][-1][:2] == (1.0, 1.0), "from the stretch's start to its key"
-# Noise has nothing to leave out: every frame a point.
+# Noise has little to leave out: nearly every frame a point.
 noisy = [1.0, 2.0, 0.5, 1.7, 0.6, 1.9, 0.4, 1.5, 0.8, 1.2, 0.3, 2.0, 0.9, 1.1, 0.5, 1.8, 0.7, 1.4, 0.6, 1.0]
 box.keyframe_set("position", 30, speeds=noisy)
 assert close(played(box, 10, 30), progress_of(noisy), 5e-4)
-assert len(key(box, 30)["timing"]) == 21, len(key(box, 30)["timing"])
+assert len(key(box, 30)["timing"]) >= 18, len(key(box, 30)["timing"])
 # Even speeds: no curve at all (it goes evenly).
 box.keyframe_set("position", 30, speeds=[1.0] * 20)
 assert "timing" not in key(box, 30), key(box, 30)
@@ -180,16 +180,17 @@ assert close(played(plain, 13, 13)[0], 0.6)
 # Off a stretch: nothing.
 assert ops.anim.timing_point_add(layer=str(plain.id), frame="25", x="0.5") == {'CANCELLED'}
 
-# --- Sculpt mode: Grab and Smooth --------------------------------------------------------------------------------------
+# --- Sculpt mode: Grab and Smooth, with Dyntopo ------------------------------------------------------------------------
 start()
+assert wm.path_brush_settings()["timing_dyntopo"] is False, "Dyntopo is off to start with"
 box = line_layer({10: 0.0, 30: 1.0})
 # (an undo step to go back to)
 assert ops.anim.motion_path_stretch_shape(shape="EVEN", **args(box)) == {'FINISHED'}
 even = key(box, 30)
 # Grab across from frame 20 to 24, 1 frame a whole way along so the brush reaches 3 frames in time and a third up:
 # the curve's middle moves later, so frame 20 is less far along.
-assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="20,0.5;24,0.5", radius=3, strength=1, aspect=6)) == \
-    {'FINISHED'}
+assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="20,0.5;24,0.5", radius=3, strength=1, aspect=6,
+                                     dyntopo=1)) == {'FINISHED'}
 k = key(box, 30)
 assert k["interp"] == "CUSTOM", k
 grabbed = played(box, 10, 30)
@@ -198,15 +199,34 @@ print("Grab stroke:", len(k["timing"]), "curve points")
 assert len(k["timing"]) < 21, "decimated after the stroke"
 ops.ed.undo()
 assert key(box, 30) == even, "one undo step"
+# Dragged far sideways, the timing slides along time with the brush: what was at frame 20 (half way) is at frame 27,
+# smoothly, nothing piled up into a jump (samples moved one by one stuck against those they would pass).
+path = ";".join("%g,0.5" % (20 + i * 0.25) for i in range(29))
+assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path=path, radius=4, strength=1, aspect=8,
+                                     dyntopo=1)) == {'FINISHED'}
+slid = played(box, 10, 30)
+steps = [slid[i + 1] - slid[i] for i in range(20)]
+print("Slid far: frame 27 at %.3f, biggest step %.3f" % (slid[17], max(steps)))
+assert close(slid[17], 0.5, 0.04), ("the middle went with the brush", slid[17])
+assert max(steps) < 0.2 and min(steps) > -0.05, ("no jump where it slid to", steps)
+ops.ed.undo()
 # Lock X: a stroke across moves nothing.
 assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="20,0.5;24,0.5", radius=3, strength=1, aspect=6,
-                                     lock_x=1)) == {'FINISHED'}
+                                     lock_x=1, dyntopo=1)) == {'FINISHED'}
 assert close(played(box, 10, 30), [f / 20 for f in range(21)]), "Lock X: never in time"
 # Up and down it still moves.
 assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="20,0.5;20,0.7", radius=3, strength=1, aspect=6,
-                                     lock_x=1)) == {'FINISHED'}
+                                     lock_x=1, dyntopo=1)) == {'FINISHED'}
 assert close(played(box, 20, 20)[0], 0.7, 2e-2), played(box, 20, 20)
-# Smooth evens a bumpy timing out.
+# A wide, smooth lump lifted up: few points (the fit fits each piece's handles and takes out what it can, and a stroke
+# is held to two pixels on a long path, not half of one: it used fifteen).
+assert ops.anim.motion_path_stretch_shape(shape="EVEN", **args(box)) == {'FINISHED'}
+assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="20,0.5;20,0.7", radius=8, strength=1, aspect=20,
+                                     lock_x=1, dyntopo=1)) == {'FINISHED'}
+lumped = len(key(box, 30)["timing"])
+print("Lifted lump:", lumped, "curve points")
+assert lumped <= 6, ("a smooth lump needs few points", lumped)
+# Smooth evens a bumpy timing out, and leaves a smooth curve few points.
 box.keyframe_set("position", 30, speeds=noisy)
 
 
@@ -216,13 +236,96 @@ def roughness(u):
 
 rough = roughness(played(box, 10, 30))
 assert ops.anim.timing_sculpt(**args(box, brush="SMOOTH", path="12,0.2;20,0.5;28,0.9", radius=6, strength=1,
-                                     aspect=20)) == {'FINISHED'}
+                                     aspect=20, dyntopo=1)) == {'FINISHED'}
 smooth = roughness(played(box, 10, 30))
 print("Smooth: roughness %.3f -> %.3f, %d points" % (rough, smooth, len(key(box, 30)["timing"])))
 assert smooth < rough * 0.7, (rough, smooth)
 assert len(key(box, 30)["timing"]) < 21
 assert ops.anim.timing_sculpt(**args(box, brush="PINCH", path="20,0.5")) == {'CANCELLED'}
 assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="")) == {'CANCELLED'}
+
+# --- Sculpt without Dyntopo: the curve's own points and handles move, none added or taken out ---------------------------
+start()
+box = line_layer({10: 0.0, 30: 1.0})
+assert ops.anim.motion_path_stretch_shape(shape="EASE_IN_OUT", **args(box)) == {'FINISHED'}
+assert ops.anim.timing_point_add(**args(box, x=0.5)) == {'FINISHED'}
+before = key(box, 30)["timing"]
+assert len(before) == 3, before
+# Grab on the middle point, a frame later and a tenth up: it goes with the brush (its handles too).
+assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="20,0.5;21,0.6", radius=3, strength=1,
+                                     aspect=6)) == {'FINISHED'}
+after = key(box, 30)["timing"]
+assert len(after) == 3, ("no points added or taken out", after)
+assert close(after[1][:2], (0.55, 0.6), 2e-3), ("the point went with the brush", after[1])
+hin, hout = after[1][2], after[1][3]
+assert abs(hin[0] * hout[1] - hin[1] * hout[0]) < 1e-5 and hin[0] < 0 < hout[0], ("its handles still in line", after[1])
+ops.ed.undo()
+# Lock X: up only.
+assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="20,0.5;21,0.6", radius=3, strength=1, aspect=6,
+                                     lock_x=1)) == {'FINISHED'}
+assert close(key(box, 30)["timing"][1][:2], (0.5, 0.6), 2e-3), key(box, 30)["timing"][1]
+ops.ed.undo()
+# Smooth: still three points, the middle one pulled toward the curve around it.
+bump = [(0.0, 0.0, (0, 0), (0.1, 0.0)), (0.5, 0.8, (-0.1, 0.0), (0.1, 0.0)), (1.0, 1.0, (-0.1, 0.0), (0, 0))]
+box.keyframe_set("position", 30, timing=bump)
+assert ops.anim.timing_sculpt(**args(box, brush="SMOOTH", path="20,0.8", radius=6, strength=1,
+                                     aspect=20)) == {'FINISHED'}
+smoothed = key(box, 30)["timing"]
+assert len(smoothed) == 3 and smoothed[1][1] < 0.8 - 0.02, smoothed
+# Without Dyntopo the ends never move.
+assert smoothed[0][:2] == (0.0, 0.0) and smoothed[-1][:2] == (1.0, 1.0)
+
+# --- Alt drag on the curve: a point put there and dragged, one undo step (anim.timing_point_add with to_x=) ----------
+start()
+box = line_layer({10: 0.0, 30: 1.0})
+assert ops.anim.motion_path_stretch_shape(shape="EASE_IN_OUT", **args(box)) == {'FINISHED'}
+shaped = key(box, 30)
+assert ops.anim.timing_point_add(**args(box, x=0.4, to_x=0.6, y=0.7)) == {'FINISHED'}
+pts = key(box, 30)["timing"]
+assert len(pts) == 3 and close(pts[1][:2], (0.6, 0.7)), pts
+ops.ed.undo()
+assert key(box, 30) == shaped, "one undo step"
+
+# --- Decimate (the Edit mode's right click menu), its Ratio adjustable after ------------------------------------------
+start()
+box = line_layer({10: 0.0, 30: 1.0})
+box.keyframe_set("position", 30, speeds=noisy)
+many = key(box, 30)["timing"]
+inside = len(many) - 2
+assert ops.anim.timing_decimate(**args(box, ratio=0.4)) == {'FINISHED'}
+half = key(box, 30)["timing"]
+assert len(half) - 2 == round(inside * 0.4), (len(half), inside)
+assert half[0][:2] == (0.0, 0.0) and half[-1][:2] == (1.0, 1.0), "the ends stay"
+assert close(wm.path_brush_settings()["timing_decimate_ratio"], 0.4), "the Ratio is kept for next time"
+# A Ratio of 1 keeps them all (and still finishes, so raising it in the panel puts points back).
+box.keyframe_set("position", 30, speeds=noisy)
+assert key(box, 30)["timing"] == many
+assert ops.anim.timing_decimate(**args(box, ratio=1)) == {'FINISHED'}
+assert key(box, 30)["timing"] == many, "a Ratio of 1 takes nothing out"
+# The points that go first are those the curve changes least without: a point on a straight line goes before a bend's.
+line = [(0.0, 0.0, (0, 0), (0.1, 0.1)), (0.3, 0.3, (-0.1, -0.1), (0.1, 0.1)), (0.6, 0.6, (-0.1, -0.1), (0.05, 0.2)),
+        (0.8, 0.95, (-0.05, -0.05), (0.05, 0.0)), (1.0, 1.0, (-0.05, 0.0), (0, 0))]
+box.keyframe_set("position", 30, timing=line)
+assert ops.anim.timing_decimate(**args(box, ratio=0.67)) == {'FINISHED'}
+left = key(box, 30)["timing"]
+assert close([p[0] for p in left], [0.0, 0.6, 0.8, 1.0]), ("the straight one went", left)
+assert close(left[2][2], (-0.05, -0.05)) and close(left[2][3], (0.05, 0.0)), "pieces left alone keep their handles"
+# Points that only split a lopsided curve go to a Ratio of 0, and the curve comes back as it was: the handles across
+# are fitted to it (a third of the way each would miss by far more).
+lopsided = [(0.0, 0.0, (0, 0), (0.7, 0.0)), (1.0, 1.0, (-0.05, 0.0), (0, 0))]
+box.keyframe_set("position", 30, timing=lopsided)
+first = played(box, 10, 30)
+for x in ("0.3", "0.55", "0.8"):
+    assert ops.anim.timing_point_add(**args(box, x=x)) == {'FINISHED'}
+assert len(key(box, 30)["timing"]) == 5
+assert ops.anim.timing_decimate(**args(box, ratio=0)) == {'FINISHED'}
+assert len(key(box, 30)["timing"]) == 2
+back = played(box, 10, 30)
+print("Decimated back: off by %.4f at most" % max(abs(a - b) for a, b in zip(first, back)))
+assert close(back, first, 5e-3), ("the lopsided curve came back", back, first)
+# A curve with nothing between its ends: nothing to do.
+assert ops.anim.motion_path_stretch_shape(shape="EASE_IN", **args(box)) == {'FINISHED'}
+assert ops.anim.timing_decimate(**args(box, ratio=0.5)) == {'CANCELLED'}
 
 # The graph's settings.
 assert ops.anim.timing_graph_set(mode="SCULPT", brush="SMOOTH", radius="4", strength="0.3", lock_x="1") == \

@@ -67,8 +67,10 @@ while probes keep reporting:
 - Read the code the repro points at; find the cause, not the symptom. A design call (two behaviours that can't both
   hold) goes to the user with a recommendation before you build it.
 - Write the test first through operators (`tests/`, `add_test` in CMakeLists.txt), see it fail, fix, see it pass.
-- Add mutation entries to `PENDING` in `tools/mutation_checks.py` and run only the new indexes, in the background,
-  not editing source while they run (the script swaps the source). Each must be caught; strengthen the test if not.
+- Add mutation entries to `PENDING` in `tools/mutation_checks.py`, and don't run them: they wait until the user says
+  "run milestone checks" (or asks for mutation checks in this request). Instead, undo each fix by hand once and see
+  its test fail (below). When they do run, nothing edits source meanwhile (the script swaps it), and each must be
+  caught; strengthen the test if not.
 - Rebuild with the LNK1168 retry loop (the user's own copy may hold the exe), then run the broad related tests
   (`ctest -R` over every area the change touches), not only the new one: a fix in a shared path (how a key goes in,
   how a frame is evaluated) can change everyday behaviour. Keep such a fix to the cases the bug is about (a key put in

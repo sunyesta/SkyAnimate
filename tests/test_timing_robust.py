@@ -109,8 +109,9 @@ box = line_layer({10: 0.0, 20: 1.0})
 assert ops.anim.motion_path_stretch_shape(shape="EASE_IN_OUT", frame="15", **args(box)) == {'FINISHED'}
 for aspect, path in (("1e30", "15,0.5;16,0.6"), ("10", "15,0.5;3e7,0.5")):
     faulthandler.dump_traceback_later(20, exit=True)
-    ops.anim.timing_sculpt(brush="SMOOTH", frame="15", path=path, radius="3", strength="1", aspect=aspect,
-                           **args(box))
+    for dyntopo in ("0", "1"):
+        ops.anim.timing_sculpt(brush="SMOOTH", frame="15", path=path, radius="3", strength="1", aspect=aspect,
+                               dyntopo=dyntopo, **args(box))
     faulthandler.cancel_dump_traceback_later()
     assert all(math.isfinite(p[1]) for p in key(box, 20).get("timing", [])), (aspect, path)
 
@@ -120,7 +121,7 @@ box = line_layer({10: 0.0, 20: 1.0})
 assert ops.anim.motion_path_stretch_shape(shape="EASE_IN_OUT", frame="15", **args(box)) == {'FINISHED'}
 for radius in ("1e9", "1e10", "1e30"):
     r = ops.anim.timing_sculpt(brush="SMOOTH", frame="15", path="12,0.2;18,0.8", radius=radius, strength="1",
-                               aspect="10", **args(box))
+                               aspect="10", dyntopo="1", **args(box))
     k = key(box, 20)
     assert r == {'CANCELLED'} or (k["interp"] == "CUSTOM" and len(k.get("timing", [])) >= 3), (radius, r, k)
     if r == {'FINISHED'}:
