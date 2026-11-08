@@ -294,7 +294,8 @@ assert len(key(box, 30)["timing"]) == 2, key(box, 30)["timing"]
 print("A long piece grabbed up: frame 20 at %.3f" % played(box, 20, 20)[0])
 assert played(box, 20, 20)[0] > 0.56, ("the curve followed the brush", played(box, 20, 20))
 ops.ed.undo()
-# Five points: a stroke near the fourth leaves the pieces it didn't move exactly as they were.
+# Five points: a stroke near the fourth leaves the pieces it didn't move as they were, but for the smooth point between
+# (its handle on the piece not moved turns to stay in line with the one fitted, keeping its length).
 assert ops.anim.motion_path_stretch_shape(shape="EASE_IN_OUT", **args(box)) == {'FINISHED'}
 for x in (0.2, 0.5, 0.8):
     assert ops.anim.timing_point_add(**args(box, x=x)) == {'FINISHED'}
@@ -303,8 +304,11 @@ assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="26,0.9;27,0.97", r
                                      aspect=6)) == {'FINISHED'}
 after = key(box, 30)["timing"]
 assert len(after) == 5, after
-assert after[0] == five[0] and after[1] == five[1] and after[2][2] == five[2][2], ("pieces it didn't move as they were",
-                                                                                five, after)
+assert after[0] == five[0] and after[1] == five[1] and close(after[2][:2], five[2][:2], 1e-6), (
+    "pieces it didn't move as they were", five, after)
+(ix, iy), (ox, oy) = after[2][2], after[2][3]
+assert abs(math.hypot(ix, iy) - math.hypot(*five[2][2])) < 1e-5, ("the turned handle keeps its length", five[2], after[2])
+assert abs(ix * oy - iy * ox) < 1e-6 and ix < 0 < ox, ("the smooth point beside the stroke stays in line", after[2])
 assert close(after[3][:2], (0.85, five[3][1] + 0.07), 2e-3), ("the point went where its sample went", after[3])
 hin, hout = after[3][2], after[3][3]
 assert abs(hin[0] * hout[1] - hin[1] * hout[0]) < 1e-6 and hin[0] < 0 < hout[0], ("a smooth point's handles in line",
@@ -509,10 +513,14 @@ assert key(box, 30)["timing"] == many, "a Ratio of 1 takes nothing out"
 line = [(0.0, 0.0, (0, 0), (0.1, 0.1)), (0.3, 0.3, (-0.1, -0.1), (0.1, 0.1)), (0.6, 0.6, (-0.1, -0.1), (0.05, 0.2)),
         (0.8, 0.95, (-0.05, -0.05), (0.05, 0.0)), (1.0, 1.0, (-0.05, 0.0), (0, 0))]
 box.keyframe_set("position", 30, timing=line)
+stored = key(box, 30)["timing"]
 assert ops.anim.timing_decimate(**args(box, ratio=0.67)) == {'FINISHED'}
 left = key(box, 30)["timing"]
 assert close([p[0] for p in left], [0.0, 0.6, 0.8, 1.0]), ("the straight one went", left)
 assert close(left[2][2], (-0.05, -0.05)) and close(left[2][3], (0.05, 0.0)), "pieces left alone keep their handles"
+# Exactly: the two pieces from 0.6 on were neighbours already, so their handles are the stored ones, not fitted again.
+assert left[1][3] == stored[2][3] and left[2][2] == stored[3][2] and left[2][3] == stored[3][3] and         left[3][2] == stored[4][2], (
+    "pieces left alone keep their handles exactly", left)
 # Points that only split a lopsided curve go to a Ratio of 0, and the curve comes back as it was: the handles across
 # are fitted to it (a third of the way each would miss by far more).
 lopsided = [(0.0, 0.0, (0, 0), (0.7, 0.0)), (1.0, 1.0, (-0.05, 0.0), (0, 0))]

@@ -1310,8 +1310,8 @@ static PieceFit piece_fit(float2 a, float2 b, PieceFit start, bool free_a, bool 
   return {float(p[0]), float(p[1]), float(p[2]), float(p[3])};
 }
 
-/* An aligned point refitted on one side only: that handle turned exactly opposite the one kept, its fitted length
- * kept (the fit holds it to a slope, which can't be a kept handle's straight up or down). */
+/* An aligned point fitted on one side only: its other handle (`kept_in`: the out one) turned exactly opposite the
+ * one that stays, keeping its length. */
 static void handle_opposite_kept(TimingPoint &p, bool kept_in)
 {
   const float2 kept = kept_in ? p.in : p.out;
@@ -1323,9 +1323,10 @@ static void handle_opposite_kept(TimingPoint &p, bool kept_in)
 }
 
 /* Without Dyntopo, as a drawing's sculpt does: each point goes where its sample went, the handles of each piece the
- * stroke moved are fitted to its samples (a smooth point's two kept in line: along the way of both where both were
- * fitted, else opposite the one left as it was), and the pieces it didn't move stay exactly as they were. None added or
- * taken out. */
+ * stroke moved are fitted to its samples, slopes too (a smooth point's two kept in line: along the way of both where
+ * both were fitted, else the one on the piece not moved turned opposite the fitted one, keeping its length, so that
+ * piece bends a little, as a drawing's does, and a piece between two smooth points still follows the brush), and the
+ * pieces it didn't move are otherwise as they were. None added or taken out. */
 static TimingCurve sculpt_fit_points(const TimingCurve &c, int n, const StrokeSamples &ss)
 {
   const size_t count = c.points.size();
@@ -1356,14 +1357,13 @@ static TimingCurve sculpt_fit_points(const TimingCurve &c, int n, const StrokeSa
       continue;
     }
     const size_t a = p, b = p + 1;
-    /* A smooth point whose other side the stroke left keeps its slope, opposite the handle there. */
-    const bool free_a = !smooth(a) || touched[a - 1], free_b = !smooth(b) || touched[b];
+    /* Every slope fitted, a smooth point's too: its handle on the side the stroke left turns to stay in line. */
     PieceFit start;
     start.alpha = std::max(h_out[a].x, 0.0f);
     start.beta = std::max(-h_in[b].x, 0.0f);
-    start.slope_a = free_a ? was_out[a] : was_in[a];
-    start.slope_b = free_b ? was_in[b] : was_out[b];
-    fit_piece(p, start, free_a, free_b);
+    start.slope_a = was_out[a];
+    start.slope_b = was_in[b];
+    fit_piece(p, start, true, true);
   }
   /* A smooth point fitted on both sides: its handles along the way between the two, each piece's lengths fitted to it. */
   std::vector<char> again(count - 1, 0);
@@ -1387,7 +1387,7 @@ static TimingCurve sculpt_fit_points(const TimingCurve &c, int n, const StrokeSa
   }
   for (size_t i = 1; i + 1 < count; i++) {
     if (smooth(i) && touched[i - 1] != touched[i]) {
-      handle_opposite_kept(out.points[i], !touched[i - 1]);
+      handle_opposite_kept(out.points[i], touched[i - 1] != 0);
     }
   }
   return timing_valid(out) ? out : c;

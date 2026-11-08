@@ -97,6 +97,9 @@ while probes keep reporting:
   caught, 0 not"): one lane is `--lanes 2`. An entry whose undone code doesn't compile at `/W4` (a variable left
   unused) reports BUILD FAILED: undo the whole change in it. Guards the operators can't reach (op_arg_float already turns nan, inf and text into the
   fallback) need no entry.
+- A later fix can move or reword code an older entry names ("found 0 times": fix the entry to the code as it is now,
+  and prove it by hand again), or make its test too loose to notice: a check that something is kept "as it was"
+  compares the stored values exactly (read back after storing them), since a fit lands close enough to pass a tolerance.
 - A hang's test: `faulthandler.dump_traceback_later(20, exit=True)` before the op, cancelled after. Its watchdog runs
   outside Python's lock, so it fires while a C++ operator loops (a `threading.Timer` never gets to run).
 - Taking out a floor or clamp (a least speed, a least gap) can break code that counted on it: what was always slightly

@@ -432,4 +432,20 @@ for dyn in ("0", "1"):
     assert q[4], ("still aligned", dyn, q)
     assert abs(ix * oy - iy * ox) <= 1e-6 * max(1e-9, math.hypot(ix, iy) * math.hypot(ox, oy)) * 1e3 and         ix * ox + iy * oy < 0, ("an aligned point's handles left line after a sculpt beside it", dyn, q)
 
+# Without Dyntopo, Grab on a piece between two smooth points, the stroke not reaching the pieces beyond, still lifts it:
+# the points' slopes are fitted too, their other handles turning to stay in line.
+start()
+box = line_layer({10: 0.0, 50: 1.0})
+a = args(box, frame=30)
+assert ops.anim.motion_path_stretch_shape(shape="EVEN", **a) == {'FINISHED'}
+for x in (0.25, 0.5, 0.75):
+    assert ops.anim.timing_point_add(x=str(x), **a) == {'FINISHED'}
+was = xs(box, 26, 26)[0]
+assert ops.anim.timing_sculpt(brush="GRAB", path="26,%g;26,%g" % (was, was + 0.2), radius="4", strength="1",
+                              aspect="40", lock_x="1", dyntopo="0", **a) == {'FINISHED'}
+assert xs(box, 26, 26)[0] - was > 0.05, ("Grab between two smooth points didn't lift the piece", was, xs(box, 26, 26))
+for q in key(box, 50)["timing"][1:-1]:
+    (ix, iy), (ox, oy) = q[2], q[3]
+    assert abs(ix * oy - iy * ox) < 1e-5 and ix < 0 < ox, ("a smooth point beside the Grab left line", q)
+
 print("timing robust: all passed")
