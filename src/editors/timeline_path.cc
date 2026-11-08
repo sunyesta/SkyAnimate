@@ -1268,22 +1268,7 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
     }
     operator_call(C, "anim.motion_path_timing_step", {{"step", "1"}});
   }
-  /* The stretch's shapes, at the top. */
   const ImGuiStyle &style = ImGui::GetStyle();
-  const float bw = (w - style.ItemSpacing.x) * 0.5f;
-  int i = 0;
-  for (const auto &[label, id] : {std::pair{"Even", "EVEN"}, std::pair{"Ease In", "EASE_IN"},
-                                  std::pair{"Ease Out", "EASE_OUT"}, std::pair{"Ease In-Out", "EASE_IN_OUT"}})
-  {
-    if (i++ % 2) {
-      ImGui::SameLine();
-    }
-    if (ImGui::Button(label, ImVec2(bw, 0.0f))) {
-      OpArgs args = target_args(doc, t, s.start + 1);
-      args["shape"] = id;
-      operator_call(C, "anim.motion_path_stretch_shape", args);
-    }
-  }
   ToolSettings &ts = wm.tool_settings;
   const bool sculpt = ts.path_graph_sculpt;
   /* The graph: as tall as there is room for, over the mode buttons and the mode's settings. */
