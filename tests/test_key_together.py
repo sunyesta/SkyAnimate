@@ -83,11 +83,12 @@ assert [(s["start"], s["end"]) for s in row["stretches"]] == [(0, 10), (10, 20)]
 group.key_together = False
 settle()
 assert frames(a, "points[1].pos") == [0, 10], frames(a, "points[1].pos")
-assert frames(b, "points[0].pos") == [0, 20], ("b's own keys, its whole drawing", frames(b, "points[0].pos"))
+assert frames(b, "points[0].pos") == [0, 10, 20], ("b's own keys, its whole drawing, and the pose before its edit "
+                                                   "held", frames(b, "points[0].pos"))
 assert frames(b, "position") == [] and frames(group, "rotation") == [] and frames(a, "opacity") == []
 assert frames(a, "points[0].pos") == [0, 10], "a's drawing keyed whole, on its own frames"
 doc.frame_current = 5
-assert abs(b.points[0][1] - 3.25) < 0.2, ("b moves straight to its key again", b.points[0])
+assert abs(b.points[0][1] - 3.0) < 1e-4, ("b held at the pose before its edit, kept", b.points[0])
 doc.frame_current = 0
 # On again adds them again.
 group.key_together = True
@@ -365,7 +366,8 @@ layers.active = b
 assert ops.layer.move_to_group(group="0") == {'FINISHED'}
 settle()
 assert frames(b, "position") == [], ("its fillers go", frames(b, "position"))
-assert frames(b, "points[0].pos") == [0, 30], ("its own key stays", frames(b, "points[0].pos"))
+assert frames(b, "points[0].pos") == [0, 20, 30], ("its own key stays, the pose before it held",
+                                                   frames(b, "points[0].pos"))
 assert frames(a, "points[1].pos") == [0, 10, 20, 30], ("the group's stay", frames(a, "points[1].pos"))
 assert ops.ed.undo() == {'FINISHED'}
 settle()

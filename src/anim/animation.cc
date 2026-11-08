@@ -312,6 +312,35 @@ template<typename T> static Key<T> &key_put(Channel<T> &ch, int frame, const T &
   return ch.set_key(frame, base);
 }
 
+/* Key Together: before `ch` is keyed on `frame`, the filler keys at the poses either side (its keys before and after
+ * the frame) become its own, holding what they showed, so the edit changes it only between those poses. A filler
+ * inside motion, or after the channel's last key of its own, shapes nothing (Channel::evaluate): left so, the new key's
+ * curve would run through it and move the pose there. Kept when Key Together is turned off. */
+template<typename T> static void fillers_hold_around(Channel<T> &ch, int frame)
+{
+  Key<T> *before = nullptr, *after = nullptr;
+  for (Key<T> &k : ch.keys) {
+    if (k.frame < frame) {
+      before = &k;
+    }
+    else if (k.frame > frame && !after) {
+      after = &k;
+    }
+  }
+  /* Both worked out before either changes. */
+  const T held_before = before ? ch.evaluate(before->frame) : T{};
+  const T held_after = after ? ch.evaluate(after->frame) : T{};
+  const auto hold = [](Key<T> *k, const T &held) {
+    if (k && k->filler) {
+      k->value = held;
+      k->filler = false;
+      k->filler_inside = false;
+    }
+  };
+  hold(before, held_before);
+  hold(after, held_after);
+}
+
 /* Turns a change to `ch` since it was last evaluated into a key at `frame` (auto-key on). Replace
  * (Blender's auto-keying mode) only changes a key already on the frame. Returns whether it keyed. */
 template<typename T> static bool record(Channel<T> &ch, const T &value, int frame, bool auto_key, bool replace = false)
@@ -342,6 +371,7 @@ template<typename T> static bool record(Channel<T> &ch, const T &value, int fram
     if (!ch.animated()) {
       ch.set_key(0, ch.last - ch.from_action_bones);
     }
+    fillers_hold_around(ch, frame);
     key_put(ch, frame, base);
     ch.last = value;
     return true;

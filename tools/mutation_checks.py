@@ -83,6 +83,10 @@ PENDING = [
      '    return layer->name + (key_together_allowed(*layer) && layer->key_together ? " together" :',
      '    return layer->name + (false ? " together" :',
      'a vector layer keying together has a "<layer> together" timing row', 'key_together_fold'),
+    ('src/anim/animation.cc', '    fillers_hold_around(ch, frame);', '',
+     'keyed between poses while keying together, the poses either side hold', 'key_together_fold'),
+    ('src/anim/animation.cc', '      k->filler = false;', '      k->filler = true;',
+     'the held poses either side of an edit stay when Key Together is off', 'key_together_fold'),
 ]
 
 def build(root):

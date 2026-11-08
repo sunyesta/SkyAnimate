@@ -95,7 +95,8 @@ assert not ball.key_together
 settle()
 assert frames(ball, "position") == [0, 10], frames(ball, "position")
 assert point_frames(ball) == [0, 20], point_frames(ball)
-assert frames(ball, "opacity") == [0, 25], "the edit made while folded stays"
+assert frames(ball, "opacity") == [0, 20, 25], ("the edit made while folded stays, with the pose before it held",
+                                                frames(ball, "opacity"))
 assert rows()[1]["frames"] == [] and rows()[1]["open"]
 
 # Undo folds it again, its fillers back.
@@ -142,6 +143,48 @@ ops.mesh.select_all()
 assert not row("Group")["open"] and row("Group")["red"] and group.key_together, row("Group")
 ops.mesh.select_none()
 assert not row("Group")["red"]
+
+# Keyed between poses while folded: the poses either side hold what they showed (their fillers become its own keys),
+# so the edit changes it only between them; kept when the row is opened.
+group.key_together = False
+settle()
+ops.layer.new()
+hop = layers.active
+hop.name = "Hop"
+hop.add_curve([(0.0, -2.0), (1.0, -2.0)])
+doc.frame_current = 30
+hop.location_x = 3.0  # moved on 0 and 30 only
+doc.frame_current = 10
+hop.rotation = 0.5  # turned on 10 and 20: the other poses
+doc.frame_current = 20
+hop.rotation = 1.0
+doc.frame_current = 0
+hop.key_together = True
+settle()
+assert fillers(hop, "position") == [10, 20], hop.keyframes("position")
+
+
+def hop_y():
+    out = []
+    for f in (0, 10, 15, 20, 30):
+        doc.frame_current = f
+        out.append(round(hop.location_y, 3))
+    doc.frame_current = 0
+    return out
+
+
+doc.frame_current = 15
+hop.location_y = 2.0
+doc.frame_current = 0
+settle()
+assert hop_y() == [0.0, 0.0, 2.0, 0.0, 0.0], ("the poses on 10 and 20 hold", hop_y())
+assert fillers(hop, "position") == [], ("the poses either side are its own now", hop.keyframes("position"))
+assert 15 in fillers(hop, "rotation") and 30 in fillers(hop, "rotation"), ("only the channel edited",
+                                                                         hop.keyframes("rotation"))
+hop.key_together = False
+settle()
+assert frames(hop, "position") == [0, 10, 15, 20, 30], frames(hop, "position")
+assert hop_y() == [0.0, 0.0, 2.0, 0.0, 0.0], ("opened, they stay", hop_y())
 
 # Not every layer: a media or switch layer's row folds as before (the project keeps it).
 assert not ops.anim.timeline_fold_together(layer="999999") == {'FINISHED'}
