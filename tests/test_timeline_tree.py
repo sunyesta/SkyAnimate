@@ -61,8 +61,8 @@ doc.frame_current = 0
 # The group picked (it edits what's inside it): its layers nested under it, in the Layers editor's order.
 layers.active = group
 tree = names()
-assert tree[0] == (0, "group") and row("group")["label"] == "group", \
-    ("the group alone at the top, open: a heading, no Summary", tree)
+assert tree[:2] == [(0, "Summary"), (0, "group")] and row("group")["label"] == "group", \
+    ("the Summary, then the group: its own row, open a heading", tree)
 order = [l.name for l in group.children]
 at = tree.index((0, "group"))
 inside = [name for depth, name in tree[at + 1:] if depth == 1 and name in ("first", "second")]
@@ -72,10 +72,10 @@ assert tree.index((1, "second")) < tree.index((2, "Drawing")), "a layer's rows u
 assert "top" not in [name for depth, name in tree], "only what's picked"
 assert row("group")["frames"] == [], "open (not keying together): no keys of its own"
 # Folded, it keys together and shows what it holds; opened again, its filler keys go.
-assert wm.timeline_row_fold(0, False) and group.key_together
-assert row("group")["frames"] == [0, 10, 20] and row("group")["label"] == "Summary / group", rows()
-assert names(True) == [(0, "group")], "folded: what it holds hidden"
-assert wm.timeline_row_fold(0, True) and not group.key_together
+assert wm.timeline_row_fold(1, False) and group.key_together
+assert row("group")["frames"] == [0, 10, 20] and row("group")["label"] == "group", rows()
+assert names(True) == [(0, "Summary"), (0, "group")], "folded: what it holds hidden"
+assert wm.timeline_row_fold(1, True) and not group.key_together
 assert row("group")["frames"] == [] and (2, "Drawing") in names()
 assert next(r for r in rows() if r["name"] == "Drawing")["frames"] == [0, 20], "the fillers went again"
 assert row("group")["layer"] == group.id and row("Drawing")["layer"] == 0

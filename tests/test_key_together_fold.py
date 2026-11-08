@@ -63,17 +63,18 @@ settle()
 assert frames(ball, "position") == [0, 10] and point_frames(ball) == [0, 20], (frames(ball, "position"),
                                                                                point_frames(ball))
 
-# Open by default: a heading without keys, alone at the top (no Summary over its rows either).
-top = rows()[0]
+# Open by default: a heading without keys, under the Summary (its own row, every key).
+assert rows()[0]["summary"] and rows()[0]["frames"] == [0, 10, 20], rows()[0]
+top = rows()[1]
 assert (top["name"], top["label"], top["open"], top["frames"]) == ("Ball", "Ball", True, []), top
 assert row("Position") and row("Drawing"), rows()
 
-# Folded: Key Together on, an undo step; the row is the Summary and shows every key; its rows hidden.
-assert wm.timeline_row_fold(0, False)
+# Folded: Key Together on, an undo step; the row shows every key; its rows hidden.
+assert wm.timeline_row_fold(1, False)
 assert ball.key_together
 assert wm.undo_history()[0][-1] == "Key Together", wm.undo_history()[0][-1]
-top = rows()[0]
-assert top["label"] == "Summary / Ball" and not top["open"] and top["frames"] == [0, 10, 20], top
+top = rows()[1]
+assert top["label"] == "Ball" and not top["open"] and top["frames"] == [0, 10, 20], top
 assert row("Position") is None and row("Drawing") is None, "folded: its rows hidden"
 # Keyed as one: the move held on 20, the drawing held on 10, by filler keys.
 assert frames(ball, "position") == [0, 10, 20] and 20 in fillers(ball, "position"), ball.keyframes("position")
@@ -89,26 +90,26 @@ labels = [t["label"] for t in wm.motion_path_timing()]
 assert labels == ["Ball together"], labels
 
 # Opened: Key Together off, the filler keys never edited go; its own keys stay.
-assert wm.timeline_row_fold(0, True)
+assert wm.timeline_row_fold(1, True)
 assert not ball.key_together
 settle()
 assert frames(ball, "position") == [0, 10], frames(ball, "position")
 assert point_frames(ball) == [0, 20], point_frames(ball)
 assert frames(ball, "opacity") == [0, 25], "the edit made while folded stays"
-assert rows()[0]["frames"] == [] and rows()[0]["open"]
+assert rows()[1]["frames"] == [] and rows()[1]["open"]
 
 # Undo folds it again, its fillers back.
 assert ops.ed.undo() == {'FINISHED'}
-assert ball.key_together and not rows()[0]["open"]
+assert ball.key_together and not rows()[1]["open"]
 assert 20 in frames(ball, "position"), frames(ball, "position")
 assert ops.ed.redo() == {'FINISHED'}
-assert not ball.key_together and rows()[0]["open"]
+assert not ball.key_together and rows()[1]["open"]
 
 # Key Together set in the Layer tab folds the row; cleared, it opens.
 ball.key_together = True
-assert not rows()[0]["open"]
+assert not rows()[1]["open"]
 ball.key_together = False
-assert rows()[0]["open"]
+assert rows()[1]["open"]
 
 # A group: folded with Key Together, open without; a layer inside folded too while the group is open.
 ops.layer.new()
