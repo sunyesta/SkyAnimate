@@ -45,17 +45,20 @@ constexpr ImU32 KEY_FOCUS_FILL = IM_COL32(0x2a, 0xb0, 0xa8, 60);
 bool timeline_path_strip_busy();
 
 /* The timeline's sidebar (N) and its Path Timing tab (panel B of the spec's speed editing): one stretch at a time of
- * the last thing picked on, as a progress graph (how far along its path, 0-1, against its frames, the even speed
- * dashed), its dots dragged up or down to slide them (Ctrl onto the even line), with the selected dot's % along and
- * speed, the shape buttons and arrows to the stretches either side. As in the chart, proportional editing is always
- * on (its own reach, path_graph_size, an outline circle), Shift click or drag blends (on its stretch) and Ctrl click
- * adds to the selection.
- * Its view zooms with the wheel, pans with a middle drag and stretches with Ctrl middle drag; Home, an edge arrow
- * toward a dot out of view, or showing another stretch fits it to the stretch. 0 wide while it is hidden. */
+ * the last thing picked on, as a graph of its timing curve (how far along its path, 0-1, against its frames, the even
+ * speed dashed), with arrows to the stretches either side and the shapes in its right click menu. Under it, Edit (the
+ * curve's points and handles, as a drawing's) and Sculpt (Grab and Smooth brushes, F to size them). Its view zooms
+ * with the wheel, pans with a middle drag and stretches with Ctrl middle drag; Home or showing another stretch fits it
+ * to the stretch. 0 wide while it is hidden. */
 float timeline_sidebar_width(Context &C, float avail_w);
 void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max);
 /* Where the sidebar's tab (a small "<" at the right edge of the keys `min`..`max`, a third of the way down, as
  * Blender's region arrow) is while the sidebar is closed, so it shows it's there; false while it is open. */
 bool timeline_sidebar_tab(ImVec2 min, ImVec2 max, bool open, ImVec2 &r_min, ImVec2 &r_max);
+/* F sizing the graph's brush, as Blender's radial control: the centre one radius (`radius` frames, `per_frame`
+ * pixels each) left of the mouse, so the brush keeps its size until the mouse moves; then the size the mouse's
+ * distance from that centre gives. */
+ImVec2 timing_resize_center(ImVec2 mouse, float radius, float per_frame);
+float timing_resize_radius(ImVec2 center, ImVec2 mouse, float per_frame);
 
 }  // namespace oanim

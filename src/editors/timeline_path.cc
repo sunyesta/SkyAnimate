@@ -651,6 +651,16 @@ static struct {
   float was = 0.0f;
 } g_resize;
 
+ImVec2 timing_resize_center(ImVec2 mouse, float radius, float per_frame)
+{
+  return ImVec2(mouse.x - radius * std::max(per_frame, 1e-3f), mouse.y);
+}
+
+float timing_resize_radius(ImVec2 center, ImVec2 mouse, float per_frame)
+{
+  return std::clamp(std::hypot(mouse.x - center.x, mouse.y - center.y) / std::max(per_frame, 1e-3f), 0.1f, 500.0f);
+}
+
 /* The graph's view: frames across, the way along up. It fits the stretch whenever a different one is shown, and is
  * otherwise the user's (wheel zoom, middle drag pan, Ctrl middle drag stretch, Home to fit again), so edits on the
  * stretch never move it. */
@@ -997,14 +1007,12 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     wm.path_graph_resize_request = false;
     if (editable && sculpt && !g_stroke.active) {
       rs.active = true;
-      rs.center = hovered ? io.MousePos : ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+      rs.center = timing_resize_center(io.MousePos, ts.path_timing_radius[bi], per_frame);
       rs.was = ts.path_timing_radius[bi];
     }
   }
   if (rs.active) {
-    ts.path_timing_radius[bi] = std::clamp(
-        std::hypot(io.MousePos.x - rs.center.x, io.MousePos.y - rs.center.y) / std::max(per_frame, 1e-3f), 0.1f,
-        500.0f);
+    ts.path_timing_radius[bi] = timing_resize_radius(rs.center, io.MousePos, per_frame);
     ImGui::SetTooltip("Radius: %.1f frames", double(ts.path_timing_radius[bi]));
     if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
       ts.path_timing_radius[bi] = rs.was;

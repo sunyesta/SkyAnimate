@@ -111,6 +111,9 @@ PENDING = [
      "A Custom key's timing curve is saved", 'timing_curve'),
     ('src/ops/motion_path_ops.cc', '    if (!ends && (i == 0 || size_t(i) + 1 == curve.points.size())) {', '    if (false && (i == 0 || size_t(i) + 1 == curve.points.size())) {',
      "The timing curve's ends (the keys) can't be moved or deleted", 'timing_curve'),
+    ('src/editors/timeline_path.cc', '  return ImVec2(mouse.x - radius * std::max(per_frame, 1e-3f), mouse.y);',
+     '  return ImVec2(mouse.x, mouse.y);',
+     "F sizes the timing graph's brush from the size it has", 'timing_curve'),
 ]
 
 def build(root):

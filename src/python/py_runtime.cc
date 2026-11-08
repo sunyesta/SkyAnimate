@@ -1762,6 +1762,16 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
   });
   /* The stretch the timeline's Path Timing panel shows (motion_path_timing_shown), or None; with picks in different
    * stretches, which of them ("of": index, count). */
+  /* F sizing the timing graph's brush from `radius` frames (`per_frame` pixels each), the mouse starting at (0, 0):
+   * the radius at each of `moves`. */
+  m.def("timing_resize", [](float radius, float per_frame, const std::vector<std::pair<float, float>> &moves) {
+    const ImVec2 center = timing_resize_center(ImVec2(0.0f, 0.0f), radius, per_frame);
+    std::vector<float> radii;
+    for (const auto &[x, y] : moves) {
+      radii.push_back(timing_resize_radius(center, ImVec2(x, y), per_frame));
+    }
+    return radii;
+  });
   m.def("motion_path_timing_panel", []() -> py::object {
     Context &C = current_context();
     const Document &doc = *C.document;

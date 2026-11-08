@@ -607,6 +607,13 @@ def path_brush_settings():
     return _oanim.path_brush_settings()
 
 
+
+def timing_resize(radius, per_frame, moves):
+    """F sizing the Path Timing graph's brush from radius frames (per_frame pixels each), the mouse starting at
+    (0, 0): the radius at each mouse position in moves, a list of (x, y)."""
+    return _oanim.timing_resize(radius, per_frame, moves)
+
+
 def sculpt_settings():
     """The Sculpt tool's settings: a dict with brush (GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST,
     SURFACE_SMOOTH), preset (the shelf's preset it was picked from), radius (screen pixels), strength (0-1),

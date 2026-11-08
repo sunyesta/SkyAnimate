@@ -232,6 +232,10 @@ assert (s["graph_mode"], s["timing_brush"], s["lock_x"]) == ("SCULPT", "SMOOTH",
 assert close(s["timing_brushes"]["SMOOTH"], (4.0, 0.3)) and close(s["timing_brushes"]["GRAB"], (2.0, 1.0)), s
 assert ops.anim.timing_graph_set(mode="EDIT", brush="GRAB", lock_x="0") == {'FINISHED'}
 
+# F sizes the brush from the size it has: the mouse starts on the circle's edge, so it keeps its size until it moves.
+r = wm.timing_resize(4.0, 12.0, [(0, 0), (12, 0), (-12, 0)])
+assert close(r, [4.0, 5.0, 3.0]), ("F starts at the brush's size and grows or shrinks from there", r)
+
 # --- Python: the curve set as it is --------------------------------------------------------------------------------------
 box.keyframe_set("position", 30, timing=[(0.0, 0.0, (0, 0), (0.2, 0.0)), (1.0, 1.0, (-0.2, 0.0), (0, 0))])
 assert len(key(box, 30)["timing"]) == 2
