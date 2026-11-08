@@ -2,6 +2,7 @@
  * and a snapshot to compare an edit against. */
 
 #include <algorithm>
+#include <charconv>
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
@@ -1568,7 +1569,7 @@ void motion_path_operators_register()
     ot.name = "Move Timing Handle";
     ot.description = "The Path Timing graph's Edit mode: the side= IN or OUT handle of point index=N of the timing "
                      "curve of the stretch frame= is in set to the offset x=, y= from its point, as a drawing's handle: "
-                     "an aligned point's other handle turns to stay in line unless free=1 (Alt drag). Of what a path "
+                     "an aligned point's other handle turns to stay in line unless free=1 (Alt drag), which breaks the point. Of what a path "
                      "traces (layer=, bone=, point=, drawing=1, or the first traced)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr; };
@@ -1807,7 +1808,23 @@ void motion_path_operators_register()
       float box[4];
       bool has_box = false;
       if (op_has_arg(C, "box")) {
-        has_box = std::sscanf(op_arg(C, "box").c_str(), "%f,%f,%f,%f", &box[0], &box[1], &box[2], &box[3]) == 4;
+        const std::string text = op_arg(C, "box");
+        const char *at = text.data(), *end = text.data() + text.size();
+        int read = 0;
+        for (; read < 4; read++) {
+          const std::from_chars_result r = std::from_chars(at, end, box[read]);
+          if (r.ec != std::errc()) {
+            break;
+          }
+          at = r.ptr;
+          if (read < 3) {
+            if (at == end || *at != ',') {
+              break;
+            }
+            at++;
+          }
+        }
+        has_box = read == 4 && at == end;
         if (!has_box) {
           report(ReportType::Warning, "box= is \"x0,y0,x1,y1\"");
           return OpStatus::Cancelled;

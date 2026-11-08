@@ -74,7 +74,8 @@ int timing_point_insert(TimingCurve &curve, float x);
  * time and progress are the keys'). */
 void timing_point_move(TimingCurve &curve, size_t i, float2 co);
 /* Sets point `i`'s handle (`out` or in) to offset `h`, as a drawing's handle is dragged: an aligned point's other handle
- * turns to stay in line, keeping its length, unless `free` (Alt), which moves this one alone. */
+ * turns to stay in line, keeping its length, unless `free` (Alt), which moves this one alone and makes the point
+ * broken (Aligned in the Handles menu puts it back). */
 void timing_handle_set(TimingCurve &curve, size_t i, bool out, float2 h, bool free);
 /* Takes out point `i` (never an end); the curve fitted again over the frames it spanned would be another edit. */
 bool timing_point_remove(TimingCurve &curve, size_t i);

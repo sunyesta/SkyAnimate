@@ -599,6 +599,11 @@ void timing_handle_set(TimingCurve &curve, size_t i, bool out, float2 h, bool fr
   (out ? p.out : p.in) = h;
   /* An end point has one handle: nothing to turn. */
   const bool has_other = out ? i > 0 : i + 1 < curve.points.size();
+  /* Moved alone, the two are no longer in line: the point is broken from then on, as a motion path's control point
+   * is, so the next plain drag doesn't snap the other back. */
+  if (free && has_other) {
+    p.aligned = false;
+  }
   if (p.aligned && !free && has_other && length(h) > 1e-9f) {
     float2 &other = out ? p.in : p.out;
     const float other_dx = out ? p.co.x - curve.points[i - 1].co.x : curve.points[i + 1].co.x - p.co.x;

@@ -158,6 +158,11 @@ assert close(math.hypot(*now_in), math.hypot(*h_in)), "keeping its length"
 assert ops.anim.timing_handle_move(**args(box, index=1, side="OUT", x=0.1, y=0.0, free=1)) == {'FINISHED'}
 (_, _, free_in, free_out, _) = key(box, 20)["timing"][1]
 assert close(free_out, (0.1, 0.0)) and close(free_in, now_in), "Alt: the other handle stays"
+assert key(box, 20)["timing"][1][4] is False, "moved alone, the point is broken"
+# Broken, a plain drag of either handle leaves the other where it is (it doesn't snap back into line).
+assert ops.anim.timing_handle_move(**args(box, index=1, side="IN", x=-0.05, y=-0.12)) == {'FINISHED'}
+(_, _, plain_in, plain_out, _) = key(box, 20)["timing"][1]
+assert close(plain_in, (-0.05, -0.12)) and close(plain_out, (0.1, 0.0)), ("broken: no snap to aligned", plain_in, plain_out)
 # A handle points its own way and reaches no further than its segment (the curve stays a function of time).
 assert ops.anim.timing_handle_move(**args(box, index=1, side="OUT", x=-0.2, y=0.1)) == {'FINISHED'}
 assert key(box, 20)["timing"][1][3][0] >= 0.0, key(box, 20)["timing"][1]

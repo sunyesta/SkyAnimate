@@ -108,6 +108,9 @@ PENDING = [
      'for (size_t g = gone.size(); g-- > gone.size() - 1;) {', 'X takes out every timing point picked', 'timing_curve'),
     ('src/ops/motion_path_ops.cc', 'C.wm->path_timing_picks = {{i, 0}};', 'C.wm->path_timing_picks = {};',
      'a timing point added is picked alone', 'timing_curve'),
+    ('src/anim/timing_curve.cc', '  if (free && has_other) {\n    p.aligned = false;',
+     '  if (free && has_other) {\n    (void)p;',
+     'a timing handle moved alone (Alt) breaks its point, so it never snaps back into line', 'timing_curve'),
 ]
 
 def build(root):
