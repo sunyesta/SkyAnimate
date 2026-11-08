@@ -1169,6 +1169,21 @@ bool timeline_key_focus_span(const MotionPathTarget &target, int &r_start, int &
   r_end = g_key_focus.end;
   return true;
 }
+
+bool timeline_picked_stretch(Context &C, MotionPathTarget &r_target)
+{
+  if (!C.document || !C.wm) {
+    return false;
+  }
+  /* Worked out afresh (not the header's from this frame), so it holds before the header is drawn and in a background
+   * run. */
+  const KeyFocus f = key_focus(C);
+  if (f.mode != 2 || !f.picked) {
+    return false;
+  }
+  r_target = f.target;
+  return true;
+}
 /* Popovers open above the header, a small caret under them pointing at the button that opened them (Blender's). */
 static float popover_caret_size()
 {

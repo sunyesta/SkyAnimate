@@ -1,7 +1,7 @@
 #pragma once
 
 /* The timeline's timing chart (row A of the spec's Motion paths: speed editing), shown only while the Motion Path
- * tool is in hand: a strip at the bottom of the keys, a row for each thing the paths trace. Each stretch between keys
+ * tool is in hand and a stretch is picked (teal): a strip at the bottom of the keys, one row, of the path last picked on. Each stretch between keys
  * is a line from key to key with a tick for each frame, placed by how far along the path that frame has got, as an
  * animator's timing chart; ticks bunched up are slow, spread out fast. Ticks are coloured as the path's dots are (time
  * through the stretch, the stretch being worked on lit). With Edit, a tick is a dot: a click selects it (Shift adds,
@@ -14,7 +14,9 @@
  * selection. Over the strip, the wheel zooms the timeline. */
 
 #include <functional>
+#include <vector>
 
+#include "data/document.hh"
 #include "imgui.h"
 #include "ops/operator.hh"
 
@@ -28,6 +30,8 @@ struct KeySettings;
 void timeline_interp_modes(const KeySettings &current, bool mixed, bool mixed_ease, bool separators,
                            const std::function<void(const OpArgs &)> &set);
 
+/* What the strip shows: the path of the stretch picked (teal), else nothing (it is hidden). */
+std::vector<MotionPathTarget> timeline_path_strip_targets(Context &C);
 /* How tall the strip is (0 when it isn't shown), for rows `row_h` tall. */
 float timeline_path_strip_height(Context &C, float row_h);
 /* Draws the strip from `min` to `max` (the names column ending at `keys_x`, frames `view_start` + `span` over the
@@ -38,6 +42,9 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
 bool timeline_path_strip_ticks_editable(const ToolSettings &ts);
 /* The selected stretch (teal) this frame, when `target` is one of those it is of; false otherwise. */
 bool timeline_key_focus_span(const MotionPathTarget &target, int &r_start, int &r_end);
+/* The stretch picked (teal from picks, not the playhead's): the path last picked on in `r_target`. False with nothing
+ * picked, picks in different stretches or other keys selected as well. */
+bool timeline_picked_stretch(Context &C, MotionPathTarget &r_target);
 /* Its shade, behind the keys. */
 constexpr ImU32 KEY_FOCUS_FILL = IM_COL32(0x2a, 0xb0, 0xa8, 60);
 /* A tick or a blend is being dragged in the strip, or Shift is held: the wheel is the strip's, not the timeline's

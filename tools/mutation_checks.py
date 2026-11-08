@@ -60,6 +60,8 @@ PENDING = [
   }''', '', 'a stretch on 2s made one with the key gone keeps its steps', 'motion_path_key_to_control'),
     ('src/anim/channel.cc', '''  key_aligned_again(b, b_broken);
   keys.erase(keys.begin() + long(i));''', '''  key_aligned_again(b, b_broken);''', 'Convert to Control Point takes the key out', 'motion_path_key_to_control'),
+    ('src/editors/timeline.cc', '  if (f.mode != 2 || !f.picked) {', '  if (f.mode != 2) {',
+     "the timing chart is hidden with nothing picked (the playhead's teal is not a pick)", 'timing_chart_rows'),
 ]
 
 def build(root):

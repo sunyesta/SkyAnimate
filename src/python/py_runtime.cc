@@ -1749,6 +1749,15 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return out;
   });
+  /* The timing chart's rows (their labels): one, the picked stretch's path, else none (it is hidden). */
+  m.def("timing_chart_rows", []() {
+    Context &C = current_context();
+    std::vector<std::string> rows;
+    for (const MotionPathTarget &t : timeline_path_strip_targets(C)) {
+      rows.push_back(motion_path_label(*C.document, t));
+    }
+    return rows;
+  });
   m.def("timing_chart_ticks_editable", []() {
     return timeline_path_strip_ticks_editable(current_context().wm->tool_settings);
   });

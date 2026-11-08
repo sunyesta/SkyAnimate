@@ -24,30 +24,31 @@
 
 namespace oanim {
 
-/* At most this many rows, so a big rig traced doesn't push the keys out of the timeline. */
-static constexpr int MAX_ROWS = 4;
-
 /* The proportional circle's band and outline, the dots it pulls, and Shift click's blend reach. */
 static constexpr ImU32 REACH_FILL = IM_COL32(255, 255, 255, 16);
 static constexpr ImU32 REACH_EDGE = IM_COL32(255, 255, 255, 90);
 static constexpr ImU32 BLEND_FILL = IM_COL32(80, 150, 255, 30);
 static constexpr ImU32 BLEND_EDGE = IM_COL32(90, 160, 255, 200);
 
-static std::vector<MotionPathTarget> strip_targets(Context &C)
+/* One row, shown only while a stretch is picked (teal): the path last picked on, all its ticks. */
+std::vector<MotionPathTarget> timeline_path_strip_targets(Context &C)
 {
-  if (!C.document || !C.wm || C.wm->tool_settings.tool != Tool::MotionPath) {
+  MotionPathTarget picked;
+  if (!C.document || !C.wm || C.wm->tool_settings.tool != Tool::MotionPath || !timeline_picked_stretch(C, picked)) {
     return {};
   }
-  std::vector<MotionPathTarget> targets = motion_path_timing_targets(C);
-  if (targets.size() > size_t(MAX_ROWS)) {
-    targets.resize(size_t(MAX_ROWS));
+  /* As the chart traces it (with its style). */
+  for (const MotionPathTarget &t : motion_path_timing_targets(C)) {
+    if (t.same(picked)) {
+      return {t};
+    }
   }
-  return targets;
+  return {picked};
 }
 
 float timeline_path_strip_height(Context &C, float row_h)
 {
-  const size_t n = strip_targets(C).size();
+  const size_t n = timeline_path_strip_targets(C).size();
   return n == 0 ? 0.0f : float(n) * row_h * 1.25f + 2.0f;
 }
 
@@ -323,7 +324,7 @@ bool timeline_path_strip_ticks_editable(const ToolSettings &ts)
 void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float view_start, float span,
                          float row_h)
 {
-  const std::vector<MotionPathTarget> targets = strip_targets(C);
+  const std::vector<MotionPathTarget> targets = timeline_path_strip_targets(C);
   if (targets.empty() || max.y - min.y < 4.0f) {
     g_tick = {};
     C.wm->path_chart_scale_request = false;

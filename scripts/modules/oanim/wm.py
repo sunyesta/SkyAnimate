@@ -455,6 +455,11 @@ def motion_path_timing():
     return _oanim.motion_path_timing()
 
 
+def timing_chart_rows():
+    """The timeline's timing chart rows, by label: one, the path of the stretch picked (teal), else none (hidden)."""
+    return list(_oanim.timing_chart_rows())
+
+
 def timing_chart_ticks_editable():
     """Test hook: whether the timeline's timing chart lets its ticks be picked and slid with the Motion Path tool's
     brush now chosen (every brush)."""
