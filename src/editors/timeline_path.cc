@@ -1674,9 +1674,14 @@ static void path_timing_body(Area &area, Context &C)
   ToolSettings &ts = wm.tool_settings;
   const bool sculpt = ts.path_graph_sculpt;
   /* The graph: as tall as the area has room for over the mode buttons and the mode's settings, but no taller than
-   * it is wide; they follow right under it. */
-  const float row = ImGui::GetFrameHeightWithSpacing();
-  const float below = row * (sculpt ? 5.0f : 2.0f) + style.ItemSpacing.y * 3.0f + 1.0f;
+   * it is wide; they follow right under it. Too short for the graph at its least and them, the editor scrolls. */
+  /* What follows the graph, row by row as drawn below: the gap, Edit and Sculpt, the thin line, then Edit's Point row
+   * or Sculpt's Brush label, brush pair, Radius, Strength and the Lock X and Dyntopo row (the last without spacing
+   * after it, as the window's content ends there). */
+  const float fh = ImGui::GetFrameHeight(), sp = style.ItemSpacing.y;
+  const float settings = sculpt ? ImGui::GetTextLineHeight() + sp + std::floor(fh * 0.85f) + sp + (fh + sp) * 2.0f + fh :
+                                  fh;
+  const float below = sp + (fh + sp) + (3.0f + sp) + settings;
   const float graph_h = path_timing_graph_height(ImGui::GetContentRegionAvail().y - below, w,
                                                  ImGui::GetFontSize() * 4.0f);
   const ImVec2 g0 = ImGui::GetCursorScreenPos();
@@ -1771,7 +1776,8 @@ static void path_timing_body(Area &area, Context &C)
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
       ImGui::SetTooltip("The brushes move the curve up and down only, never in time");
     }
-    /* Dyntopo: a check box in the button, as the viewport's. */
+    /* Dyntopo beside Lock X: a check box in the button, as the viewport's. */
+    ImGui::SameLine();
     const float h = ImGui::GetFrameHeight();
     const ImVec2 at = ImGui::GetCursorScreenPos();
     const bool dyntopo = ts.path_timing_dyntopo;

@@ -2493,8 +2493,9 @@ bool area_draw(Area &area, Context &C)
   ImGui::SetNextWindowClass(&window_class);
   /* No title bar even while floating: the area is moved by its grip, like a Blender area. */
   ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse;
-  /* Path Timing's graph takes what height the area has, so it never scrolls (the wheel zooms the graph). */
-  if (full_bleed || area.type == EditorType::PathTiming) {
+  /* Path Timing scrolls only when the area is too short for its graph at its least and the settings under it (the
+   * wheel over the graph zooms it, which owns the wheel there). */
+  if (full_bleed) {
     flags |= ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
   }
   const bool visible = ImGui::Begin(area.window_name().c_str(), &area.open, flags);
