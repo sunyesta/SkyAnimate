@@ -76,6 +76,15 @@ while probes keep reporting:
 - A test that passes with its fix undone tests nothing: undo the fix by hand once (`if (false && ...)`), rebuild and
   see the test fail before relying on it. Build its scene like the repro's (the eye file's Look At had an Eye Shape;
   without one the bug never showed).
+- A mutation entry's test is `'tests/test_x.py'` or a bare stem (`'timing_curve'`); a bare `'test_x.py'` finds no
+  test and shows as missed. `--lanes N` counts this folder as one, so with `--not-here` `--lanes 1` runs nothing ("0
+  caught, 0 not"): one lane is `--lanes 2`. An entry whose undone code doesn't compile at `/W4` (a variable left
+  unused) reports BUILD FAILED: undo the whole change in it. Guards the operators can't reach (op_arg_float already turns nan, inf and text into the
+  fallback) need no entry.
+- A hang's test: `faulthandler.dump_traceback_later(20, exit=True)` before the op, cancelled after. Its watchdog runs
+  outside Python's lock, so it fires while a C++ operator loops (a `threading.Timer` never gets to run).
+- Taking out a floor or clamp (a least speed, a least gap) can break code that counted on it: what was always slightly
+  increasing becomes flat, and a strict `<` then reads a held frame as a turn. Run the tests on 2s and 3s too.
 - Precision leftovers: measure what is left after a fix (frame by frame) and say what it comes from (sampling, a
   polyline's chords) rather than chasing it; tell the user how big it is next to the scene.
 - New reports keep arriving: confirm them between fixes, add them to the list, never interrupt a fix half done.

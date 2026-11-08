@@ -705,6 +705,28 @@ static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bo
         }
         continue;
       }
+      /* Inside a stretch shaped on its motion path (Custom timing, control points: no other key's timing would make
+       * it), the key goes in where its dot is, the stretch keeping its way and timing (key_add_in_place), so nothing
+       * the channel does changes. */
+      using T = std::decay_t<decltype(ch.keys[0].value)>;
+      if constexpr (std::is_same_v<T, float2> || std::is_same_v<T, float>) {
+        const auto b = std::find_if(ch.keys.begin(), ch.keys.end(), [&](const auto &k) { return k.frame > frame; });
+        if (was_animated && b != ch.keys.begin() && b != ch.keys.end() &&
+            (b->interp == Interp::Custom || !b->path_controls.empty()))
+        {
+          if constexpr (std::is_same_v<T, float2>) {
+            key_add_in_place(ch, frame);
+          }
+          else {
+            scalar_key_add_in_place(ch, frame);
+          }
+          if (auto *k = ch.key_at(frame)) {
+            k->filler = fillers;
+            k->filler_inside = fillers && frame < own_last;
+          }
+          continue;
+        }
+      }
       /* What it has there now: between its keys, or (not keyed) the value it holds everywhere. */
       const auto held = was_animated ? ch.evaluate(frame) : value - ch.from_action_bones;
       auto &k = ch.set_key(frame, held);
@@ -6066,6 +6088,18 @@ int time_together_timing_follow(Document &doc, const TimingSnapshot &before)
         KeyTiming t;
         any_visit(e.from, [&](auto &src) { t = key_timing(*src.key_at(e.frame)); });
         if (key_timing(*k) != t) {
+          if constexpr (std::is_same_v<std::decay_t<decltype(ch)>, Channel<float2>>) {
+            /* A straight stretch keeps its shape as Custom (which runs along Smooth's curve while Auto), as the lead's
+             * did when it became Custom (stretch_make_custom): only the timing follows. */
+            if (t.interp == Interp::Custom && !interp_path_smooth(k->interp)) {
+              const size_t i = size_t(k - ch.keys.data());
+              if (i > 0) {
+                key_path_handles_freeze(ch.keys, i - 1);
+              }
+              key_path_handles_freeze(ch.keys, i);
+              k = ch.key_at(e.frame);
+            }
+          }
           key_timing_set(*k, t);
           changed = true;
         }

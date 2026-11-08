@@ -509,6 +509,8 @@ struct WindowManager {
    * before the timeline's; its Edit mode's picked curve point (-1: none), of the stretch ending on
    * `path_timing_point_end` of `path_timing_point_target`; F's request to size its Sculpt brush. */
   bool path_graph_hovered = false;
+  /* The ImGui frame a Path Timing graph last said so: with two of them open, the second drawn leaves it be. */
+  int path_graph_hovered_frame = -10;
   MotionPathTarget path_timing_point_target;
   int path_timing_point_end = 0;
   int path_timing_point = -1;

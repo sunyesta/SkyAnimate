@@ -847,6 +847,11 @@ std::vector<Color> motion_path_dot_colors(const Document &doc, const MotionPath 
 
 /* --- Editing (the Motion Path tool) ----------------------------------------------------------------------------- */
 
+static void stretch_shape_line(const std::vector<Key<float2>> &keys, size_t i, std::vector<float2> &r_line,
+                               std::vector<float> &r_along);
+static float shape_line_project(const std::vector<float2> &line, const std::vector<float> &along, float2 v,
+                                float &r_off);
+
 namespace {
 
 constexpr float PI_F = 3.14159265358979f;
@@ -1266,6 +1271,30 @@ static bool interp_timed_by_mode(Interp interp)
          interp == Interp::Bezier;
 }
 
+/* How far along its path (by length, as a Custom stretch plays: stretch_path_point) each frame of the stretch arriving
+ * at keys[i] is, from `start` over `n` frames, into `r_u`. False when a frame is off the path (Noisy) or the places
+ * found don't go forward (a path crossing itself): then the frames' straight steps measure it. */
+static bool stretch_path_progress(const Channel<float2> &ch, size_t i, int start, int n, std::vector<float> &r_u)
+{
+  std::vector<float2> line;
+  std::vector<float> along;
+  stretch_shape_line(ch.keys, i, line, along);
+  const float total = along.empty() ? 0.0f : along.back();
+  if (total < 1e-9f) {
+    return false;
+  }
+  r_u.assign(size_t(n + 1), 0.0f);
+  for (int j = 0; j <= n; j++) {
+    float off = 0.0f;
+    const float at = shape_line_project(line, along, ch.evaluate(start + j), off);
+    if (off > total * 1e-3f || (j > 0 && at < r_u[size_t(j - 1)] * total - total * 1e-4f)) {
+      return false;
+    }
+    r_u[size_t(j)] = at / total;
+  }
+  return true;
+}
+
 /* A stretch's speeds as it moves now: one for each frame from `start`, the change since the frame before (along the
  * path for a position), as a share of the even speed. */
 template<typename T> std::vector<float> stretch_speeds(const Channel<T> &ch, size_t i, int start, int n)
@@ -1292,6 +1321,26 @@ template<typename T> std::vector<float> stretch_speeds(const Channel<T> &ch, siz
     }
   }
   else {
+    if constexpr (std::is_same_v<T, float2>) {
+      /* A position by how far along its path each frame is, as Custom plays it (not by straight steps, which cut a
+       * turn's corner). */
+      std::vector<float> u;
+      if (stretch_path_progress(ch, i, start, n, u)) {
+        for (int j = 0; j < n; j++) {
+          s[size_t(j)] = std::max(u[size_t(j + 1)] - u[size_t(j)], 0.0f) * float(n);
+        }
+        float sum = 0.0f;
+        for (const float v : s) {
+          sum += v;
+        }
+        if (sum > 1e-9f) {
+          for (float &v : s) {
+            v *= float(n) / sum;
+          }
+          return s;
+        }
+      }
+    }
     T before = ch.evaluate(start);
     for (int j = 0; j < n; j++) {
       const T now = ch.evaluate(start + j + 1);
@@ -1318,7 +1367,8 @@ template<typename T> std::vector<float> stretch_speeds(const Channel<T> &ch, siz
     return s;
   }
   for (float &v : s) {
-    v = v < 0.0f ? v * float(n) / total : std::max(v * float(n) / total, 0.02f);
+    /* No floor: a frame held still measures 0, as it plays (a slide elsewhere mustn't set it going). */
+    v = v * float(n) / total;
   }
   return s;
 }
@@ -1519,9 +1569,10 @@ std::vector<float> slid_speeds(const std::vector<float> &s, int k0, float want, 
     return progress_speeds(u);
   }
   /* Kept in order within the run of dots going forward that it is in, between the dots that bound it: the keys, or
-   * where an overshoot turns (past its key and back, or back before the start), which stays as it is. */
+   * where an overshoot turns (past its key and back, or back before the start), which stays as it is. A dot held
+   * still (on 2s or 3s, or a pause) is going forward, not turning. */
   const auto turns = [&](int j) {
-    return j <= 0 || j >= n || !(u[size_t(j - 1)] < u[size_t(j)] && u[size_t(j)] < u[size_t(j + 1)]);
+    return j <= 0 || j >= n || !(u[size_t(j - 1)] <= u[size_t(j)] && u[size_t(j)] <= u[size_t(j + 1)]);
   };
   if (turns(k0)) {
     /* On an overshoot's turn or its way back: it alone, between the dots either side. */
@@ -3133,7 +3184,7 @@ bool key_add_in_place(Channel<float2> &pos, int frame)
 
 /* A key on `frame` of a scalar channel (none there yet) holding what it has there, as key_add_in_place puts one in: it
  * arrives as the stretch it splits did, plays on as the key before did, and holds what is left of that key's hold. */
-static bool scalar_key_add_in_place(Channel<float> &ch, int frame)
+bool scalar_key_add_in_place(Channel<float> &ch, int frame)
 {
   if (frame < 1 || ch.key_at(frame)) {
     return false;
@@ -4649,7 +4700,8 @@ int motion_path_sculpt_dab(Document &doc, PathSculptStroke &stroke, const Sculpt
     for (size_t i = 1; i < n; i++) {
       if ((moved[i] || moved[i - 1]) && reshaped(i) && !tg.speeds[i].empty()) {
         keys[i].interp = Interp::Custom;
-        keys[i].timing = timing_from_speeds(tg.speeds[i]);
+        /* A Custom stretch already goes by share of the way along: its own curve (points placed by hand) stays. */
+        keys[i].timing = tg.keys[i].interp == Interp::Custom ? tg.keys[i].timing : timing_from_speeds(tg.speeds[i]);
       }
     }
     ch->keys = std::move(keys);

@@ -43,7 +43,11 @@ itself". Then Align it and check again.
 path brushes, Slide, overshoot and anticipation, the timing chart and graph, Time Together, Key Whole Drawing, paths
 drawn Relative To. Every interpolation, holds, intervals (on 2s and 3s), keys on adjacent frames and frame 0, many
 control points. Check that dots don't move when an op promises they won't, and that the drawn path matches the pose
-on every frame.
+on every frame. Also: the timing graph's operators with huge or odd numbers (radius, aspect, a stroke miles long, a
+y= that isn't a number); an edit that should change nothing repeated 20 times (Alt S by 1, a dot slid to where it is:
+drift adds up); frames held still (a hold inside Custom, Elastic, 2s) in the chart and under slides; a stretch that
+turns, measured against where it plays; a Custom position against its own curve to 0.0002; keys another edit adds
+(Key Whole Drawing's fillers, Time Together's followers) inside a Custom or controlled stretch.
 
 **Timeline, layers, undo, files.** Key select/move/scale/delete across rows, ripple, Time Together, interpolation and
 key types, insert/delete keys, copy/paste keys, keys inside actions; layer duplicate/delete/reorder/group/move in and

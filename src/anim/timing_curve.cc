@@ -392,8 +392,11 @@ bool timing_point_remove(TimingCurve &curve, size_t i)
 TimingCurve timing_sculpt(const TimingCurve &curve, int n, TimingBrush brush, const std::vector<float2> &path,
                           float radius, float strength, float aspect, bool lock_x)
 {
-  if (n < 2 || path.empty() || radius <= 0.0f) {
+  if (n < 2 || path.empty() || !(radius > 0.0f)) {
     return curve;
+  }
+  if (!std::isfinite(aspect) || aspect <= 0.0f) {
+    aspect = 1.0f;
   }
   constexpr int PER = 4;
   const int m = n * PER;
@@ -419,9 +422,20 @@ TimingCurve timing_sculpt(const TimingCurve &curve, int n, TimingBrush brush, co
   else {
     /* Dabs along the stroke, each pulling the samples under it toward their neighbours' average (within half the
      * brush, at least a frame each way). */
-    const float spacing = std::max(radius * 0.2f, 0.25f);
+    /* At most so many dabs, spaced further apart on a stroke longer than that (and none on one too long to measure):
+     * a huge stroke or brush could otherwise go on for ever. */
+    constexpr float MOST_DABS = 2000.0f;
+    float total = 0.0f;
+    for (size_t p = 1; p < path.size(); p++) {
+      total += dist(path[p - 1], path[p]);
+    }
+    if (!std::isfinite(total)) {
+      return curve;
+    }
+    const float spacing = std::max({radius * 0.2f, 0.25f, total / MOST_DABS});
     const float reach = std::max(radius * 0.5f, 1.0f);
-    const int span = int(std::ceil(reach * float(PER)));
+    /* Never wider than the whole stretch (a huge radius would overflow it). */
+    const int span = int(std::min(std::ceil(reach * float(PER)), float(m)));
     std::vector<float2> dabs{path.front()};
     float since = 0.0f;
     for (size_t p = 1; p < path.size(); p++) {
@@ -447,6 +461,9 @@ TimingCurve timing_sculpt(const TimingCurve &curve, int n, TimingBrush brush, co
           const float t = 1.0f - std::abs(float(o - j)) / float(span + 1);
           sum += cur[size_t(o)] * t;
           wsum += t;
+        }
+        if (!(wsum > 0.0f)) {
+          continue;
         }
         const float2 avg = sum / wsum;
         s[size_t(j)].y += (avg.y - cur[size_t(j)].y) * w;
@@ -474,6 +491,9 @@ TimingCurve timing_sculpt(const TimingCurve &curve, int n, TimingBrush brush, co
     const float2 a = s[j], b = s[j + 1];
     const float t = b.x - a.x > 1e-9f ? std::clamp((x - a.x) / (b.x - a.x), 0.0f, 1.0f) : 0.0f;
     u[size_t(k)] = a.y + (b.y - a.y) * t;
+    if (!std::isfinite(u[size_t(k)])) {
+      return curve;
+    }
   }
   return timing_fit(u);
 }

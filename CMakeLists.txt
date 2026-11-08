@@ -450,6 +450,8 @@ add_test(NAME decimate_curve
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_decimate_curve.py)
 add_test(NAME timing_curve
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timing_curve.py)
+add_test(NAME timing_robust
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timing_robust.py)
 add_test(NAME sculpt_dyntopo
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_sculpt_dyntopo.py)
 add_test(NAME sculpt_collapse

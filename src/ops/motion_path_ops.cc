@@ -1486,7 +1486,9 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       if (op_has_arg(C, "y")) {
-        timing_point_move(curve, size_t(i), {curve.points[size_t(i)].co.x, op_arg_float(C, "y", 0.0f)});
+        /* A y= that isn't a number leaves the point on the curve, as without one. */
+        const float2 on = curve.points[size_t(i)].co;
+        timing_point_move(curve, size_t(i), {on.x, op_arg_float(C, "y", on.y)});
       }
       if (!motion_path_timing_curve_set(*C.document, t, frame, curve)) {
         return OpStatus::Cancelled;

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "anim/motion_path.hh"
@@ -613,6 +614,8 @@ static int segmented_buttons(const char *id, int value, int count, const char *c
 static struct {
   bool active = false;
   bool dragging = false;
+  /* The graph (one Path Timing editor's) it goes on in: another editor showing the stretch only draws it. */
+  ImGuiID owner = 0;
   MotionPathTarget target;
   int frame = 0, n = 1;
   int point = -1, side = 0;
@@ -628,6 +631,7 @@ static struct {
  * once let go; and F sizing the brush (Blender's: the circle stays where it was, the mouse's distance its radius). */
 static struct {
   bool active = false;
+  ImGuiID owner = 0;
   MotionPathTarget target;
   int frame = 0, start = 0, n = 1;
   TimingBrush brush = TimingBrush::Grab;
@@ -640,6 +644,9 @@ static struct {
 
 static struct {
   bool active = false;
+  ImGuiID owner = 0;
+  /* The brush being sized, as it was when F was pressed (Shift let go or pressed after doesn't change which). */
+  int brush = 0;
   ImVec2 center;
   float was = 0.0f;
 } g_resize;
@@ -657,7 +664,7 @@ float timing_resize_radius(ImVec2 center, ImVec2 mouse, float per_frame)
 /* The graph's view: frames across, the way along up. It fits the stretch whenever a different one is shown, and is
  * otherwise the user's (wheel zoom, middle drag pan, Ctrl middle drag stretch, Home to fit again), so edits on the
  * stretch never move it. */
-static struct {
+struct GraphView {
   bool valid = false;
   MotionPathTarget target;
   int start = 0, end = 0;
@@ -666,11 +673,12 @@ static struct {
   bool nav = false, stretch = false;
   ImVec2 press;
   float pf0 = 0.0f, pf1 = 1.0f, py0 = 0.0f, py1 = 1.0f;
-} g_view;
+};
+/* Each Path Timing editor's own (by its graph's ImGui id). */
+static std::unordered_map<ImGuiID, GraphView> g_views;
 
-static void graph_fit(const MotionPathTarget &t, const MotionPathStretch &s)
+static void graph_fit(GraphView &v, const MotionPathTarget &t, const MotionPathStretch &s)
 {
-  auto &v = g_view;
   const int n = s.end - s.start;
   /* A sliver of the stretches either side, and all of the stretch's overshoot, with a margin. */
   const float pad = std::max(0.5f, float(n) * 0.12f);
@@ -718,9 +726,10 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   ToolSettings &ts = wm.tool_settings;
   const ImGuiIO &io = ImGui::GetIO();
   const int n = s.end - s.start;
-  auto &v = g_view;
+  const ImGuiID graph_id = ImGui::GetID("##path_graph");
+  GraphView &v = g_views[graph_id];
   if (!v.valid || !v.target.same(t) || v.start != s.start || v.end != s.end) {
-    graph_fit(t, s);
+    graph_fit(v, t, s);
   }
   const float w = max.x - min.x, h = max.y - min.y;
   const auto to_screen = [&](float frame, float u) {
@@ -734,8 +743,12 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   /* The wheel is the graph's here, not the sidebar's scroll. */
   ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
   const bool hovered = ImGui::IsItemHovered();
-  if (hovered || g_edit.active || g_stroke.active || g_resize.active) {
+  /* What this graph has going on, and whether another editor's graph has something going on. */
+  const bool mine = (g_edit.active && g_edit.owner == graph_id) || (g_stroke.active && g_stroke.owner == graph_id) ||
+                    (g_resize.active && g_resize.owner == graph_id);
+  if (hovered || mine) {
     wm.path_graph_hovered = true;
+    wm.path_graph_hovered_frame = ImGui::GetFrameCount();
   }
 
   /* The curve: a Custom stretch's own, else the one its timing makes (even: a straight line). A span across
@@ -794,7 +807,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
       }
     }
     if (hovered && ImGui::IsKeyPressed(ImGuiKey_Home, false)) {
-      graph_fit(t, s);
+      graph_fit(v, t, s);
     }
     /* Not so far in or out that it stops making sense. */
     const auto keep = [](float &a, float &b, float least, float most) {
@@ -941,11 +954,12 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
 
   /* Sculpt mode: the brush (Shift swaps it while held), its circle and the falloff's half-way ring. */
   const TimingBrush brush = g_stroke.active ? g_stroke.brush
+                            : g_resize.active ? TimingBrush(g_resize.brush)
                             : io.KeyShift   ? (ts.path_timing_brush == TimingBrush::Grab ? TimingBrush::Smooth
                                                                                         : TimingBrush::Grab)
                                             : ts.path_timing_brush;
   const int bi = int(brush);
-  if (editable && sculpt && (hovered || g_stroke.active || g_resize.active)) {
+  if (editable && sculpt && (hovered || mine)) {
     const ImVec2 c = g_resize.active ? g_resize.center : io.MousePos;
     const float r = std::max(ts.path_timing_radius[bi] * per_frame, 3.0f);
     const ImU32 edge = brush == TimingBrush::Grab ? IM_COL32(255, 255, 255, 200) : IM_COL32(140, 190, 255, 220);
@@ -996,19 +1010,22 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
 
   /* F: the brush sized by the mouse's distance from where the circle was. */
   auto &rs = g_resize;
-  if (wm.path_graph_resize_request) {
+  /* F goes to the graph under the mouse. */
+  if (wm.path_graph_resize_request && hovered) {
     wm.path_graph_resize_request = false;
-    if (editable && sculpt && !g_stroke.active) {
+    if (editable && sculpt && !busy) {
       rs.active = true;
+      rs.owner = graph_id;
+      rs.brush = bi;
       rs.center = timing_resize_center(io.MousePos, ts.path_timing_radius[bi], per_frame);
       rs.was = ts.path_timing_radius[bi];
     }
   }
-  if (rs.active) {
-    ts.path_timing_radius[bi] = timing_resize_radius(rs.center, io.MousePos, per_frame);
-    ImGui::SetTooltip("Radius: %.1f frames", double(ts.path_timing_radius[bi]));
+  if (rs.active && rs.owner == graph_id) {
+    ts.path_timing_radius[rs.brush] = timing_resize_radius(rs.center, io.MousePos, per_frame);
+    ImGui::SetTooltip("Radius: %.1f frames", double(ts.path_timing_radius[rs.brush]));
     if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-      ts.path_timing_radius[bi] = rs.was;
+      ts.path_timing_radius[rs.brush] = rs.was;
       rs = {};
     }
     else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Enter)) {
@@ -1019,7 +1036,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
 
   /* A sculpt stroke. */
   auto &st = g_stroke;
-  if (st.active) {
+  if (st.active && st.owner == graph_id) {
     if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
       doc = std::move(st.snapshot);
       st = {};
@@ -1057,7 +1074,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
 
   /* An Edit drag. */
   auto &g = g_edit;
-  if (g.active) {
+  if (g.active && g.owner == graph_id) {
     if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
       if (g.dragging) {
         doc = std::move(g.snapshot);
@@ -1109,7 +1126,8 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     return;
   }
 
-  if (!hovered || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+  /* Nothing new starts here while another editor's graph has a drag, stroke or sizing going on. */
+  if (busy || !hovered || !ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
     return;
   }
   if (key_hit && motion_path_is_key(doc, t, *key_hit)) {
@@ -1126,6 +1144,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   if (sculpt) {
     animation_sync(doc);
     st.active = true;
+    st.owner = graph_id;
     st.target = t;
     st.frame = s.start + 1;
     st.start = s.start;
@@ -1168,6 +1187,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   animation_sync(doc);
   g.active = true;
   g.dragging = false;
+  g.owner = graph_id;
   g.target = t;
   g.frame = s.start + 1;
   g.n = n;
@@ -1193,8 +1213,8 @@ void path_timing_draw(Area &area, Context &C)
 {
   area_editor_type_menu(area);
   ImGui::Separator();
-  /* The graph says it is under the mouse as it draws; until then, it isn't. */
-  if (C.wm) {
+  /* A graph says it is under the mouse as it draws; until one does this frame, none is. */
+  if (C.wm && C.wm->path_graph_hovered_frame != ImGui::GetFrameCount()) {
     C.wm->path_graph_hovered = false;
   }
   if (!C.document || !C.wm) {

@@ -437,6 +437,26 @@ void key_path_handles_freeze(std::vector<Key<float2>> &keys, size_t i)
 
 template<typename T> void key_speeds_set(std::vector<Key<T>> &keys, size_t i, const std::vector<float> &speeds)
 {
+  /* Speeds its own curve already plays keep that curve: fitting it again would move every dot by a hair each time,
+   * adding up over edits that change nothing (a dot slid to where it is, a spacing scaled by 1). */
+  if (i < keys.size() && keys[i].interp == Interp::Custom && speeds.size() >= 2) {
+    const int n = int(speeds.size());
+    float total = 0.0f;
+    for (const float v : speeds) {
+      total += v;
+    }
+    if (std::abs(total) > 1e-9f) {
+      const std::vector<float> has = timing_frame_progress(keys[i].timing, n);
+      float u = 0.0f, off = 0.0f;
+      for (int k = 1; k <= n; k++) {
+        u += speeds[size_t(k - 1)] / total;
+        off = std::max(off, std::abs(u - has[size_t(k)]));
+      }
+      if (off < TIMING_TOLERANCE * 0.05f) {
+        return;
+      }
+    }
+  }
   key_timing_set(keys, i, timing_from_speeds(speeds));
 }
 template void key_speeds_set(std::vector<Key<float>> &keys, size_t i, const std::vector<float> &speeds);
@@ -521,9 +541,21 @@ static float2 bezier_along(const float2 p[4], float u)
   while (j < PIECES && lengths[j] < want) {
     j++;
   }
-  const float piece = lengths[j] - lengths[j - 1];
-  const float f = piece > 1e-12f ? (want - lengths[j - 1]) / piece : 0.0f;
-  return bezier(p, (float(j - 1) + f) / PIECES);
+  /* Inside the piece, the parameter whose straight distance from the piece's start is what's left: the parameter
+   * isn't even along a piece where the handles crowd it, so a share of it would land off by up to 0.1% of the way. */
+  const float need = want - lengths[j - 1];
+  const float2 base = bezier(p, float(j - 1) / PIECES);
+  float lo = float(j - 1) / PIECES, hi = float(j) / PIECES;
+  for (int it = 0; it < 16; it++) {
+    const float mid = 0.5f * (lo + hi);
+    if (length(bezier(p, mid) - base) < need) {
+      lo = mid;
+    }
+    else {
+      hi = mid;
+    }
+  }
+  return bezier(p, 0.5f * (lo + hi));
 }
 
 /* Stored where they are (in the keys' own space): moving a key leaves them, only the curve's shape changing toward
