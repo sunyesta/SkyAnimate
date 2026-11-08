@@ -1,5 +1,5 @@
 """The timeline's Summary row and a lone layer's row are one ("Summary / Ball 1") when they show the same keys: the
-timeline shows that layer alone. Another layer shown, a pinned property or the camera keeps them apart.
+timeline shows that layer alone, folded (Key Together; open, its row is a heading with no Summary keys). Another layer shown, a pinned property or the camera keeps them apart.
 
 Run with:  OpenAnimate --background --python tests/test_timeline_summary_merge.py
 """
@@ -25,12 +25,19 @@ def top():
     return [(r["depth"], r["label"], r["summary"], r["layer"]) for r in wm.timeline_row_details() if r["depth"] == 0]
 
 
+# Open (Key Together off): the layer's row is a heading, no Summary keys over its channels.
+rows = top()
+assert rows == [(0, "Ball 1", False, ball.id)], rows
+assert wm.timeline_row_details()[0]["frames"] == [], "open: no keys of its own"
+assert any(r["depth"] == 1 and r["name"] == "Position" for r in wm.timeline_row_details()), \
+    "its channels right under it"
+# Folded (Key Together on): the Summary and the layer one row, with the keys.
+assert wm.timeline_row_fold(0, False)
+assert ball.key_together
 rows = top()
 assert rows == [(0, "Summary / Ball 1", True, ball.id)], rows
 merged = wm.timeline_row_details()[0]
 assert 10 in merged["frames"], merged
-assert any(r["depth"] == 1 and r["name"] == "Position" for r in wm.timeline_row_details()), \
-    "its channels right under it"
 
 # A second layer shown: Summary on its own again.
 ops.layer.new()

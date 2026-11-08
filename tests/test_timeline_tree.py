@@ -1,7 +1,7 @@
 """The timeline's rows follow the Layers editor: Summary first (every key below it), then Pinned, then each
 shown layer in the Layers editor's order and nesting, folding to its own channels, its Drawing or Points,
-its Bones (a folder per bone) and a Media layer's clips; the camera and Simulation last. Folds are kept by
-the project; the picked layers start open.
+its Bones (a folder per bone) and a Media layer's clips; the camera and Simulation last. A layer's row is folded
+exactly while it keys together (open, a heading without keys); other folds are kept by the project.
 
 Run with:  OpenAnimate --background --python tests/test_timeline_tree.py
 """
@@ -61,8 +61,8 @@ doc.frame_current = 0
 # The group picked (it edits what's inside it): its layers nested under it, in the Layers editor's order.
 layers.active = group
 tree = names()
-assert tree[0] == (0, "group") and row("group")["label"] == "Summary / group", \
-    ("the group alone at the top: the Summary too", tree)
+assert tree[0] == (0, "group") and row("group")["label"] == "group", \
+    ("the group alone at the top, open: a heading, no Summary", tree)
 order = [l.name for l in group.children]
 at = tree.index((0, "group"))
 inside = [name for depth, name in tree[at + 1:] if depth == 1 and name in ("first", "second")]
@@ -70,7 +70,14 @@ assert inside == order, (inside, order, tree)
 assert (2, "Position") in tree and (2, "Drawing") in tree, tree
 assert tree.index((1, "second")) < tree.index((2, "Drawing")), "a layer's rows under it"
 assert "top" not in [name for depth, name in tree], "only what's picked"
-assert row("group")["frames"] == [0, 10, 20], "a folding row shows what it holds"
+assert row("group")["frames"] == [], "open (not keying together): no keys of its own"
+# Folded, it keys together and shows what it holds; opened again, its filler keys go.
+assert wm.timeline_row_fold(0, False) and group.key_together
+assert row("group")["frames"] == [0, 10, 20] and row("group")["label"] == "Summary / group", rows()
+assert names(True) == [(0, "group")], "folded: what it holds hidden"
+assert wm.timeline_row_fold(0, True) and not group.key_together
+assert row("group")["frames"] == [] and (2, "Drawing") in names()
+assert next(r for r in rows() if r["name"] == "Drawing")["frames"] == [0, 20], "the fillers went again"
 assert row("group")["layer"] == group.id and row("Drawing")["layer"] == 0
 
 # Two picked at the top level: both, in the Layers editor's order, the Summary showing both.
@@ -88,21 +95,25 @@ layers.active = second
 tree = names()
 assert (0, "group") in tree and (1, "second") in tree and row("group")["dim"], tree
 
-# Folds: the picked layer starts open, the project keeps a fold (saved with it). (No points picked: a layer
-# holding picked points opens, test_timeline_pick_open.py.)
+# Folds: a layer's row is folded exactly while it keys together (Key Together), so every layer starts open; the
+# project's kept folds don't reach it. Folding is an undo step.
 ops.mesh.select_none()
 layers.active = group
-assert row("group", True)["open"], "the picked layer starts open"
-assert not row("first", True)["open"], "the rest start folded"
-assert "Position" not in [r["name"] for r in rows(True) if r["depth"] == 2], "a folded layer hides its rows"
-wm.set_ui_open("Timeline/" + row("first")["fold"], True)
-assert row("first", True)["open"]
-assert (2, "Position") in names(True)
-wm.set_ui_open("Timeline/" + row("group")["fold"], False)
-assert names(True) == [(0, "group")], names(True)
+assert row("group", True)["open"] and row("first", True)["open"], "open while not keying together"
+assert names(True).count((2, "Position")) == 2
+wm.set_ui_open("Timeline/" + row("first")["fold"], False)
+assert row("first", True)["open"], "the kept fold doesn't decide it"
+at = [r["name"] for r in rows(True)].index("first")
+assert wm.timeline_row_fold(at, False) and first.key_together
+assert not row("first", True)["open"] and names(True).count((2, "Position")) == 1, "a folded layer hides its rows"
+assert ops.ed.undo() == {'FINISHED'}
+layers.active = group
+assert not first.key_together and row("first", True)["open"], "undo opens it again"
+first.key_together = True
+assert not row("first", True)["open"], "Key Together set elsewhere folds it"
+first.key_together = False
 
 # Points keyed point by point: a Points folder, with the selected points' keys red under it.
-wm.set_ui_open("Timeline/" + row("group")["fold"], True)
 second.key_whole_drawing = False
 layers.active = second
 ops.mesh.select_none()

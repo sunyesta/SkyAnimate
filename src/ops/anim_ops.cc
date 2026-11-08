@@ -1476,6 +1476,29 @@ void anim_operators_register()
     };
     operators().add(std::move(ot));
   }
+  {
+    OperatorType ot;
+    ot.idname = "anim.timeline_fold_together";
+    ot.name = "Key Together";
+    ot.description = "Fold this layer's timeline row and key all of it as one movement (Key Together), or open it "
+                     "and key its parts apart again; the fold and Key Together are one switch";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Layer *layer = layer_find(*C.document, uint64_t(std::strtoull(op_arg(C, "layer", "0").c_str(), nullptr, 10)));
+      if (!layer || !key_together_allowed(*layer)) {
+        report(ReportType::Warning, "Key Together is for groups, bone layers and vector layers");
+        return OpStatus::Cancelled;
+      }
+      const bool on = op_has_arg(C, "folded") ? op_arg_bool(C, "folded") : !layer->key_together;
+      if (layer->key_together == on) {
+        return OpStatus::Cancelled;
+      }
+      layer->key_together = on;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
   anim_operator_add("anim.match_timing", "Match Timing",
                     "Key the other selected layers' and selected bones' animated channels on the active layer's "
                     "frames, stretched over each one's own first to last key, so Time Together links them",

@@ -758,7 +758,9 @@ std::string motion_path_label(const Document &doc, const MotionPathTarget &targe
     return layer->name + " point " + std::to_string(point_index(*layer, target.point));
   }
   if (target.drawing) {
-    return layer->name + (layer->has_drawing() ? " drawing" : " together");
+    return layer->name + (key_together_allowed(*layer) && layer->key_together ? " together" :
+                          layer->has_drawing()                                  ? " drawing" :
+                                                                                  " together");
   }
   return layer->name;
 }

@@ -24,6 +24,13 @@ def row(name):
     return next(r for r in wm.timeline_row_details() if r["name"] == name)
 
 
+def drawing(name):
+    """Layer `name`'s Drawing row (its own row, open, is a heading without keys)."""
+    rows = wm.timeline_row_details()
+    at = next(i for i, r in enumerate(rows) if r["name"] == name)
+    return next(r for r in rows[at + 1:] if r["name"] == "Drawing")
+
+
 ops.layer.new()
 a = layers.active
 a.name = "a"
@@ -47,9 +54,9 @@ settle()
 assert any(k.get("filler") for k in b.keyframes("position")), b.keyframes("position")
 
 layers.active = group
-b_row = row("b")
+b_row = drawing("b")
 assert 10 in b_row["frames"] and 10 in b_row["filler_frames"], b_row
-a_row = row("a")
+a_row = drawing("a")
 assert 10 not in a_row["filler_frames"], ("a is posed on 10", a_row)
 # The group's row: a's posed keys and b's fillers on 10 make it a key, not a filler.
 assert 10 not in row("group")["filler_frames"]
@@ -59,6 +66,6 @@ doc.frame_current = 10
 b.set_point(0, (0.5, 3.0))
 doc.frame_current = 0
 settle()
-assert 10 in row("b")["frames"] and 10 not in row("b")["filler_frames"], row("b")
+assert 10 in drawing("b")["frames"] and 10 not in drawing("b")["filler_frames"], drawing("b")
 
 print("timeline key fills: ok")

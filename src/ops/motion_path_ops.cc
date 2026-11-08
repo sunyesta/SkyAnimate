@@ -189,8 +189,8 @@ bool op_targets(Context &C, std::vector<MotionPathTarget> &r_targets)
   t.point = uint64_t(std::stoull(op_arg(C, "point", "0")));
   /* A Key Whole Drawing layer's drawing as a whole (its timing). */
   t.drawing = op_arg_bool(C, "drawing");
-  if (t.drawing && !(layer->has_drawing() ? layer->key_whole_drawing :
-                                             key_together_allowed(*layer) && layer->key_together))
+  if (t.drawing && !(key_together_allowed(*layer) && layer->key_together) &&
+      !(layer->has_drawing() && layer->key_whole_drawing))
   {
     report(ReportType::Warning, layer->name + " isn't keyed as a whole drawing or together");
     return false;

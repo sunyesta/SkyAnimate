@@ -1,7 +1,8 @@
-"""The timeline opens what holds the pick: picking points in a drawing or bones in a bone layer opens that
-layer's row and the groups it is in (and its Bones folder and the picked bones, or its Points folder), and
-turns the layer's name red. Folded while the pick lasts, a row stays folded; once the pick is gone, every
-row goes back to the fold the project keeps, which a pick never changes.
+"""The timeline and the pick: picking points in a drawing or bones in a bone layer turns the layer's name red and
+opens its Bones folder and the picked bones (or its Points folder). A layer's own row is never opened by a pick: it
+is folded exactly while the layer keys together (Key Together), so opening it would turn that off. Folded over a
+pick, it is red instead. Folded while the pick lasts, a folder stays folded; once the pick is gone, every folder goes
+back to the fold the project keeps, which a pick never changes.
 
 Run with:  OpenAnimate --background --python tests/test_timeline_pick_open.py
 """
@@ -57,51 +58,59 @@ assert ops.anim.keyframe_insert() == {'FINISHED'}
 doc.frame_current = 0
 doc.timeline_only_selected = False  # every animated layer, picked or not
 
-# Nothing picked, everything folded as the project keeps it.
+# Nothing picked; head and rig keying together (folded), the folders folded as the project keeps them.
 layers.active = brow
 ops.mesh.select_none()
 rig.select_bone("")
 layers.active = rig
-for name in ("head", "brow_L", "rig", "Bones", "arm"):
+for name in ("Bones", "arm"):
     wm.set_ui_open(fold_key(name), False)
+head.key_together = True
+rig.key_together = True
 assert not row("head")["open"] and row("brow_L") is None and not row("rig")["open"], rows()
 
-# Points picked in brow_L: head and brow_L open, brow_L red, its Drawing red under it.
+# Points picked in brow_L: head stays folded (still keying together), red for the pick inside it.
 layers.active = brow
 brow.select_points([0])
-assert row("head")["open"] and row("head")["holds_pick"], row("head")
-assert row("brow_L")["open"] and row("brow_L")["red"], row("brow_L")
-assert not row("head")["red"], "only the layer holding the pick is red"
-assert row("Drawing") and row("Drawing")["red"], rows()
+assert not row("head")["open"] and head.key_together, ("a pick never opens a layer's row", row("head"))
+assert row("head")["red"], "folded over the pick: red"
+assert not row("head")["holds_pick"]
 assert not row("rig")["open"] and not row("rig")["red"], "nothing picked in the rig"
 
-# Folded while picked: it stays folded, and the project's fold isn't touched.
-assert wm.timeline_row_fold(index("brow_L"), False)
-assert not row("brow_L")["open"] and row("Drawing") is None
-assert wm.ui_open().get(fold_key("brow_L"), False) is False, "the project's fold is as it was"
+# Opened (Key Together off): brow_L shows, red, its Drawing red under it; head isn't red now.
+head.key_together = False
+assert row("head")["open"] and not row("head")["red"], row("head")
+assert row("brow_L")["open"] and row("brow_L")["red"], row("brow_L")
+assert row("Drawing") and row("Drawing")["red"], rows()
 
-# The pick gone: back to the project's folds, not red.
+# brow_L folded while picked: keying together, still red.
+assert wm.timeline_row_fold(index("brow_L"), False) and brow.key_together
+assert not row("brow_L")["open"] and row("Drawing") is None and row("brow_L")["red"]
+# The pick gone: not red, still folded (the fold is Key Together, which a pick doesn't change).
 ops.mesh.select_none()
-assert not row("head")["open"] and row("brow_L") is None, rows()
-wm.set_ui_open(fold_key("head"), True)
 assert not row("brow_L")["red"] and not row("brow_L")["open"], row("brow_L")
-wm.set_ui_open(fold_key("head"), False)
+brow.key_together = False
 
-# Picked again, it opens again (being folded lasted only for that pick).
-brow.select_points([1])
-assert row("brow_L")["open"] and row("Drawing")["red"], rows()
-ops.mesh.select_none()
-
-# A bone picked: rig, its Bones and the bone open, rig red; the other bone stays folded.
+# A bone picked in the folded rig: it stays folded and turns red.
 layers.active = rig
 rig.select_bone("arm")
+assert not row("rig")["open"] and row("rig")["red"], row("rig")
+# Opened: its Bones and the picked bone open for the pick; the other bone stays folded.
+rig.key_together = False
 assert row("rig")["open"] and row("rig")["red"], row("rig")
 assert row("Bones")["open"] and row("arm")["open"] and row("arm")["red"], rows()
 assert row("Angle"), "the picked bone's channels show"
 assert not row("leg")["open"] and not row("leg")["red"]
 
-# Deselected: folded as the project keeps it again.
+# Bones folded while picked: it stays folded, and the project's fold isn't touched.
+assert wm.timeline_row_fold(index("Bones"), False)
+assert not row("Bones")["open"] and row("arm") is None
+assert wm.ui_open().get(fold_key("Bones"), False) is False, "the project's fold is as it was"
+
+# Deselected: the folders as the project keeps them again; picked again, Bones opens again.
 rig.select_bone("")
-assert not row("rig")["open"] and not row("rig")["red"] and row("Bones") is None, rows()
+assert row("rig")["open"] and not row("rig")["red"] and not row("Bones")["open"], rows()
+rig.select_bone("arm")
+assert row("Bones")["open"] and row("arm")["red"], rows()
 
 print("timeline pick open: ok")

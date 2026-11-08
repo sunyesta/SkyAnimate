@@ -27,6 +27,15 @@ def row(name):
     return next((r for r in rows() if r["name"] == name), None)
 
 
+def folded(name):
+    """Layer `name`'s row folded (Key Together on, its keys on it; open, a heading without keys), then open again."""
+    layer = next(x for x in layers.all() if x.name == name)
+    layer.key_together = True
+    r = row(name)
+    layer.key_together = False
+    return r
+
+
 # A bone layer "Character" with two keyed bones, and a keyed drawing "Brow_L" inside it.
 ops.layer.new_bone()
 rig = layers.active
@@ -54,11 +63,13 @@ assert row("Character")["frames"] == [], row("Character")
 # A bone picked: that bone's rows and keys, under the layer, the other bone's nowhere.
 rig.select_bone("arm")
 assert "arm" in names() and "leg" not in names() and "Brow_L" not in names(), names()
-assert row("Character")["frames"] == [0, 10] and (row("Summary") or row("Character"))["frames"] == [0, 10], rows()
-# Its row picks only the keys it shows: double-clicked, the picked bone's, not the other's.
+assert folded("Character")["frames"] == [0, 10], rows()
+# Its row (folded) picks only the keys it shows: double-clicked, the picked bone's, not the other's.
+rig.key_together = True
 at = next(i for i, r in enumerate(wm.timeline_row_details(True)) if r["name"] == "Character")
 assert ops.anim.keys_deselect_all() == {'FINISHED'}
 wm.timeline_key_press(at, 10, double_click=True)
+rig.key_together = False
 
 
 def selected(bone):
@@ -74,8 +85,7 @@ doc.frame_current = 20
 rig.opacity = 0.5
 doc.frame_current = 0
 assert "Opacity" in names() and "Bones" not in names(), names()
-assert 20 in row("Character")["frames"] and 10 not in row("Character")["frames"], row("Character")
-assert 10 not in (row("Summary") or row("Character"))["frames"], "the bones' keys aren't in the Summary either"
+assert 20 in folded("Character")["frames"] and 10 not in folded("Character")["frames"], folded("Character")
 
 # The drawing inside shows once picked itself.
 brow.selected = True
@@ -85,7 +95,7 @@ brow.selected = False
 # Only Selected off: every bone, and the animated layers inside.
 doc.timeline_only_selected = False
 assert "leg" in names() and "arm" in names() and "Brow_L" in names(), names()
-assert 10 in row("Character")["frames"]
+assert 10 in folded("Character")["frames"]
 doc.timeline_only_selected = True
 
 # Locked: as it was when locked, every bone and what's inside.

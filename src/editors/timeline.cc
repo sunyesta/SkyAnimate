@@ -2673,6 +2673,10 @@ struct ChannelRow {
   bool merged = false;
   /* A group not shown itself, holding shown layers: listed (dimmed) to show where they are. */
   bool dim = false;
+  /* A group's, bone layer's or vector layer's row: folded is its Key Together (`together_on`), one switch. Open, it is
+   * a heading with no keys of its own (`filter.kinds` 0), what it holds showing them in their rows. */
+  uint64_t together = 0;
+  bool together_on = false;
 };
 
 /* The rows the selected stretch is shaded on: each holding a channel of `channels` (those moving the picked dots)
@@ -2943,6 +2947,24 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
     return picks_in(l) || std::any_of(l.children.begin(), l.children.end(),
                                       [&](const Layer &child) { return self(self, child); });
   };
+  /* A layer's row. One that can Key Together is folded exactly while it does, never opened by a pick (opening it would
+   * turn it off): red instead while folded over one. */
+  const auto layer_row = [&](Layer &l, const std::vector<Layer *> &under, int depth, bool fold_default, bool red,
+                             bool pick) -> bool {
+    const std::string fold = "layer:" + std::to_string(l.id);
+    if (!key_together_allowed(l)) {
+      return add(l.name, under, layer_keys, depth, fold, fold_default, red, l.id, pick);
+    }
+    add(l.name, under, layer_keys, depth, fold, fold_default, red || (l.key_together && pick), l.id, false);
+    ChannelRow &row = rows.back();
+    row.together = l.id;
+    row.together_on = l.key_together;
+    row.open = open_all || !l.key_together;
+    if (!l.key_together) {
+      row.filter.kinds = 0;
+    }
+    return row.open;
+  };
   const auto tree = [&](auto &&self, std::vector<Layer> &list, int depth) -> void {
     for (Layer &l : list) {
       std::vector<Layer *> under;
@@ -2951,7 +2973,7 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
       if (!shown.contains(&l)) {
         /* A group holding shown layers: dimmed, for where they are. */
         if (!under.empty() && (show_all || keyed(under, layer_keys))) {
-          if (add(l.name, under, layer_keys, depth, "layer:" + std::to_string(l.id), true, false, l.id, pick)) {
+          if (layer_row(l, under, depth, true, false, pick)) {
             rows.back().dim = true;
             self(self, l.children, depth + 1);
           }
@@ -2964,9 +2986,7 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
       if (!show_all && !keyed(under, layer_keys) && !named(l)) {
         continue;
       }
-      if (add(l.name, under, layer_keys, depth, "layer:" + std::to_string(l.id), picked(l), picks_in(l), l.id,
-              pick))
-      {
+      if (layer_row(l, under, depth, picked(l), picks_in(l), pick)) {
         own_rows(&l, depth + 1);
         self(self, l.children, depth + 1);
       }
@@ -2993,8 +3013,11 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
     std::sort(a.begin(), a.end());
     std::sort(b.begin(), b.end());
     if (a == b) {
-      rows[1].summary = true;
-      rows[1].merged = true;
+      /* Open (keying its parts apart), the layer's row is a heading: no Summary keys over its rows either. */
+      if (!(rows[1].together && !rows[1].together_on)) {
+        rows[1].summary = true;
+        rows[1].merged = true;
+      }
       rows.erase(rows.begin());
     }
   }
@@ -3003,6 +3026,13 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
     return std::none_of(rows.begin(), rows.end(), [&](const ChannelRow &r) { return r.holds_pick && r.fold == key; });
   });
   return rows;
+}
+
+/* Folds a layer's row (Key Together on) or opens it (off): an undo step, as it changes keys. */
+static void row_fold_together(Context &C, const ChannelRow &row, bool folded)
+{
+  operator_call(C, "anim.timeline_fold_together",
+                {{"layer", std::to_string(row.together)}, {"folded", folded ? "1" : "0"}});
 }
 
 /* Whether `name` has the letters of `search` in order, whatever their case (Blender's fuzzy match). */
@@ -3160,7 +3190,8 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
     }
     folded_at = -1;
     if (!row.fold.empty()) {
-      row.open = open_all || !search.empty() || row_open(area, row.fold, row.fold_default, row.holds_pick);
+      row.open = open_all || !search.empty() ||
+                 (row.together ? !row.together_on : row_open(area, row.fold, row.fold_default, row.holds_pick));
       if (!row.open) {
         folded_at = row.depth;
       }
@@ -3246,6 +3277,10 @@ bool timeline_row_fold_at(Context &C, int row, bool open)
       channel_rows(area, timeline_shown_layers(C), *C.document, timeline_pinned_layer_ids(C));
   if (row < 0 || row >= int(rows.size()) || rows[row].fold.empty()) {
     return false;
+  }
+  if (rows[row].together) {
+    row_fold_together(C, rows[row], !open);
+    return true;
   }
   timeline_row_fold(rows[row].fold, rows[row].fold_default, rows[row].holds_pick, open);
   return true;
@@ -3702,6 +3737,9 @@ static void timeline_body(Area &area, Context &C)
         if (!row.pin_path.empty() && io.MousePos.x >= k0.x - 4.0f - row_h) {
           operator_call(C, "anim.channel_pin",
                         {{"layer", std::to_string(row.pin_layer)}, {"paths", row.pin_path}, {"pinned", "0"}});
+        }
+        else if (row.together && on_arrow) {
+          row_fold_together(C, row, !row.together_on);
         }
         else if (!row.fold.empty() && (on_arrow || !row.layer)) {
           timeline_row_fold(row.fold, row.fold_default, row.holds_pick, !row.open);

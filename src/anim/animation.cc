@@ -840,7 +840,8 @@ int drawing_key_whole(Layer &layer, bool settle, const std::string &action)
 
 bool key_together_allowed(const Layer &layer)
 {
-  return layer.type == LayerType::Group || layer.type == LayerType::Bone;
+  /* A vector layer alone: its move, turn, size, opacity and drawing keyed as one. */
+  return layer.type == LayerType::Group || layer.type == LayerType::Bone || layer.type == LayerType::Vector;
 }
 
 Layer *key_together_group(Document &doc, uint64_t layer_id)

@@ -60,8 +60,7 @@ assert picked(P) == [20], ("let go without dragging: just that key", picked(P))
 # A double-click picks every key of the row, and of the rows inside it.
 assert wm.timeline_key_press(row("Position"), 20, double_click=True)
 assert picked(P) == [0, 10, 20] and picked("opacity") == [], picked(P)
-assert wm.timeline_key_press(row("art"), 5, double_click=True)
-assert picked(P) == [0, 10, 20] and picked("opacity") == [0, 5, 20], ("the layer's row: all its keys", picked("opacity"))
+assert not wm.timeline_key_press(row("art"), 5, double_click=True), "the layer's row open: a heading, no keys"
 
 # Dragging a key moves the selected keys.
 assert wm.timeline_key_press(row("Position"), 10)

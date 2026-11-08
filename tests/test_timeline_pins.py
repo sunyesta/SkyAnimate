@@ -48,8 +48,8 @@ def section(rows_, title):
 # --- The layer tree: Summary, then the picked bone layer with its own channels and its bones ---------
 tree = names()
 tops = [name for depth, name in tree if depth == 0]
-assert tops == [rig.name], ("the rig alone: the Summary too", tops)
-assert next(r for r in wm.timeline_row_details() if r["depth"] == 0)["label"] == "Summary / " + rig.name
+assert tops == [rig.name], ("the rig alone, open: no Summary over its rows", tops)
+assert next(r for r in wm.timeline_row_details() if r["depth"] == 0)["label"] == rig.name
 assert art.name not in [name for depth, name in tree], "only the picked layer"
 mine = section(tree, rig.name)
 for row in [(1, "Position"), (1, "Rotation"), (1, "Scale"), (1, "Bones"), (2, "arm"), (3, "Angle"),

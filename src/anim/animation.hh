@@ -332,7 +332,8 @@ int layer_action_bone_state(Layer &layer, const std::vector<std::string> &paths)
  * take that timing too (once, as it is turned on). Returns how many keys already there had their timing changed. */
 int drawing_key_whole(Layer &layer, bool settle, const std::string &action);
 
-/* Key Together (Layer::key_together) is for groups and bone layers. */
+/* Key Together (Layer::key_together) is for groups, bone layers and vector layers (a vector layer alone: its own
+ * channels and drawing). In the timeline it is the layer's row folded. */
 bool key_together_allowed(const Layer &layer);
 /* The outermost group keying the layer (or itself) together, or null. */
 Layer *key_together_group(Document &doc, uint64_t layer_id);
