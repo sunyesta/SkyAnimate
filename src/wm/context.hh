@@ -204,9 +204,9 @@ struct ToolSettings {
   bool sculpt_dyntopo = false;
   bool sculpt_decimate = false;
   float sculpt_resolution = 50.0f;
-  /* The Select tool's Simplify (sculpt.simplify on the selected points): the Resolution it was last run with, its own
-   * so that tuning it never changes Dyntopo's. */
-  float simplify_resolution = 50.0f;
+  /* The Select tool's Decimate Curve (mesh.decimate): the Ratio of the selected points to keep it was last run with
+   * (half, the first time, so a first click does something). */
+  float decimate_ratio = 0.5f;
   /* The Motion Path tool's brush (its shelf), and each brush's own radius in screen pixels and strength (Shift's
    * brush, path_brush_shifted, uses its own). */
   PathBrush path_brush = PathBrush::Edit;

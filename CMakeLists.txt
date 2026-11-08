@@ -445,8 +445,8 @@ add_test(NAME media_no_auto_key
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_media_no_auto_key.py)
 add_test(NAME sculpt
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_sculpt.py)
-add_test(NAME simplify_selected
-  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_simplify_selected.py)
+add_test(NAME decimate_curve
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_decimate_curve.py)
 add_test(NAME sculpt_dyntopo
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_sculpt_dyntopo.py)
 add_test(NAME sculpt_collapse

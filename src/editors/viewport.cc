@@ -4997,9 +4997,9 @@ static bool menu_operator(Context &C, const char *label, const char *idname, con
   return false;
 }
 
-/* Simplify on the selected points (sculpt.simplify selected_only=1), for the Select tool's menus: greyed out, saying
- * why, where no selected point is on a drawing it can change (one with animation keeps its points). */
-static void simplify_menu_item(Context &C)
+/* Decimate Curve on the selected points (mesh.decimate), for the Select tool's menus: greyed out, saying why, where no
+ * selected point is on a drawing it can change (one with animation keeps its points). */
+static void decimate_menu_item(Context &C)
 {
   bool any = false;
   std::string why;
@@ -5013,12 +5013,12 @@ static void simplify_menu_item(Context &C)
       why = "Not on " + l->name + ": " + blocked;
     }
   }
-  if (ui_menu_item("Simplify", nullptr, false, any)) {
-    operator_call(C, "sculpt.simplify", {{"selected_only", "1"}});
+  if (ui_menu_item("Decimate Curve", nullptr, false, any)) {
+    operator_call(C, "mesh.decimate");
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
-    const std::string tip = "Take out the selected points the line keeps its shape without (the Resolution, in "
-                            "Adjust\nLast Operation, sets how closely)" +
+    const std::string tip = "Take out the selected points the line changes least without, keeping the Ratio of them\n"
+                            "set in Adjust Last Operation" +
                             (any ? std::string() : "\n\n" + (why.empty() ? std::string("No points selected") : why));
     ImGui::SetTooltip("%s", tip.c_str());
   }
@@ -6204,7 +6204,7 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
       menu_operator(C, "Align Handles", "mesh.handles_align");
       menu_operator(C, "Unalign Handles", "mesh.handles_unalign");
       ImGui::Separator();
-      simplify_menu_item(C);
+      decimate_menu_item(C);
       ImGui::EndPopup();
     }
   }
@@ -17928,7 +17928,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     menu_operator(C, "Unalign", "mesh.handles_unalign");
     menu_operator(C, "Smooth Points", "mesh.smooth_points");
     menu_operator(C, "Subdivide", "mesh.subdivide");
-    simplify_menu_item(C);
+    decimate_menu_item(C);
     ImGui::Separator();
     menu_operator(C, "Join Fills", "mesh.join_fills");
     menu_operator(C, "Separate Fills", "mesh.separate_fills");

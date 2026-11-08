@@ -93,6 +93,10 @@ struct SculptDab {
   bool decimate = false;
   /* Simplify: the curves are sampled at the Resolution's spacing, not the brush's. */
   bool simplify = false;
+  /* Decimate Curve: Collapse takes out the cheapest points (those the line changes least without), one at a time, until
+   * this share (0-1) of each curve's selected points is left, however far the line strays; below 0: off, Collapse
+   * takes out every point it can within its tolerance. */
+  float keep = -1.0f;
 };
 
 /* The stroke's samples of the curves being sculpted (see above), made when it starts. */
@@ -198,9 +202,15 @@ int sculpt_stroke_end(Document &doc, SculptStroke &stroke, const SculptDab &dab)
  * levels, X Mirror on (`mirror_x`), or its points and handles keyed (in the main timeline or an action). */
 std::string sculpt_dyntopo_blocked(const Document &doc, uint64_t id, bool mirror_x);
 /* Simplify: on each of `layers` Dyntopo works on, every point the drawing keeps its shape without (to within a tenth of
- * a step of `resolution`) goes, as Collapse does after a stroke; `selected_only`: only selected points go. Returns how
- * many went. */
-int sculpt_simplify(Document &doc, const std::vector<uint64_t> &layers, float resolution, bool selected_only);
+ * a step of `resolution`) goes, as Collapse does after a stroke. Returns how many went. */
+int sculpt_simplify(Document &doc, const std::vector<uint64_t> &layers, float resolution);
+/* Decimate Curve (the Select tool's, Blender's for curves): on each of `layers` Dyntopo works on, the selected points
+ * the line changes least without go, one at a time (each one's neighbours looked at again as it goes), until `ratio`
+ * of each curve's selected points is left, or none it may take out is (never an end, a corner, a point two curves
+ * share or one with weights of its own). Returns how many went. */
+int sculpt_decimate_curve(Document &doc, const std::vector<uint64_t> &layers, float ratio);
+/* The Resolution Decimate Curve samples the line at: only how finely it compares the points, not how many it keeps. */
+inline constexpr float SCULPT_DECIMATE_RESOLUTION = 200.0f;
 /* The Resolution's range (points per unit). */
 inline constexpr float SCULPT_RESOLUTION_MIN = 1.0f, SCULPT_RESOLUTION_MAX = 5000.0f;
 /* How far Collapse lets the line stray, as a share of a Resolution step. */

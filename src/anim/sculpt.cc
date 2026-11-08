@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
+#include <queue>
 #include <tuple>
 #include <unordered_map>
 
@@ -1127,6 +1129,9 @@ Collapsed dyntopo_collapse(const VectorDrawing &drawing, const SculptStroke::Lay
     width[size_t(i)] = drawing.points[size_t(point_of(i))].radius;
   }
   std::vector<float2> d;
+  /* Past this a span is known to stray too far and is looked at no further: Decimate Curve takes out a share of the
+   * points however far the line strays, so it needs every span's whole measure (and its handles fitted). */
+  const float cap = dab.keep >= 0.0f ? std::numeric_limits<float>::infinity() : 1.0f;
   /* How far the line strays with one segment from kept point a to kept point b, as a share of what Collapse allows (1:
    * just allowed): its place (to within the tolerance), and its width, which runs evenly along the segment from one
    * end's to the other's (to within a share of the width there). The handles' lengths fitted, in `r_a1`, `r_a2`. */
@@ -1139,7 +1144,7 @@ Collapsed dyntopo_collapse(const VectorDrawing &drawing, const SculptStroke::Lay
       const float fit = width[size_t(a)] + (width[size_t(b)] - width[size_t(a)]) * std::clamp(u, 0.0f, 1.0f);
       const float allowed = SCULPT_DYNTOPO_WIDTH_TOLERANCE * std::max(width[size_t(k)], fit) + 1e-5f;
       worst = std::max(worst, std::fabs(width[size_t(k)] - fit) / allowed);
-      if (worst > 1.0f) {
+      if (worst > cap) {
         return worst;
       }
     }
@@ -1190,7 +1195,7 @@ Collapsed dyntopo_collapse(const VectorDrawing &drawing, const SculptStroke::Lay
         t = std::clamp(t - dot(off, q1) / den, 0.0f, 1.0f);
       }
       worst = std::max(worst, distance(bezier_eval(ctrl, t), q) / limit);
-      if (worst > 1.0f) {
+      if (worst > cap) {
         return worst;
       }
     }
@@ -1204,7 +1209,7 @@ Collapsed dyntopo_collapse(const VectorDrawing &drawing, const SculptStroke::Lay
       const float t = std::clamp(dot(q - d[k - 1], ab) / std::max(dot(ab, ab), 1e-20f), 0.0f, 1.0f);
       return distance(q, d[k - 1] + ab * t);
     };
-    for (int i = 1; i < steps && worst <= 1.0f && d.size() > 1; i++) {
+    for (int i = 1; i < steps && worst <= cap && d.size() > 1; i++) {
       const float2 q = bezier_eval(ctrl, float(i) / float(steps));
       float nearest = piece(q, from);
       size_t best = from;
@@ -1230,38 +1235,90 @@ Collapsed dyntopo_collapse(const VectorDrawing &drawing, const SculptStroke::Lay
     prev[size_t(i)] = (i - 1 + n) % n;
     next[size_t(i)] = (i + 1) % n;
   }
-  /* Cheapest first: each alone, as the line is now; ties (to within a 32nd of what is allowed) scrambled. */
-  struct Try {
-    int bucket;
-    uint32_t mixed;
-    int i;
-    float alone;
-  };
-  std::vector<Try> order;
-  float a1 = 0.0f, a2 = 0.0f;
-  for (const int i : candidates) {
-    const float alone = span_error(prev[size_t(i)], next[size_t(i)], &a1, &a2);
-    if (alone <= 1.0f) {
-      order.push_back({int(alone * 32.0f), uint32_t(i) * 2654435761u, i, alone});
-    }
-  }
-  std::sort(order.begin(), order.end(), [](const Try &x, const Try &y) {
-    return std::tie(x.bucket, x.mixed, x.i) < std::tie(y.bucket, y.mixed, y.i);
-  });
   std::vector<bool> kept(size_t(n), true);
   int left = n;
   const int least = c.closed ? 3 : 2;
-  for (const Try &t : order) {
-    if (left <= least) {
-      break;
+  float a1 = 0.0f, a2 = 0.0f;
+  const auto take_out = [&](int i) {
+    const int a = prev[size_t(i)], b = next[size_t(i)];
+    kept[size_t(i)] = false;
+    next[size_t(a)] = b;
+    prev[size_t(b)] = a;
+    left--;
+    out.gone.push_back(point_of(i));
+  };
+  if (dab.keep >= 0.0f) {
+    /* Decimate Curve: the point the line changes least without goes, then the next as the line is then (each one going
+     * makes its neighbours' spans longer, so theirs are measured again), until `keep` of the curve's selected points are
+     * left. Measured exactly, not to a share of the tolerance as Collapse's order is: on a smooth arc every point costs
+     * far less than that, and only the exact measure thins it evenly. Ties (a straight run) go in a scrambled order. */
+    int selected = 0;
+    for (int i = 0; i < n; i++) {
+      selected += drawing.points[size_t(point_of(i))].selected ? 1 : 0;
     }
-    const int a = prev[size_t(t.i)], b = next[size_t(t.i)];
-    if (span_error(a, b, &a1, &a2) <= 1.0f) {
-      kept[size_t(t.i)] = false;
-      next[size_t(a)] = b;
-      prev[size_t(b)] = a;
-      left--;
-      out.gone.push_back(point_of(t.i));
+    const int target = int(std::lround((1.0 - double(std::clamp(dab.keep, 0.0f, 1.0f))) * double(selected)));
+    std::vector<bool> candidate(size_t(n), false);
+    std::vector<int> version(size_t(n), 0);
+    struct Item {
+      float key;
+      uint32_t mixed;
+      int i, version;
+    };
+    const auto later = [](const Item &x, const Item &y) {
+      return std::tie(x.key, x.mixed, x.i) > std::tie(y.key, y.mixed, y.i);
+    };
+    std::priority_queue<Item, std::vector<Item>, decltype(later)> heap(later);
+    const auto measure = [&](int i) {
+      const float cost = span_error(prev[size_t(i)], next[size_t(i)], &a1, &a2);
+      heap.push({cost, uint32_t(i) * 2654435761u, i, version[size_t(i)]});
+    };
+    for (const int i : candidates) {
+      candidate[size_t(i)] = true;
+      measure(i);
+    }
+    int gone = 0;
+    while (gone < target && left > least && !heap.empty()) {
+      const Item top = heap.top();
+      heap.pop();
+      if (!kept[size_t(top.i)] || top.version != version[size_t(top.i)]) {
+        continue;
+      }
+      const int a = prev[size_t(top.i)], b = next[size_t(top.i)];
+      take_out(top.i);
+      gone++;
+      for (const int k : {a, b}) {
+        if (candidate[size_t(k)] && kept[size_t(k)]) {
+          version[size_t(k)]++;
+          measure(k);
+        }
+      }
+    }
+  }
+  else {
+    /* Cheapest first: each alone, as the line is now; ties (to within a 32nd of what is allowed) scrambled. */
+    struct Try {
+      int bucket;
+      uint32_t mixed;
+      int i;
+      float alone;
+    };
+    std::vector<Try> order;
+    for (const int i : candidates) {
+      const float alone = span_error(prev[size_t(i)], next[size_t(i)], &a1, &a2);
+      if (alone <= 1.0f) {
+        order.push_back({int(alone * 32.0f), uint32_t(i) * 2654435761u, i, alone});
+      }
+    }
+    std::sort(order.begin(), order.end(), [](const Try &x, const Try &y) {
+      return std::tie(x.bucket, x.mixed, x.i) < std::tie(y.bucket, y.mixed, y.i);
+    });
+    for (const Try &t : order) {
+      if (left <= least) {
+        break;
+      }
+      if (span_error(prev[size_t(t.i)], next[size_t(t.i)], &a1, &a2) <= 1.0f) {
+        take_out(t.i);
+      }
     }
   }
   if (out.gone.empty()) {
@@ -1450,14 +1507,11 @@ void sculpt_dyntopo_cell(const Document &doc, uint64_t id, float resolution, flo
   *r_y = to_document.apply_vector({0.0f, step});
 }
 
-int sculpt_simplify(Document &doc, const std::vector<uint64_t> &layers, float resolution, bool selected_only)
+/* Collapse over the whole of each layer's curves, as if a stroke had touched every point: Simplify and Decimate Curve. */
+static int collapse_whole(Document &doc, const std::vector<uint64_t> &layers, SculptDab dab)
 {
-  SculptDab dab;
   dab.brush = SculptBrush::Smooth;
   dab.radius = 1.0f;
-  /* Collapse never takes out an unselected point of the drawing's own. */
-  dab.selected_only = selected_only;
-  dab.resolution = std::max(resolution, 1e-6f);
   dab.decimate = true;
   dab.simplify = true;
   SculptStroke stroke = sculpt_stroke_begin(doc, layers, dab);
@@ -1467,6 +1521,23 @@ int sculpt_simplify(Document &doc, const std::vector<uint64_t> &layers, float re
     }
   }
   return sculpt_stroke_end(doc, stroke, dab);
+}
+
+int sculpt_simplify(Document &doc, const std::vector<uint64_t> &layers, float resolution)
+{
+  SculptDab dab;
+  dab.resolution = std::max(resolution, 1e-6f);
+  return collapse_whole(doc, layers, dab);
+}
+
+int sculpt_decimate_curve(Document &doc, const std::vector<uint64_t> &layers, float ratio)
+{
+  SculptDab dab;
+  /* Collapse never takes out an unselected point of the drawing's own. */
+  dab.selected_only = true;
+  dab.keep = std::clamp(ratio, 0.0f, 1.0f);
+  dab.resolution = SCULPT_DECIMATE_RESOLUTION;
+  return collapse_whole(doc, layers, dab);
 }
 
 int sculpt_stroke_dab(Document &doc, SculptStroke &stroke, const SculptDab &dab)

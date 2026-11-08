@@ -143,15 +143,11 @@ void sculpt_operators_register()
 
   add("sculpt.simplify", "Simplify",
       "Take out every point the drawings being edited keep their shape without, to within a tenth of a step of "
-      "resolution= (points per unit of each layer's own space), as Dyntopo's Decimate does after a stroke: never an "
-      "end, a corner, a point two curves share or one with weights of its own. selected_only=1 takes out only selected "
-      "points (the Select tool's Simplify; its Resolution defaults to the one it last used, else to Dyntopo's). Only on "
-      "drawings without animation", OPTYPE_REGISTER | OPTYPE_UNDO, has_drawing,
+      "resolution= (points per unit of each layer's own space; default: Dyntopo's), as Dyntopo's Decimate does after a "
+      "stroke: never an end, a corner, a point two curves share or one with weights of its own. Only on drawings "
+      "without animation", OPTYPE_REGISTER | OPTYPE_UNDO, has_drawing,
       [](Context &C) {
-        ToolSettings &ts = C.wm->tool_settings;
-        const bool selected_only = op_arg_bool(C, "selected_only");
-        const float resolution = op_arg_float(C, "resolution",
-                                              selected_only ? ts.simplify_resolution : ts.sculpt_resolution);
+        const float resolution = op_arg_float(C, "resolution", C.wm->tool_settings.sculpt_resolution);
         if (!(resolution > 0.0f)) {
           report(ReportType::Error, "resolution= is points per unit of the layer's own space (more than 0)");
           return OpStatus::Cancelled;
@@ -162,9 +158,6 @@ void sculpt_operators_register()
         std::vector<uint64_t> ids;
         std::string blocked;
         for (const Layer *l : editable_layers(C)) {
-          if (selected_only && drawing_selected_alignment(l->drawing) == -1) {
-            continue;
-          }
           const std::string why = sculpt_dyntopo_blocked(*C.document, l->id, false);
           if (why.empty()) {
             ids.push_back(l->id);
@@ -175,16 +168,12 @@ void sculpt_operators_register()
         }
         if (ids.empty()) {
           report(ReportType::Warning, !blocked.empty() ? "Nothing simplified (" + blocked + ")"
-                                      : selected_only  ? std::string("No points selected")
                                                        : std::string("Nothing to simplify"));
           return OpStatus::Cancelled;
         }
-        if (selected_only) {
-          ts.simplify_resolution = resolution;
-        }
         /* Finished even when nothing goes at this Resolution, so dragging it finer in the Adjust Last Operation panel
          * puts back the points a coarser one took out. */
-        const int gone = sculpt_simplify(*C.document, ids, resolution, selected_only);
+        const int gone = sculpt_simplify(*C.document, ids, resolution);
         const std::string count = std::to_string(gone) + (gone == 1 ? " point" : " points") + " removed";
         op_note(count);
         report(ReportType::Info, "Simplify: " + count);
@@ -196,6 +185,63 @@ void sculpt_operators_register()
                                   "Points per unit of the layer's own space: how closely the line is kept, to a tenth "
                                   "of a step of 1/Resolution. Lower takes out more",
                                   "50", 1.0f, 500.0f, 0.5f)};
+  }
+
+  add("mesh.decimate", "Decimate Curve",
+      "Take out the selected points the line changes least without, one at a time, until ratio= (0-1; default: the "
+      "one last used) of each curve's selected points is left (Blender's Decimate Curve): never an end, a corner, a "
+      "point two curves share or one with weights of its own, so fewer may go. Only on drawings without animation",
+      OPTYPE_REGISTER | OPTYPE_UNDO, has_drawing, [](Context &C) {
+        ToolSettings &ts = C.wm->tool_settings;
+        const float ratio = op_arg_float(C, "ratio", ts.decimate_ratio);
+        if (!(ratio >= 0.0f && ratio <= 1.0f)) {
+          report(ReportType::Error, "ratio= is the share of the selected points to keep, 0 to 1");
+          return OpStatus::Cancelled;
+        }
+        char used[32];
+        std::snprintf(used, sizeof(used), "%g", double(ratio));
+        op_arg_used(C, "ratio", used);
+        std::vector<uint64_t> ids;
+        std::string blocked;
+        int selected = 0;
+        for (const Layer *l : editable_layers(C)) {
+          int here = 0;
+          for (const MeshPoint &p : l->drawing.points) {
+            here += p.selected ? 1 : 0;
+          }
+          if (here == 0) {
+            continue;
+          }
+          const std::string why = sculpt_dyntopo_blocked(*C.document, l->id, false);
+          if (why.empty()) {
+            ids.push_back(l->id);
+            selected += here;
+          }
+          else if (blocked.empty()) {
+            blocked = l->name + ": " + why;
+          }
+        }
+        if (ids.empty()) {
+          report(ReportType::Warning, blocked.empty() ? std::string("No points selected")
+                                                      : "Nothing decimated (" + blocked + ")");
+          return OpStatus::Cancelled;
+        }
+        ts.decimate_ratio = ratio;
+        /* Finished even when nothing goes (a Ratio of 1), so raising it in the Adjust Last Operation panel puts back the
+         * points a lower one took out. */
+        const int gone = sculpt_decimate_curve(*C.document, ids, ratio);
+        const std::string count = std::to_string(gone) + " of " + std::to_string(selected) +
+                                  (selected == 1 ? " point" : " points") + " removed";
+        op_note(count);
+        report(ReportType::Info, "Decimate Curve: " + count);
+        return OpStatus::Finished;
+      });
+  {
+    OperatorType &ot = const_cast<OperatorType &>(*operators().find("mesh.decimate"));
+    ot.props = {op_float_property("ratio", "Ratio",
+                                  "The share of the selected points to keep: 1 keeps them all. The ones the line "
+                                  "changes least without go first",
+                                  "0.5", 0.0f, 1.0f, 0.01f)};
   }
 
   add("sculpt.brush_set", "Set Sculpt Brush",
