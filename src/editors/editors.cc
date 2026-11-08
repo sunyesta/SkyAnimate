@@ -1251,7 +1251,8 @@ void ui_action_panel_draw(Context &C, const char *area, const char *fold_key, Im
   const float header_h = unit + 4.0f;
   const float folded_w = std::max(unit * 7.5f, ImGui::CalcTextSize(ot->name.c_str()).x + unit * 2.5f);
   const float w = panel_open ? std::max(folded_w, unit * 14.0f) : folded_w;
-  const float body_h = panel_open ? float(shown_props.size()) * (unit + gap) - gap + pad * 2.0f : 0.0f;
+  const size_t rows = shown_props.size() + (last->note.empty() ? 0 : 1);
+  const float body_h = panel_open ? float(rows) * (unit + gap) - gap + pad * 2.0f : 0.0f;
   const ImVec2 min(origin.x + left, origin.y + size.y - header_h - body_h - 8.0f);
   const ImVec2 max(min.x + w, min.y + header_h + body_h);
   if (min.y < origin.y + unit * 2.0f || max.x > origin.x + size.x) {
@@ -1410,6 +1411,10 @@ void ui_action_panel_draw(Context &C, const char *area, const char *fold_key, Im
   }
   ImGui::PopStyleVar(2);
   ImGui::PopStyleColor(7);
+  /* What the run did, under its options. */
+  if (!last->note.empty()) {
+    dl->AddText(ImVec2(value_x, y + (unit - fs) * 0.5f), IM_COL32(0x9a, 0x9a, 0x9a, 255), last->note.c_str());
+  }
   if (changed) {
     operator_redo_last(C, args);
   }

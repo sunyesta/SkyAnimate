@@ -198,8 +198,9 @@ int sculpt_stroke_end(Document &doc, SculptStroke &stroke, const SculptDab &dab)
  * levels, X Mirror on (`mirror_x`), or its points and handles keyed (in the main timeline or an action). */
 std::string sculpt_dyntopo_blocked(const Document &doc, uint64_t id, bool mirror_x);
 /* Simplify: on each of `layers` Dyntopo works on, every point the drawing keeps its shape without (to within a tenth of
- * a step of `resolution`) goes, as Collapse does after a stroke. Returns how many went. */
-int sculpt_simplify(Document &doc, const std::vector<uint64_t> &layers, float resolution);
+ * a step of `resolution`) goes, as Collapse does after a stroke; `selected_only`: only selected points go. Returns how
+ * many went. */
+int sculpt_simplify(Document &doc, const std::vector<uint64_t> &layers, float resolution, bool selected_only);
 /* The Resolution's range (points per unit). */
 inline constexpr float SCULPT_RESOLUTION_MIN = 1.0f, SCULPT_RESOLUTION_MAX = 5000.0f;
 /* How far Collapse lets the line stray, as a share of a Resolution step. */

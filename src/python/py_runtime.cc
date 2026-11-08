@@ -1211,6 +1211,10 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return py::make_tuple(last->idname, last->args, last->area);
   });
+  m.def("last_operation_note", []() -> std::string {
+    const LastOperation *last = operator_last_redo(current_context());
+    return last ? last->note : std::string();
+  });
   m.def("redo_last", [](const std::map<std::string, std::string> &args) {
     return std::string(op_status_name(operator_redo_last(current_context(), args)));
   });

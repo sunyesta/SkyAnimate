@@ -102,6 +102,8 @@ struct LastOperation {
   OpArgs args;
   std::string area;
   uint64_t change_count = 0;
+  /* What the run did, in a few words (op_note), shown under the options. */
+  std::string note;
 };
 const LastOperation *operator_last_redo(const Context &C);
 /* A change that leaves the last operation as it was (folding or opening the ViewportActionPanel,
@@ -112,6 +114,9 @@ OpStatus operator_redo_last(Context &C, const OpArgs &args);
 /* The running operator says what it used for option `name` when it wasn't given one (a choice kept
  * from the last move, say): the ViewportActionPanel shows that instead of the option's default. */
 void op_arg_used(Context &C, const std::string &name, const std::string &value);
+/* The running operator says what it did ("12 points removed"): the ViewportActionPanel shows it under the options, so
+ * changing one shows what that changes. Only the outermost run's is kept. */
+void op_note(const std::string &note);
 /* An option for the ViewportActionPanel: a number from min to max, or a checkbox. */
 OpProperty op_float_property(const char *name, const char *label, const char *description, const char *fallback,
                              float min, float max, float step);

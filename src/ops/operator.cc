@@ -195,6 +195,13 @@ OpStatus operator_redo_last(Context &C, const OpArgs &args)
  * that step (Blender's macros, a Python operator calling others), so only the outermost pushes. */
 static int g_undo_depth = 0;
 
+static std::string g_note;
+
+void op_note(const std::string &note)
+{
+  g_note = note;
+}
+
 void op_arg_used(Context &C, const std::string &name, const std::string &value)
 {
   if (C.op_args_used) {
@@ -273,6 +280,9 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
     ~UndoDepth() { g_undo_depth -= counts ? 1 : 0; }
   };
   OpStatus status;
+  if (!outer_args) {
+    g_note.clear();
+  }
   {
     const UndoDepth depth((ot.flag & OPTYPE_UNDO) != 0);
     /* Mirror editing: the mirror images join the selection for the run (an outer run did it already). */
@@ -330,6 +340,7 @@ OpStatus operator_call(Context &C, std::string_view idname, const OpArgs &args)
       }
       /* The editor it was done in: the one drawing its menu, else the one under the mouse. */
       g_last_redo.area = C.drawing_area.empty() ? C.area_type : C.drawing_area;
+      g_last_redo.note = g_note;
       g_last_redo.change_count = C.undo->change_count();
       g_has_last_redo = true;
     }

@@ -4997,6 +4997,33 @@ static bool menu_operator(Context &C, const char *label, const char *idname, con
   return false;
 }
 
+/* Simplify on the selected points (sculpt.simplify selected_only=1), for the Select tool's menus: greyed out, saying
+ * why, where no selected point is on a drawing it can change (one with animation keeps its points). */
+static void simplify_menu_item(Context &C)
+{
+  bool any = false;
+  std::string why;
+  for (const Layer *l : editable_layers(C)) {
+    if (drawing_selected_alignment(l->drawing) == -1) {
+      continue;
+    }
+    const std::string blocked = sculpt_dyntopo_blocked(*C.document, l->id, false);
+    any = any || blocked.empty();
+    if (!blocked.empty() && why.empty()) {
+      why = "Not on " + l->name + ": " + blocked;
+    }
+  }
+  if (ui_menu_item("Simplify", nullptr, false, any)) {
+    operator_call(C, "sculpt.simplify", {{"selected_only", "1"}});
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    const std::string tip = "Take out the selected points the line keeps its shape without (the Resolution, in "
+                            "Adjust\nLast Operation, sets how closely)" +
+                            (any ? std::string() : "\n\n" + (why.empty() ? std::string("No points selected") : why));
+    ImGui::SetTooltip("%s", tip.c_str());
+  }
+}
+
 /* The stretch a right click on a path dot or control point opened the menu on (anim.motion_path_stretch_reset's
  * arguments), and whether it has a shape to reset (a drawing's path has only its timing). */
 static struct {
@@ -6176,6 +6203,8 @@ static void header_draw(Area &area, Context &C, ImVec2 origin, float width)
       ImGui::Separator();
       menu_operator(C, "Align Handles", "mesh.handles_align");
       menu_operator(C, "Unalign Handles", "mesh.handles_unalign");
+      ImGui::Separator();
+      simplify_menu_item(C);
       ImGui::EndPopup();
     }
   }
@@ -17899,6 +17928,7 @@ static void viewport_draw_contents(Area &area, Context &C)
     menu_operator(C, "Unalign", "mesh.handles_unalign");
     menu_operator(C, "Smooth Points", "mesh.smooth_points");
     menu_operator(C, "Subdivide", "mesh.subdivide");
+    simplify_menu_item(C);
     ImGui::Separator();
     menu_operator(C, "Join Fills", "mesh.join_fills");
     menu_operator(C, "Separate Fills", "mesh.separate_fills");

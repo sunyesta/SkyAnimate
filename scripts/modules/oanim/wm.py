@@ -290,6 +290,12 @@ def last_operation():
     return _oanim.last_operation()
 
 
+def last_operation_note():
+    """What the operator the ViewportActionPanel adjusts said it did, as the panel shows it under its options
+    ("12 points removed"), or "" when it said nothing or there's nothing to adjust."""
+    return _oanim.last_operation_note()
+
+
 def redo_last(**args):
     """Run the last operation again with some options changed, as changing them in the
     ViewportActionPanel does (its step is undone first). Returns "FINISHED" or "CANCELLED"."""

@@ -77,6 +77,14 @@ PENDING = [
     ('src/anim/sculpt.cc', "    if (dab.decimate && sl.tolerance > 0.0f) {",
      "    if (sl.tolerance > 0.0f) {",
      "Dyntopo takes out points after a stroke only with Decimate ticked", 'sculpt_dyntopo'),
+    ('src/anim/sculpt.cc', "  dab.selected_only = selected_only;\n", "  dab.selected_only = false;\n",
+     "The Select tool's Simplify takes out only selected points", 'simplify_selected'),
+    ('src/ops/sculpt_ops.cc', "          ts.simplify_resolution = resolution;\n", "",
+     "The Select tool's Simplify starts at the Resolution it last used", 'simplify_selected'),
+    ('src/ops/sculpt_ops.cc', "        op_note(count);\n", "",
+     "Simplify's Adjust Last Operation panel says how many points went", 'simplify_selected'),
+    ('src/ops/operator.cc', "      g_last_redo.note = g_note;\n", "",
+     "The Adjust Last Operation panel keeps what the run said it did", 'simplify_selected'),
 ]
 
 def build(root):

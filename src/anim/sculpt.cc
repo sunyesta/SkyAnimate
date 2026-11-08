@@ -1450,11 +1450,13 @@ void sculpt_dyntopo_cell(const Document &doc, uint64_t id, float resolution, flo
   *r_y = to_document.apply_vector({0.0f, step});
 }
 
-int sculpt_simplify(Document &doc, const std::vector<uint64_t> &layers, float resolution)
+int sculpt_simplify(Document &doc, const std::vector<uint64_t> &layers, float resolution, bool selected_only)
 {
   SculptDab dab;
   dab.brush = SculptBrush::Smooth;
   dab.radius = 1.0f;
+  /* Collapse never takes out an unselected point of the drawing's own. */
+  dab.selected_only = selected_only;
   dab.resolution = std::max(resolution, 1e-6f);
   dab.decimate = true;
   dab.simplify = true;
