@@ -656,6 +656,11 @@ ImVec2 timing_resize_center(ImVec2 mouse, float radius, float per_frame)
   return ImVec2(mouse.x - radius * std::max(per_frame, 1e-3f), mouse.y);
 }
 
+float path_timing_graph_height(float room, float wide, float least)
+{
+  return std::max(std::min(room, wide), least);
+}
+
 float timing_resize_radius(ImVec2 center, ImVec2 mouse, float per_frame)
 {
   return std::clamp(std::hypot(mouse.x - center.x, mouse.y - center.y) / std::max(per_frame, 1e-3f), 0.1f, 500.0f);
@@ -1268,10 +1273,12 @@ void path_timing_draw(Area &area, Context &C)
   const ImGuiStyle &style = ImGui::GetStyle();
   ToolSettings &ts = wm.tool_settings;
   const bool sculpt = ts.path_graph_sculpt;
-  /* The graph: as tall as the area has room for, over the mode buttons and the mode's settings. */
+  /* The graph: as tall as the area has room for over the mode buttons and the mode's settings, but no taller than
+   * it is wide; they follow right under it. */
   const float row = ImGui::GetFrameHeightWithSpacing();
   const float below = row * (sculpt ? 5.0f : 2.0f) + style.ItemSpacing.y * 3.0f + 1.0f;
-  const float graph_h = std::max(ImGui::GetContentRegionAvail().y - below, ImGui::GetFontSize() * 4.0f);
+  const float graph_h = path_timing_graph_height(ImGui::GetContentRegionAvail().y - below, w,
+                                                 ImGui::GetFontSize() * 4.0f);
   const ImVec2 g0 = ImGui::GetCursorScreenPos();
   path_timing_graph(C, t, s, g0, ImVec2(g0.x + w, g0.y + graph_h));
   ImGui::SetCursorScreenPos(ImVec2(g0.x, g0.y + graph_h + style.ItemSpacing.y));

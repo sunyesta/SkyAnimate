@@ -1764,6 +1764,10 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     }
     return radii;
   });
+  /* The Path Timing graph's height for `room` pixels over its controls, `wide` pixels across, at least `least`. */
+  m.def("path_timing_graph_height", [](float room, float wide, float least) {
+    return path_timing_graph_height(room, wide, least);
+  });
   /* The editor types, as the area menu lists them. */
   m.def("editor_types", []() {
     std::vector<std::string> names;

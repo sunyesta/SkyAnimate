@@ -54,6 +54,9 @@ bool timeline_path_strip_busy();
  * pixels each) left of the mouse, so the brush keeps its size until the mouse moves; then the size the mouse's
  * distance from that centre gives. */
 ImVec2 timing_resize_center(ImVec2 mouse, float radius, float per_frame);
+/* How tall the graph is: the `room` the editor has over its controls, never taller than it is `wide` (a tall editor
+ * leaves the space under the controls empty rather than stretching the stretch out), nor shorter than `least`. */
+float path_timing_graph_height(float room, float wide, float least);
 float timing_resize_radius(ImVec2 center, ImVec2 mouse, float per_frame);
 
 }  // namespace oanim

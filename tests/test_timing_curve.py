@@ -236,6 +236,11 @@ assert ops.anim.timing_graph_set(mode="EDIT", brush="GRAB", lock_x="0") == {'FIN
 r = wm.timing_resize(4.0, 12.0, [(0, 0), (12, 0), (-12, 0)])
 assert close(r, [4.0, 5.0, 3.0]), ("F starts at the brush's size and grows or shrinks from there", r)
 
+# The graph is never taller than it is wide: a tall, narrow editor leaves room under its controls, not a long box.
+assert close(wm.path_timing_graph_height(900.0, 380.0, 52.0), 380.0), "a tall editor: a square graph"
+assert close(wm.path_timing_graph_height(200.0, 600.0, 52.0), 200.0), "a wide editor: all the room it has"
+assert close(wm.path_timing_graph_height(10.0, 600.0, 52.0), 52.0), "never shorter than the least"
+
 # --- Python: the curve set as it is --------------------------------------------------------------------------------------
 box.keyframe_set("position", 30, timing=[(0.0, 0.0, (0, 0), (0.2, 0.0)), (1.0, 1.0, (-0.2, 0.0), (0, 0))])
 assert len(key(box, 30)["timing"]) == 2

@@ -618,6 +618,12 @@ def timing_resize(radius, per_frame, moves):
     return _oanim.timing_resize(radius, per_frame, moves)
 
 
+def path_timing_graph_height(room, wide, least):
+    """The Path Timing graph's height in pixels, with room pixels over its controls, wide pixels across and at least
+    least: never taller than it is wide."""
+    return _oanim.path_timing_graph_height(room, wide, least)
+
+
 def sculpt_settings():
     """The Sculpt tool's settings: a dict with brush (GRAB, PUSH, SMOOTH, THICKNESS, PINCH, TWIST,
     SURFACE_SMOOTH), preset (the shelf's preset it was picked from), radius (screen pixels), strength (0-1),

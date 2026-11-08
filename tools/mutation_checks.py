@@ -37,6 +37,8 @@ EXE = os.path.join("build", "bin", "RelWithDebInfo", "OpenAnimate.exe")
 
 # (file, old, new, name, test)
 PENDING = [
+    ('src/editors/timeline_path.cc', 'return std::max(std::min(room, wide), least);', 'return std::max(room, least);',
+     'the Path Timing graph is never taller than it is wide', 'timing_curve'),
 ]
 
 def build(root):
