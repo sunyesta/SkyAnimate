@@ -6022,6 +6022,10 @@ void TimeTogetherEdit::start(Document &doc)
 int TimeTogetherEdit::finish(Document &doc)
 {
   const int followed = on ? time_together_timing_follow(doc, before) : 0;
+  if (followed > 0) {
+    /* The channels retimed show their new places on the frame shown, not only once the frame changes. */
+    animation_evaluate(doc, doc.frame_current);
+  }
   on = false;
   before = TimingSnapshot();
   return followed;

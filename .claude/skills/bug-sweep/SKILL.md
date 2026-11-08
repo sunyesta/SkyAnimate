@@ -46,6 +46,22 @@ set OA_SWEEP_FILE=<sweep>\file.oanim & set OA_SWEEP_TMP=<sweep>\t1 & set OA_FUZZ
 python <skill>\scripts\shrink.py <sweep>\bin\OpenAnimate.exe <sweep>\fuzz_fail_1.json
 ```
 
+For the Path Timing graph and the path's timing, `scripts/fuzz_timing.py` builds its own scene (Linear, Smooth, on 2s
+and 3s, a breakdown, Time Together's pair, Key Whole Drawing, a bone) and throws about 30 kinds of op at it: the
+graph's points, handles, picks, G R S, V, Decimate and Sculpt; path strokes, slides, spacing; keys added, deleted,
+retimed and moved; odd numbers (nan, inf, 1e30) 8% of the time. Besides the fuzzer's checks it holds every stored
+curve valid (ends, x increasing, handles pointing the right way, aligned points in line) and a Custom stretch playing
+its curve. `OA_FUZZ_SEED`, `OA_FUZZ_OPS`, `OA_FUZZ_OUT`, `OA_FUZZ_REPLAY`; shrink with `python
+scripts/shrink_timing.py <exe> <tfuzz_fail_N.json>`. It compares undo states at the frame each step was pushed on and
+reopens every 10 ops (the undo stack keeps 64 steps, past which a push looks like none).
+
+Three invariants that caught bugs the area probes missed, worth checking after every op in any area: the frame shown
+equals the same frame left and reached again (an edit that changes keys must evaluate the frame shown, and so must
+whatever follows it, as Time Together's retiming); an edit that moves nothing (a click with a brush, strength 0, a
+stroke off the curve) is CANCELLED with no undo step and nothing changed, not even a key's interpolation; and a
+"make it so" op pressed twice (Aligned, Flat, a handle type) changes nothing the second time. Picks or selections
+stored as bare indexes or frames go stale when the thing they index moves: move the key under them, then edit.
+
 ## 3. Confirm every report
 
 A probe's report is a claim. Rerun each repro yourself (in parallel) and read the numbers before telling the user it's
@@ -98,7 +114,10 @@ the user's message being answered must ask for one (a hook, `~/.claude/hooks/mut
 script otherwise; it looks for "milestone check", "mutation" or "sweep"). An ask covers its own request only,
 never the features after it. With the fixes in: `python tools/mutation_checks.py` (`--lanes N` within the load
 limit below) and the full ctest. Nothing edits source while they run (the script swaps it). Each must be caught:
-strengthen the test if not, commit, and empty `PENDING`.
+strengthen the test if not, commit, and empty `PENDING`. The hook reads only the latest message, and a background
+task's notice (a probe, build or test run finishing) counts as one: once a notice has come in, the script is refused
+until the user asks again. So keep every entry proven by hand as you go, and when refused say so and ask the user to
+say "run milestone checks" (a wrap-up button with that label sends it).
 
 ## 6. Improve this skill
 

@@ -653,6 +653,10 @@ static struct {
   bool active = false;
   /* A drag of picks: kept when the button comes up. */
   bool drag = false;
+  /* The drag's mouse has gone past the click distance; let go before, it was a click on the pick `clicked`, which it
+   * picks alone, as Blender's click on one of several selected does. */
+  bool moved = false;
+  TimingPick clicked;
   ImGuiID owner = 0;
   char kind = 'G', axis = 0;
   MotionPathTarget target;
@@ -1246,6 +1250,21 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     const bool confirm = gx.drag ? !ImGui::IsMouseDown(ImGuiMouseButton_Left)
                                  : modal_key_take(C, "RET") || modal_key_take(C, "KEYPAD_ENTER") ||
                                        ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    gx.moved |= std::hypot(io.MousePos.x - gx.press.x, io.MousePos.y - gx.press.y) >= 3.0f;
+    if (gx.drag && !gx.moved && !gx.num.any()) {
+      if (confirm) {
+        /* A click, not a drag: the pick clicked, alone. */
+        const TimingPick clicked = gx.clicked;
+        const MotionPathTarget target = gx.target;
+        const int frame = gx.frame;
+        end(false);
+        OpArgs args = target_args(doc, target, frame);
+        args["index"] = std::to_string(clicked.point);
+        args["part"] = clicked.part == 0 ? "POINT" : clicked.part < 0 ? "IN" : "OUT";
+        operator_call(C, "anim.timing_select", args);
+      }
+      return;
+    }
     const float2 m = gx.precise.update(float2{io.MousePos.x, io.MousePos.y}, io.KeyShift);
     float2 offset{frame_at(m.x) - frame_at(gx.press.x), u_at(m.y) - u_at(gx.press.y)};
     if (gx.axis == 'X') {
@@ -1308,7 +1327,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     return;
   }
   /* Starts G R S, or a drag of the picks: what's picked on this stretch, about the middle of their points. */
-  const auto xform_start = [&](char kind, bool drag) {
+  const auto xform_start = [&](char kind, bool drag, TimingPick clicked = {}) {
     std::vector<TimingPick> picks;
     for (const TimingPick &k : wm.path_timing_picks) {
       if (picks_here && k.point >= 0 && size_t(k.point) < curve.points.size()) {
@@ -1336,6 +1355,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     gx = {};
     gx.active = true;
     gx.drag = drag;
+    gx.clicked = clicked;
     gx.owner = graph_id;
     gx.kind = kind;
     gx.target = t;
@@ -1569,7 +1589,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     const bool with_others = (is_picked(hit->point, hit->side) || is_picked(hit->point, 0)) &&
                              wm.path_timing_picks.size() > 1;
     if (with_others && !io.KeyAlt) {
-      xform_start('G', true);
+      xform_start('G', true, TimingPick{hit->point, hit->side});
       return;
     }
     operator_call(C, "anim.timing_select", args);

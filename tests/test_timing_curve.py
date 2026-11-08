@@ -216,9 +216,9 @@ print("Slid far: frame 27 at %.3f, biggest step %.3f" % (slid[17], max(steps)))
 assert close(slid[17], 0.5, 0.04), ("the middle went with the brush", slid[17])
 assert max(steps) < 0.2 and min(steps) > -0.05, ("no jump where it slid to", steps)
 ops.ed.undo()
-# Lock X: a stroke across moves nothing.
+# Lock X: a stroke across moves nothing (so is no edit).
 assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="20,0.5;24,0.5", radius=3, strength=1, aspect=6,
-                                     lock_x=1, dyntopo=1)) == {'FINISHED'}
+                                     lock_x=1, dyntopo=1)) == {'CANCELLED'}
 assert close(played(box, 10, 30), [f / 20 for f in range(21)]), "Lock X: never in time"
 # Up and down it still moves.
 assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="20,0.5;20,0.7", radius=3, strength=1, aspect=6,

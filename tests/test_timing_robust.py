@@ -295,4 +295,141 @@ off = [abs(x - y) for x, y in places(b, 10, 20)]
 assert max(off) < 1e-3, ("B's dots left its straight line", off)
 assert abs(places(b, 15, 15)[0][0] - 0.45) < 2e-3, ("B timed as A", places(b, 15, 15))
 
+# The graph's G R S, V and Sculpt at their edges (the second timing sweep).
+EVEN5 = [(0.0, 0.0, (0, 0), (0.08, 0.08)), (0.25, 0.25, (-0.08, -0.08), (0.08, 0.08)),
+         (0.5, 0.5, (-0.08, -0.08), (0.08, 0.08)), (0.75, 0.75, (-0.08, -0.08), (0.08, 0.08)),
+         (1.0, 1.0, (-0.08, -0.08), (0, 0))]
+
+# S on two picked points stops them short of the one not picked, which stays where it was.
+start()
+box = line_layer({10: 0.0, 30: 1.0})
+box.keyframe_set("position", 30, timing=EVEN5)
+assert ops.anim.timing_select(index="1", **args(box, frame=11)) == {'FINISHED'}
+assert ops.anim.timing_select(index="2", extend="1", **args(box, frame=11)) == {'FINISHED'}
+assert ops.anim.timing_transform(mode="SCALE", factor="5") == {'FINISHED'}
+t = key(box, 30)["timing"]
+assert abs(t[3][0] - 0.75) < 1e-6, ("S moved the point not picked", [p[0] for p in t])
+assert t[1][0] < t[2][0] < t[3][0], ("S put the picks out of order", [p[0] for p in t])
+
+# Picks made on a stretch whose end key then moves are let go: G and X edit nothing (the stretch the frame is in now
+# was never picked).
+for edit in ("G", "X"):
+    start()
+    box = line_layer({10: 0.0, 20: 1.0, 30: 2.0})
+    box.keyframe_set("position", 20, timing=EVEN5)
+    box.keyframe_set("position", 30, timing=EVEN5)
+    assert ops.anim.timing_select(index="2", **args(box, frame=15)) == {'FINISHED'}
+    ops.anim.keys_deselect_all()
+    assert ops.anim.keys_select(frame_start="20", layers=str(box.id)) == {'FINISHED'}
+    assert ops.anim.keys_offset(frames="-5") == {'FINISHED'}
+    before = key(box, 30)["timing"]
+    if edit == "G":
+        r = ops.anim.timing_transform(mode="MOVE", x="2", y="0.1")
+    else:
+        r = ops.anim.timing_point_delete()
+    assert r == {'CANCELLED'}, (edit, "on stale picks", r)
+    assert key(box, 30)["timing"] == before, (edit, "on stale picks edited the 15-30 stretch")
+    assert not wm.timing_picks()["picks"], (edit, "kept the stale picks", wm.timing_picks())
+
+# V > Aligned (and Flat) pressed again changes nothing: what the curve shows is what's stored.
+for kind in ("ALIGNED", "FLAT"):
+    start()
+    box = line_layer({10: 0.0, 30: 1.0})
+    box.keyframe_set("position", 30, timing=[(0.0, 0.0, (0, 0), (0.2, 0.0)),
+                                           (0.5, 0.5, (-0.3, -0.1), (0.4, 0.6), False),
+                                           (1.0, 1.0, (-0.2, 0.0), (0, 0))])
+    assert ops.anim.timing_select(index="1", **args(box, frame=11)) == {'FINISHED'}
+    assert ops.anim.timing_handles_type(type=kind) == {'FINISHED'}
+    once, played = key(box, 30)["timing"], xs(box, 10, 30)
+    assert ops.anim.timing_handles_type(type=kind) == {'FINISHED'}
+    twice = key(box, 30)["timing"]
+    assert worst(xs(box, 10, 30), played) < 1e-5, (kind, "twice moved the dots")
+    for a, b in zip(once, twice):
+        assert worst(a[2] + a[3], b[2] + b[3]) < 1e-6, (kind, "twice changed the handles", once, twice)
+
+# G with both handles of an aligned point picked moves both tips, whichever was picked first.
+got = []
+for order in (("IN", "OUT"), ("OUT", "IN")):
+    start()
+    box = line_layer({10: 0.0, 30: 1.0})
+    box.keyframe_set("position", 30, timing=[(0.0, 0.0, (0, 0), (0.1, 0.0)),
+                                           (0.5, 0.5, (-0.1, -0.1), (0.1, 0.1), True),
+                                           (1.0, 1.0, (-0.1, 0.0), (0, 0))])
+    assert ops.anim.timing_select(part=order[0], index="1", **args(box, frame=11)) == {'FINISHED'}
+    assert ops.anim.timing_select(part=order[1], index="1", extend="1", **args(box, frame=11)) == {'FINISHED'}
+    assert ops.anim.timing_transform(mode="MOVE", x="0", y="0.1") == {'FINISHED'}
+    p = key(box, 30)["timing"][1]
+    got.append(p[2] + p[3])
+assert worst(got[0], got[1]) < 1e-5, ("G of both handles depends on pick order", got)
+ix, iy, ox, oy = got[0]
+assert iy > -0.09 and oy > 0.105, ("G of both handles didn't lift both tips", got[0])
+assert abs(ix * oy - iy * ox) < 1e-4, ("the aligned point's handles left line", got[0])
+
+# Grab in time alone without Dyntopo keeps the dots going forward (the brush keeps the samples in order).
+start()
+box = line_layer({10: 0.0, 30: 1.0})
+a = args(box, frame=20)
+assert ops.anim.motion_path_stretch_shape(shape="EASE_IN_OUT", **a) == {'FINISHED'}
+assert ops.anim.timing_point_add(x="0.5", **a) == {'FINISHED'}
+assert ops.anim.timing_sculpt(brush="GRAB", path="20,0.5;29,0.5", radius="3", strength="1", aspect="20",
+                              lock_x="0", dyntopo="0", **a) == {'FINISHED'}
+u = xs(box, 10, 30)
+steps = [u[i + 1] - u[i] for i in range(len(u) - 1)]
+assert min(steps) > -1e-4, ("a level Grab without Dyntopo ran the dots backwards", [round(v, 3) for v in u])
+
+# A stroke that moves nothing (a Grab click, no strength) is no edit: the key stays Smooth, no undo step.
+start()
+box = line_layer({10: 0.0, 30: 1.0}, interp="SMOOTH")
+step = wm.undo_history()[1]
+for stroke in (dict(path="20,0.5", strength="1"), dict(path="20,0.5;25,0.8", strength="0")):
+    for dyn in ("0", "1"):
+        r = ops.anim.timing_sculpt(brush="GRAB", radius="3", aspect="20", dyntopo=dyn, **stroke,
+                                   **args(box, frame=20))
+        assert r == {'CANCELLED'}, ("a stroke that moved nothing", stroke, dyn, r)
+assert key(box, 30)["interp"] == "SMOOTH", ("a stroke that moved nothing made the key", key(box, 30)["interp"])
+assert wm.undo_history()[1] == step, "a stroke that moved nothing pushed an undo step"
+
+# The frame shown takes its new place at once: after a path key's interpolation changes, and on a channel Time
+# Together retimed.
+start()
+box = line_layer({10: 0.0, 40: 1.0, 70: 1.4})
+for frame, at, interp in ((50, 70, "EASE_IN"), (25, 40, "EASE_IN"), (25, 40, "STEP"), (24, 40, "BEZIER")):
+    doc.frame_current = frame
+    assert ops.anim.motion_path_key_interp(frame=str(at), interp=interp, **args(box)) == {'FINISHED'}
+    shown = box.location_x
+    doc.frame_current = frame + 1
+    doc.frame_current = frame
+    assert abs(shown - box.location_x) < 1e-4, ("key", at, interp, "frame", frame, "kept its old place", shown,
+                                                 box.location_x)
+start()
+a = line_layer({10: 0.0, 30: 1.0})
+b = line_layer({10: 0.0, 30: 2.0})
+doc.time_together = True
+doc.frame_current = 20
+assert ops.anim.motion_path_stretch_shape(shape="EASE_IN", **args(a, frame=20)) == {'FINISHED'}
+assert key(b, 30)["interp"] == "CUSTOM", "B took A's timing"
+shown = b.location_x
+doc.frame_current = 21
+doc.frame_current = 20
+assert abs(shown - b.location_x) < 1e-4, ("B, retimed by Time Together, kept its old place", shown, b.location_x)
+
+# A sculpt refitting one side of an aligned point whose handles stand straight up keeps them in line (the fit's slope
+# can't be straight up; the side it fits turns opposite the side it kept).
+for dyn in ("0", "1"):
+    start()
+    box = line_layer({10: 0.0, 30: 1.0})
+    box.keyframe_set("position", 30, timing=[(0.0, 0.0, (0, 0), (0.1, 0.1)),
+                                           (0.4, 0.4, (0.0, -0.06), (0.0, 0.06), True),
+                                           (0.7, 0.7, (-0.08, -0.08), (0.08, 0.08), True),
+                                           (1.0, 1.0, (-0.1, -0.1), (0, 0))])
+    assert ops.anim.timing_sculpt(brush="GRAB", path="21.5,0.55;21.5,0.65", radius="1.2", strength="1", aspect="20",
+                                  lock_x="1", dyntopo=dyn, **args(box, frame=20)) == {'FINISHED'}
+    t = key(box, 30)["timing"]
+    upright = [q for q in t if abs(q[0] - 0.4) < 1e-6]
+    assert upright, ("the point beside the stroke stays", dyn, [q[:2] for q in t])
+    q = upright[0]
+    (ix, iy), (ox, oy) = q[2], q[3]
+    assert q[4], ("still aligned", dyn, q)
+    assert abs(ix * oy - iy * ox) <= 1e-6 * max(1e-9, math.hypot(ix, iy) * math.hypot(ox, oy)) * 1e3 and         ix * ox + iy * oy < 0, ("an aligned point's handles left line after a sculpt beside it", dyn, q)
+
 print("timing robust: all passed")

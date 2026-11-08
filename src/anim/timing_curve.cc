@@ -646,7 +646,9 @@ float gap_after(const TimingCurve &c, size_t i)
 }
 
 /* Both of point `i`'s handles set from what the curve shows (`in`, `out`), each kept pointing its way and within its
- * segment; the aligned flag as it was. */
+ * segment; the aligned flag as it was. The two segments it touches are then stored as the curve shows them (a handle
+ * and the neighbour's facing it shortened together where they'd reach past each other), so reading the handles back
+ * gives what was put and pressing Aligned or Flat again changes nothing. */
 void handles_put(TimingCurve &c, size_t i, float2 in, float2 out)
 {
   TimingPoint &p = c.points[i];
@@ -656,6 +658,36 @@ void handles_put(TimingCurve &c, size_t i, float2 in, float2 out)
   if (i + 1 < c.points.size()) {
     p.out = handle_within(out, true, gap_after(c, i));
   }
+  for (size_t k = i > 0 ? i - 1 : 0; k <= i && k + 1 < c.points.size(); k++) {
+    const Segment sg = segment(c, k);
+    c.points[k].out = sg.p1 - sg.p0;
+    c.points[k + 1].in = sg.p2 - sg.p3;
+  }
+}
+
+/* Point `i`'s handles in line along the way between theirs as the graph shows them (`vs`), each keeping its length; one
+ * of no length takes the other's way, two pointing back on each other lie level. */
+void handles_in_line(TimingCurve &c, size_t i, const ViewScale &vs)
+{
+  float2 in, out;
+  timing_point_handles(c, i, in, out);
+  const float2 vin = vs.to(in), vout = vs.to(out);
+  const float lin = length(vin), lout = length(vout);
+  float2 way{0.0f, 0.0f};
+  if (lout > 1e-9f) {
+    way += vout / lout;
+  }
+  if (lin > 1e-9f) {
+    way -= vin / lin;
+  }
+  if (length(way) < 1e-9f) {
+    way = {1.0f, 0.0f};
+  }
+  way = normalize(way);
+  if (way.x < 0.0f) {
+    way = -way;
+  }
+  handles_put(c, i, vs.from(-way * lin), vs.from(way * lout));
 }
 
 float2 turned(float2 v, float angle)
@@ -684,7 +716,8 @@ void timing_transform(TimingCurve &curve, const std::vector<TimingPick> &picks, 
       point[size_t(k.point)] = 1;
     }
   }
-  /* Handles picked on their own (not with their point), as point * 2 + (0 in, 1 out). */
+  /* Handles picked on their own (not with their point), as point * 2 + (0 in, 1 out); a point with both picked moves
+   * them as a pair (`both`), not one after the other (where the second would turn the first back into line). */
   for (const TimingPick &k : picks) {
     if (k.point >= 0 && size_t(k.point) < count && k.part != 0 && !point[size_t(k.point)]) {
       const size_t i = size_t(k.point);
@@ -702,11 +735,30 @@ void timing_transform(TimingCurve &curve, const std::vector<TimingPick> &picks, 
     timing_point_handles(c, i, in, o);
     return out ? o : in;
   };
+  const TimingCurve was = curve;
+  std::vector<char> both(count, 0);
+  for (const int code : handles) {
+    if (code % 2 == 0 && std::find(handles.begin(), handles.end(), code + 1) != handles.end()) {
+      both[size_t(code / 2)] = 1;
+    }
+  }
+  std::erase_if(handles, [&](int code) { return both[size_t(code / 2)] != 0; });
+  /* Each pair's handles from what the curve showed (`f` gives a handle's new value); an aligned point's put back in line
+   * along the way between them. */
+  const auto pairs_set = [&](auto f) {
+    for (size_t i = 0; i < count; i++) {
+      if (both[i]) {
+        handles_put(curve, i, f(shown(was, i, false)), f(shown(was, i, true)));
+        if (was.points[i].aligned) {
+          handles_in_line(curve, i, vs);
+        }
+      }
+    }
+  };
   size_t points = 0;
   for (size_t i = 0; i < count; i++) {
     points += point[i] ? 1 : 0;
   }
-  const TimingCurve was = curve;
 
   if (kind == 'G') {
     /* The points picked go together, as far as the first not picked on each side lets them (the ends never move). */
@@ -730,6 +782,7 @@ void timing_transform(TimingCurve &curve, const std::vector<TimingPick> &picks, 
         curve.points[i].co = was.points[i].co + float2(dx, offset.y);
       }
     }
+    pairs_set([&](float2 h) { return h + offset; });
     for (const int code : handles) {
       const size_t i = size_t(code / 2);
       const bool out = code % 2 == 1;
@@ -747,6 +800,7 @@ void timing_transform(TimingCurve &curve, const std::vector<TimingPick> &picks, 
         handles_put(curve, i, vs.from(turned(vs.to(in), angle)), vs.from(turned(vs.to(out), angle)));
       }
     }
+    pairs_set([&](float2 h) { return vs.from(turned(vs.to(h), angle)); });
     for (const int code : handles) {
       const size_t i = size_t(code / 2);
       const bool out = code % 2 == 1;
@@ -758,7 +812,8 @@ void timing_transform(TimingCurve &curve, const std::vector<TimingPick> &picks, 
   /* S. */
   factor = {std::max(factor.x, 0.0f), std::max(factor.y, 0.0f)};
   if (points >= 2) {
-    /* Their places about their middle, in order between the points not picked; their handles with them. */
+    /* Their places about their middle, in order between the points not picked (which never move); their handles with
+     * them. */
     float2 mid{0.0f, 0.0f};
     for (size_t i = 0; i < count; i++) {
       if (point[i]) {
@@ -773,10 +828,14 @@ void timing_transform(TimingCurve &curve, const std::vector<TimingPick> &picks, 
       }
     }
     for (size_t i = 1; i + 1 < count; i++) {
-      curve.points[i].co.x = std::max(curve.points[i].co.x, curve.points[i - 1].co.x + GAP);
+      if (point[i]) {
+        curve.points[i].co.x = std::max(curve.points[i].co.x, curve.points[i - 1].co.x + GAP);
+      }
     }
     for (size_t i = count - 1; i-- > 1;) {
-      curve.points[i].co.x = std::min(curve.points[i].co.x, curve.points[i + 1].co.x - GAP);
+      if (point[i]) {
+        curve.points[i].co.x = std::min(curve.points[i].co.x, curve.points[i + 1].co.x - GAP);
+      }
     }
   }
   for (size_t i = 0; i < count; i++) {
@@ -786,6 +845,7 @@ void timing_transform(TimingCurve &curve, const std::vector<TimingPick> &picks, 
       handles_put(curve, i, {in.x * factor.x, in.y * factor.y}, {out.x * factor.x, out.y * factor.y});
     }
   }
+  pairs_set([&](float2 h) { return float2{h.x * factor.x, h.y * factor.y}; });
   for (const int code : handles) {
     const size_t i = size_t(code / 2);
     const bool out = code % 2 == 1;
@@ -824,23 +884,7 @@ void timing_handles_type(TimingCurve &curve, const std::vector<int> &points, Tim
     if (i == 0 || i + 1 == count) {
       continue;
     }
-    /* In line along the way between theirs (as shown), each keeping its length; one of no length takes the other's. */
-    float2 way{0.0f, 0.0f};
-    if (lout > 1e-9f) {
-      way += vout / lout;
-    }
-    if (lin > 1e-9f) {
-      way -= vin / lin;
-    }
-    if (length(way) < 1e-9f) {
-      /* Back on themselves exactly: level. */
-      way = {1.0f, 0.0f};
-    }
-    way = normalize(way);
-    if (way.x < 0.0f) {
-      way = -way;
-    }
-    handles_put(curve, i, vs.from(-way * lin), vs.from(way * lout));
+    handles_in_line(curve, i, vs);
   }
 }
 
@@ -1184,7 +1228,24 @@ static PieceFit piece_fit(float2 a, float2 b, PieceFit start, bool free_a, bool 
 {
   constexpr double SLOPE_MOST = 100.0;
   const float len = b.x - a.x;
-  const auto within = [len, SLOPE_MOST](std::vector<double> &p) {
+  /* Samples that only go one way (`dir`, 0 where they turn back) keep the piece going that way: its handles' heights
+   * never past each other, so its dots never run backwards where the stroke didn't ask for it. The free slopes give way
+   * first, then the lengths. */
+  int dir = 0;
+  {
+    bool up = b.y >= a.y - 1e-6f, down = b.y <= a.y + 1e-6f;
+    float prev = a.y;
+    for (size_t i = from + 1; i < to && i < samples.size(); i++) {
+      up &= samples[i].y >= prev - 1e-6f;
+      down &= samples[i].y <= prev + 1e-6f;
+      prev = samples[i].y;
+    }
+    up &= b.y >= prev - 1e-6f;
+    down &= b.y <= prev + 1e-6f;
+    dir = up && !down ? 1 : down && !up ? -1 : 0;
+  }
+  const double rise = double(dir) * double(b.y - a.y);
+  const auto within = [len, SLOPE_MOST, dir, rise, free_a, free_b](std::vector<double> &p) {
     p[0] = std::clamp(p[0], double(len) * 0.02, double(len));
     p[1] = std::clamp(p[1], double(len) * 0.02, double(len));
     if (p[0] + p[1] > double(len)) {
@@ -1194,6 +1255,34 @@ static PieceFit piece_fit(float2 a, float2 b, PieceFit start, bool free_a, bool 
     }
     p[2] = std::clamp(p[2], -SLOPE_MOST, SLOPE_MOST);
     p[3] = std::clamp(p[3], -SLOPE_MOST, SLOPE_MOST);
+    if (dir == 0) {
+      return;
+    }
+    if (free_a) {
+      p[2] = dir > 0 ? std::max(p[2], 0.0) : std::min(p[2], 0.0);
+    }
+    if (free_b) {
+      p[3] = dir > 0 ? std::max(p[3], 0.0) : std::min(p[3], 0.0);
+    }
+    const double kept = dir * ((free_a ? 0.0 : p[2] * p[0]) + (free_b ? 0.0 : p[3] * p[1]));
+    const double loose = dir * ((free_a ? p[2] * p[0] : 0.0) + (free_b ? p[3] * p[1] : 0.0));
+    if (kept < 0.0 || (!free_a && dir * p[2] < 0.0) || (!free_b && dir * p[3] < 0.0)) {
+      return; /* A kept slope already turns back: nothing to hold to. */
+    }
+    if (kept + loose > rise) {
+      if (kept <= rise) {
+        const double k = loose > 0.0 ? (rise - kept) / loose : 0.0;
+        p[2] *= free_a ? k : 1.0;
+        p[3] *= free_b ? k : 1.0;
+      }
+      else {
+        p[2] *= free_a ? 0.0 : 1.0;
+        p[3] *= free_b ? 0.0 : 1.0;
+        const double k = rise / kept;
+        p[0] *= k;
+        p[1] *= k;
+      }
+    }
   };
   std::vector<double> p{start.alpha, start.beta, start.slope_a, start.slope_b};
   if (!(len > 1e-7f)) {
@@ -1219,6 +1308,18 @@ static PieceFit piece_fit(float2 a, float2 b, PieceFit start, bool free_a, bool 
                   residuals, within, 16);
   }
   return {float(p[0]), float(p[1]), float(p[2]), float(p[3])};
+}
+
+/* An aligned point refitted on one side only: that handle turned exactly opposite the one kept, its fitted length
+ * kept (the fit holds it to a slope, which can't be a kept handle's straight up or down). */
+static void handle_opposite_kept(TimingPoint &p, bool kept_in)
+{
+  const float2 kept = kept_in ? p.in : p.out;
+  float2 &fitted = kept_in ? p.out : p.in;
+  const float lk = length(kept), lf = length(fitted);
+  if (lk > 1e-9f && lf > 1e-9f) {
+    fitted = -kept * (lf / lk);
+  }
 }
 
 /* Without Dyntopo, as a drawing's sculpt does: each point goes where its sample went, the handles of each piece the
@@ -1282,6 +1383,11 @@ static TimingCurve sculpt_fit_points(const TimingCurve &c, int n, const StrokeSa
     if (touched[p]) {
       out.points[p].out = {fit[p].alpha, fit[p].slope_a * fit[p].alpha};
       out.points[p + 1].in = {-fit[p].beta, -fit[p].slope_b * fit[p].beta};
+    }
+  }
+  for (size_t i = 1; i + 1 < count; i++) {
+    if (smooth(i) && touched[i - 1] != touched[i]) {
+      handle_opposite_kept(out.points[i], !touched[i - 1]);
     }
   }
   return timing_valid(out) ? out : c;
@@ -1410,6 +1516,17 @@ static TimingCurve sculpt_fit_dyntopo(const TimingCurve &c, int n, const StrokeS
     }
     out.points[q].out = {fits[q].alpha, knots[kept[q]].slope_out * fits[q].alpha};
     out.points[q + 1].in = {-fits[q].beta, -knots[kept[q + 1]].slope_in * fits[q].beta};
+  }
+  for (size_t q = 1; q + 1 < kept.size(); q++) {
+    const int a = of_point[kept[q]];
+    if (a < 0 || !out.points[q].aligned) {
+      continue;
+    }
+    const bool left_was = of_point[kept[q - 1]] == a - 1 && !touched[size_t(a - 1)];
+    const bool right_was = of_point[kept[q + 1]] == a + 1 && !touched[size_t(a)];
+    if (left_was != right_was) {
+      handle_opposite_kept(out.points[q], left_was);
+    }
   }
   out.points.front().co = {0.0f, 0.0f};
   out.points.back().co = {1.0f, 1.0f};

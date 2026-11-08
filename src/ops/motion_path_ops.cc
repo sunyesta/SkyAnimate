@@ -328,6 +328,25 @@ static OpStatus path_stretch_select(Context &C, const MotionPathTarget &target, 
 
 /* The Path Timing graph's Edit mode picks: the stretch they're on (its thing, a frame inside it, its curve and frames)
  * and those still on its curve. */
+/* The stretch the picks were made on, if its key is still where it was: one whose end key moved (or went) is another
+ * stretch now, which they'd edit unseen, so they're let go. */
+static bool timing_picks_stretch(WindowManager &wm, Document &doc, TimingCurve &r_curve, int *r_n)
+{
+  int start = 0, n = 0;
+  if (!motion_path_timing_curve(doc, wm.path_timing_point_target, wm.path_timing_point_end - 1, r_curve, &start, &n)) {
+    return false;
+  }
+  if (start + n != wm.path_timing_point_end) {
+    wm.path_timing_picks.clear();
+    wm.path_timing_point = -1;
+    return false;
+  }
+  if (r_n) {
+    *r_n = n;
+  }
+  return true;
+}
+
 static bool timing_picked(Context &C, MotionPathTarget &r_target, int &r_frame, TimingCurve &r_curve, int &r_n,
                           std::vector<TimingPick> &r_picks)
 {
@@ -336,9 +355,8 @@ static bool timing_picked(Context &C, MotionPathTarget &r_target, int &r_frame, 
   animation_sync(doc);
   r_target = wm.path_timing_point_target;
   r_frame = wm.path_timing_point_end - 1;
-  int start = 0;
   r_picks.clear();
-  if (!wm.path_timing_picks.empty() && motion_path_timing_curve(doc, r_target, r_frame, r_curve, &start, &r_n)) {
+  if (!wm.path_timing_picks.empty() && timing_picks_stretch(wm, doc, r_curve, &r_n)) {
     if (r_curve.empty()) {
       r_curve = timing_even();
     }
@@ -1667,7 +1685,7 @@ void motion_path_operators_register()
         animation_sync(doc);
         t = wm.path_timing_point_target;
         frame = wm.path_timing_point_end - 1;
-        if (!motion_path_timing_curve(doc, t, frame, curve) || curve.empty()) {
+        if (!timing_picks_stretch(wm, doc, curve, nullptr) || curve.empty()) {
           report(ReportType::Warning, "Pick a point of the timing curve first");
           return OpStatus::Cancelled;
         }
@@ -2025,6 +2043,10 @@ void motion_path_operators_register()
           std::max(op_arg_float(C, "aspect", float(n)), 1e-3f),
           op_has_arg(C, "lock_x") ? op_arg_bool(C, "lock_x") : ts.path_timing_lock_x,
           op_has_arg(C, "dyntopo") ? op_arg_bool(C, "dyntopo") : ts.path_timing_dyntopo);
+      /* A stroke that moved nothing (a click, no strength, off the curve) is no edit: the stretch keeps its shape. */
+      if (sculpted == curve || (curve.empty() && sculpted == timing_even())) {
+        return OpStatus::Cancelled;
+      }
       if (!motion_path_timing_curve_set(*C.document, t, frame, sculpted)) {
         return OpStatus::Cancelled;
       }
@@ -2124,6 +2146,8 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       animation_sync(doc);
+      /* The frame shown takes the place its new interpolation gives it. */
+      animation_evaluate(doc, doc.frame_current);
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
