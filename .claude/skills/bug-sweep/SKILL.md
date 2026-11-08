@@ -1,6 +1,6 @@
 ---
 name: bug-sweep
-description: Robust bug testing of an Open Animate file or feature - when the user asks to test robustly, sweep, hunt or find bugs, do random operations on the bones and points, stress-test a file (such as the eye path test file), or fix the bugs a sweep finds. Covers probing with background agents on private copies, the seeded random-operations fuzzer and its shrinker, confirming each report, and fixing confirmed bugs while the probes keep running.
+description: Robust bug testing of an Open Animate file or feature - when the user asks to test robustly, sweep, hunt or find bugs, do random operations on the bones and points, stress-test a file (such as the eye path test file), or fix the bugs a sweep finds, or says "run milestone checks" (a sweep and the mutation checks go together, only on the user's word). Covers probing with background agents on private copies, the seeded random-operations fuzzer and its shrinker, confirming each report, and fixing confirmed bugs while the probes keep running.
 ---
 
 # Bug sweep
@@ -67,10 +67,8 @@ while probes keep reporting:
 - Read the code the repro points at; find the cause, not the symptom. A design call (two behaviours that can't both
   hold) goes to the user with a recommendation before you build it.
 - Write the test first through operators (`tests/`, `add_test` in CMakeLists.txt), see it fail, fix, see it pass.
-- Add mutation entries to `PENDING` in `tools/mutation_checks.py`, and don't run them: they wait until the user says
-  "run milestone checks" (or asks for mutation checks in this request). Instead, undo each fix by hand once and see
-  its test fail (below). When they do run, nothing edits source meanwhile (the script swaps it), and each must be
-  caught; strengthen the test if not.
+- Add a mutation entry to `PENDING` in `tools/mutation_checks.py` for each fix, and undo each fix by hand once to
+  see its test fail (below). The entries run at the end (step 5), not one by one.
 - Rebuild with the LNK1168 retry loop (the user's own copy may hold the exe), then run the broad related tests
   (`ctest -R` over every area the change touches), not only the new one: a fix in a shared path (how a key goes in,
   how a frame is evaluated) can change everyday behaviour. Keep such a fix to the cases the bug is about (a key put in
@@ -93,7 +91,16 @@ while probes keep reporting:
 - At the end: the spec (`docs/SPEC.md`) and the live Doc in small find-and-replace edits, then one commit on the
   branch. Never push or merge unless told.
 
-## 5. Improve this skill
+## 5. Mutation checks and the full ctest
+
+A sweep always ends with the milestone checks, and they never run outside a sweep or a "run milestone checks":
+the user's message being answered must ask for one (a hook, `~/.claude/hooks/mutation_guard.py`, refuses the
+script otherwise; it looks for "milestone check", "mutation" or "sweep"). An ask covers its own request only,
+never the features after it. With the fixes in: `python tools/mutation_checks.py` (`--lanes N` within the load
+limit below) and the full ctest. Nothing edits source while they run (the script swaps it). Each must be caught:
+strengthen the test if not, commit, and empty `PENDING`.
+
+## 6. Improve this skill
 
 After each sweep, fold back what you learned: a new fuzzer op for a kind of edit it missed (an area probe's report
 may name one), a new invariant, a harness pitfall below, a better brief. The skill lives in the repo

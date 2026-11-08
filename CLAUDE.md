@@ -24,10 +24,13 @@ Tests are Python scripts in `tests/`, run headless:
 Add each new test file to `CMakeLists.txt` with `add_test`. Prefer testing through operators and
 `oanim.wm.event_simulate()` so tests cover the same path as the UI.
 
-Mutation checks (a test must fail with its fix undone) are batched: each feature adds its checks to
-`PENDING` in `tools/mutation_checks.py` and runs only its own tests. When the user says "run milestone
-checks", run that script and the full ctest, strengthen any test that misses, commit and empty `PENDING`.
-Run them before any merge; say so if a merge is asked for with checks pending.
+Bug sweeps and mutation checks (a test must fail with its fix undone) go together, and run only when the
+user's message being answered asks for one: "run milestone checks", a bug sweep, mutation checks. That ask
+covers its own request, never later features. Meanwhile each feature adds its checks to `PENDING` in
+`tools/mutation_checks.py`, proves each test by undoing its fix by hand once, and runs only its own tests.
+When asked, run the sweep (the bug-sweep skill), that script and the full ctest, strengthen any test that
+misses, commit and empty `PENDING`. A hook in the user's settings (`~/.claude/hooks/mutation_guard.py`)
+refuses the script otherwise. If a merge is asked for with checks pending, say so and offer to run them.
 
 The desktop and Start menu shortcuts run `tools/run_openanimate.ps1`, which starts a copy of the
 build from `build/run/<build time>/`, so rebuilding works while Open Animate is open (reopen it to
