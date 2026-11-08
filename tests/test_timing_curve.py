@@ -3,8 +3,9 @@ stretch's time, kept with as few points as put every frame's dot within a hair o
 speeds, a slid dot, a shape all become such a curve), so it stretches with the stretch when its keys move. The Path
 Timing graph edits it: Edit mode moves its points and handles (anim.timing_point_move, anim.timing_handle_move: an
 aligned point's other handle turns with it unless free=1), adds (anim.timing_point_add keeps the curve's shape) and
-deletes them (anim.timing_point_delete, never an end); Sculpt mode's Grab and Smooth (anim.timing_sculpt) brush it, Lock
-X keeping it from moving in time, and leave as few points as hold every frame. Files store the curve (format 7); an
+deletes them (anim.timing_point_delete, never an end); Sculpt mode's Grab and Smooth (anim.timing_sculpt) brush it as a
+drawing's sculpt does (samples moved, the curve fitted back to them, the pieces a stroke didn't move left as they were),
+Lock X keeping it from moving in time, Dyntopo leaving as few points as hold every frame. Files store the curve (format 7); an
 older file's per-frame speeds open as the curve they make.
 
 Run with:  OpenAnimate --background --python tests/test_timing_curve.py
@@ -244,9 +245,43 @@ assert len(key(box, 30)["timing"]) < 21
 assert ops.anim.timing_sculpt(**args(box, brush="PINCH", path="20,0.5")) == {'CANCELLED'}
 assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="")) == {'CANCELLED'}
 
-# --- Sculpt without Dyntopo: the curve's own points and handles move, none added or taken out ---------------------------
+# --- Sculpt without Dyntopo: as a drawing's sculpt, the brush moves samples of the curve and the curve is fitted back to
+# them, every point where its sample went, only the pieces the stroke moved fitted again; none added or taken out -------
 start()
 box = line_layer({10: 0.0, 30: 1.0})
+assert ops.anim.motion_path_stretch_shape(shape="EVEN", **args(box)) == {'FINISHED'}
+# Pressed in the middle of a long piece, far from any point, the curve still follows the brush (its handles' slopes and
+# lengths fitted to the samples; pushing the points and handle tips near the brush, it hardly moved).
+assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="20,0.5;20,0.7", radius=4, strength=1, aspect=6,
+                                     lock_x=1)) == {'FINISHED'}
+assert len(key(box, 30)["timing"]) == 2, key(box, 30)["timing"]
+print("A long piece grabbed up: frame 20 at %.3f" % played(box, 20, 20)[0])
+assert played(box, 20, 20)[0] > 0.56, ("the curve followed the brush", played(box, 20, 20))
+ops.ed.undo()
+# Five points: a stroke near the fourth leaves the pieces it didn't move exactly as they were.
+assert ops.anim.motion_path_stretch_shape(shape="EASE_IN_OUT", **args(box)) == {'FINISHED'}
+for x in (0.2, 0.5, 0.8):
+    assert ops.anim.timing_point_add(**args(box, x=x)) == {'FINISHED'}
+five = key(box, 30)["timing"]
+assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="26,0.9;27,0.97", radius=2, strength=1,
+                                     aspect=6)) == {'FINISHED'}
+after = key(box, 30)["timing"]
+assert len(after) == 5, after
+assert after[0] == five[0] and after[1] == five[1] and after[2][2] == five[2][2], ("pieces it didn't move as they were",
+                                                                                five, after)
+assert close(after[3][:2], (0.85, five[3][1] + 0.07), 2e-3), ("the point went where its sample went", after[3])
+hin, hout = after[3][2], after[3][3]
+assert abs(hin[0] * hout[1] - hin[1] * hout[0]) < 1e-6 and hin[0] < 0 < hout[0], ("a smooth point's handles in line",
+                                                                                after[3])
+# With Dyntopo too: the points and pieces it didn't move stay as they were, and it has more where it moved the curve.
+ops.ed.undo()
+assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="26,0.9;27,0.97", radius=2, strength=1, aspect=6,
+                                     dyntopo=1)) == {'FINISHED'}
+made = key(box, 30)["timing"]
+assert len(made) > 5, made
+assert made[0] == five[0] and made[1][:3] == five[1][:3], ("the start and the point at 0.2 as they were", five, made)
+ops.ed.undo()
+assert ops.anim.motion_path_stretch_shape(shape="EVEN", **args(box)) == {'FINISHED'}
 assert ops.anim.motion_path_stretch_shape(shape="EASE_IN_OUT", **args(box)) == {'FINISHED'}
 assert ops.anim.timing_point_add(**args(box, x=0.5)) == {'FINISHED'}
 before = key(box, 30)["timing"]
@@ -268,7 +303,7 @@ ops.ed.undo()
 # Smooth: still three points, the middle one pulled toward the curve around it.
 bump = [(0.0, 0.0, (0, 0), (0.1, 0.0)), (0.5, 0.8, (-0.1, 0.0), (0.1, 0.0)), (1.0, 1.0, (-0.1, 0.0), (0, 0))]
 box.keyframe_set("position", 30, timing=bump)
-assert ops.anim.timing_sculpt(**args(box, brush="SMOOTH", path="20,0.8", radius=6, strength=1,
+assert ops.anim.timing_sculpt(**args(box, brush="SMOOTH", path="18,0.8;22,0.8", radius=6, strength=1,
                                      aspect=20)) == {'FINISHED'}
 smoothed = key(box, 30)["timing"]
 assert len(smoothed) == 3 and smoothed[1][1] < 0.8 - 0.02, smoothed

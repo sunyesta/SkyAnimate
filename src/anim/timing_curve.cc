@@ -282,7 +282,7 @@ struct Knot {
  * neighbours' handles fitted again), until the next would miss by more than `tolerance` or only `keep` are left between
  * the ends. Returns those kept (the ends always), and in `r_fits` the handle lengths of each piece between them. */
 std::vector<size_t> knots_reduce(const std::vector<Knot> &knots, const std::vector<float2> &samples, float tolerance,
-                                 size_t keep, std::vector<SpanFit> &r_fits)
+                                 size_t keep, std::vector<SpanFit> &r_fits, const std::vector<char> *can_go = nullptr)
 {
   const size_t count = knots.size();
   std::vector<size_t> prev(count, 0), next(count, count - 1);
@@ -299,9 +299,11 @@ std::vector<size_t> knots_reduce(const std::vector<Knot> &knots, const std::vect
     return span_fit(samples[knots[a].sample], knots[a].slope_out, samples[knots[b].sample], knots[b].slope_in, samples,
                     knots[a].sample, knots[b].sample);
   };
+  /* Only those `can_go` lets (all, without it) are taken out, or counted against `keep`. */
+  const auto goes = [&](size_t i) { return !can_go || (*can_go)[i]; };
   size_t inside = 0;
   for (size_t i = 1; i + 1 < count; i++) {
-    if (alive[i]) {
+    if (alive[i] && goes(i)) {
       cost[i] = fit(prev[i], next[i]);
       inside++;
     }
@@ -309,7 +311,7 @@ std::vector<size_t> knots_reduce(const std::vector<Knot> &knots, const std::vect
   while (inside > keep) {
     size_t at = 0;
     for (size_t i = 1; i + 1 < count; i++) {
-      if (alive[i] && (at == 0 || cost[i].miss < cost[at].miss)) {
+      if (alive[i] && goes(i) && (at == 0 || cost[i].miss < cost[at].miss)) {
         at = i;
       }
     }
@@ -321,10 +323,10 @@ std::vector<size_t> knots_reduce(const std::vector<Knot> &knots, const std::vect
     const size_t p = prev[at], q = next[at];
     next[p] = q;
     prev[q] = p;
-    if (p > 0) {
+    if (p > 0 && goes(p)) {
       cost[p] = fit(prev[p], q);
     }
-    if (q + 1 < count) {
+    if (q + 1 < count && goes(q)) {
       cost[q] = fit(p, next[q]);
     }
   }
@@ -333,7 +335,9 @@ std::vector<size_t> knots_reduce(const std::vector<Knot> &knots, const std::vect
   for (size_t i = 0; i < count; i++) {
     if (alive[i]) {
       if (!kept.empty()) {
-        r_fits.push_back(fit(kept.back(), i));
+        /* Two neighbours neither of which could go: a piece as it was (left unfitted). */
+        const bool as_was = kept.back() + 1 == i && !goes(kept.back()) && !goes(i);
+        r_fits.push_back(as_was ? SpanFit{} : fit(kept.back(), i));
       }
       kept.push_back(i);
     }
@@ -640,130 +644,57 @@ template<typename Dist> static std::vector<float2> stroke_dabs(const std::vector
   return dabs;
 }
 
-/* Without Dyntopo: the brushes move the curve's own points and their handles' tips (none added or taken out), as a
- * drawing's sculpt does without Dyntopo. Grab moves each by the stroke, weighted by how near the brush's first place
- * it was; Smooth pulls each toward the curve's average around it. The points stay in time order (pushed along, not
- * stopped), aligned points' handles in line. */
-static TimingCurve sculpt_points(const TimingCurve &curve, int n, TimingBrush brush, const std::vector<float2> &path,
-                                 float radius, float strength, float aspect, bool lock_x)
-{
-  TimingCurve c = curve.empty() ? timing_even() : curve;
-  const size_t count = c.points.size();
-  const float fn = float(n);
-  /* Places in the graph's terms: frames across, the way along up. */
-  const auto graph = [fn](float2 co) { return float2(co.x * fn, co.y); };
-  const auto dist = [aspect](float2 a, float2 b) { return length(float2(a.x - b.x, (a.y - b.y) * aspect)); };
-  /* Each point and its two tips, as places in the curve's terms. */
-  std::vector<float2> co(count), tip_in(count), tip_out(count);
-  for (size_t i = 0; i < count; i++) {
-    co[i] = c.points[i].co;
-    tip_in[i] = co[i] + c.points[i].in;
-    tip_out[i] = co[i] + c.points[i].out;
-  }
-  const auto each = [&](const std::function<void(float2 &)> &move) {
-    for (size_t i = 0; i < count; i++) {
-      /* The ends are the keys: they never move, though their handles do. */
-      if (i > 0 && i + 1 < count) {
-        move(co[i]);
-      }
-      if (i > 0) {
-        move(tip_in[i]);
-      }
-      if (i + 1 < count) {
-        move(tip_out[i]);
-      }
-    }
-  };
-  if (brush == TimingBrush::Grab) {
-    const float2 from = path.front(), delta = path.back() - path.front();
-    const float2 by{lock_x ? 0.0f : delta.x / fn, delta.y};
-    each([&](float2 &p) { p += by * (brush_falloff(dist(graph(p), from), radius) * strength); });
-  }
-  else {
-    const float reach = std::max(radius * 0.5f, 1.0f) / fn;
-    for (const float2 dab : stroke_dabs(path, radius, dist)) {
-      /* The curve as it is before this dab, and its average around a time `x` (0-1) within half the brush. */
-      TimingCurve now = c;
-      for (size_t i = 0; i < count; i++) {
-        now.points[i].co = co[i];
-        now.points[i].in = tip_in[i] - co[i];
-        now.points[i].out = tip_out[i] - co[i];
-      }
-      const auto average = [&](float x) {
-        constexpr int STEPS = 8;
-        float sum = 0.0f, wsum = 0.0f;
-        for (int k = -STEPS; k <= STEPS; k++) {
-          const float t = 1.0f - std::abs(float(k)) / float(STEPS + 1);
-          sum += timing_progress(now, std::clamp(x + reach * float(k) / float(STEPS), 0.0f, 1.0f)) * t;
-          wsum += t;
-        }
-        return sum / wsum;
-      };
-      each([&](float2 &p) {
-        const float w = brush_falloff(dist(graph(p), dab), radius) * strength;
-        if (w > 0.0f) {
-          p.y += (average(std::clamp(p.x, 0.0f, 1.0f)) - p.y) * w;
-        }
-      });
-    }
-  }
-  /* Time only goes forward: each point after the one before, with room for those after it. */
-  for (size_t i = 1; i + 1 < count; i++) {
-    const float x = std::clamp(co[i].x, co[i - 1].x + GAP, 1.0f - float(count - 1 - i) * GAP);
-    const float dx = x - co[i].x;
-    co[i].x = x;
-    tip_in[i].x += dx;
-    tip_out[i].x += dx;
-  }
-  for (size_t i = 0; i < count; i++) {
-    TimingPoint &p = c.points[i];
-    p.co = co[i];
-    p.in = i > 0 ? tip_in[i] - co[i] : float2(0.0f, 0.0f);
-    p.out = i + 1 < count ? tip_out[i] - co[i] : float2(0.0f, 0.0f);
-    /* An aligned point's handles back in line, each keeping its length. */
-    if (p.aligned && i > 0 && i + 1 < count) {
-      const float li = length(p.in), lo = length(p.out);
-      const float2 way = p.out - p.in;
-      const float lw = length(way);
-      if (li > 1e-6f && lo > 1e-6f && lw > 1e-6f) {
-        p.in = way * (-li / lw);
-        p.out = way * (lo / lw);
-      }
-    }
-  }
-  return timing_valid(c) ? c : curve;
-}
+/* A sculpt stroke's samples of the curve, in the graph's terms (x in frames from the stretch's start, y the way along):
+ * a quarter frame apart and one on each of the curve's points (`anchor`: each point's sample), where each was when the
+ * stroke started (`at`) and where the stroke takes it (`moved`). As a drawing's sculpt does, the brushes move the
+ * samples and the curve is fitted back to them; every update of a stroke starts again from the curve it started on, so
+ * the samples last the whole stroke and the fitting never builds on its own error. */
+struct StrokeSamples {
+  std::vector<float2> at, moved;
+  /* Each sample on a whole frame (where Dyntopo may put a point). */
+  std::vector<char> frame;
+  std::vector<size_t> anchor;
+};
 
-TimingCurve timing_sculpt(const TimingCurve &curve, int n, TimingBrush brush, const std::vector<float2> &path,
-                          float radius, float strength, float aspect, bool lock_x, bool dyntopo)
+static StrokeSamples stroke_samples(const TimingCurve &c, int n)
 {
-  if (n < 2 || path.empty() || !(radius > 0.0f)) {
-    return curve;
-  }
-  if (!std::isfinite(aspect) || aspect <= 0.0f) {
-    aspect = 1.0f;
-  }
-  strength = std::clamp(strength, 0.0f, 1.0f);
-  if (!dyntopo) {
-    return sculpt_points(curve, n, brush, path, radius, strength, aspect, lock_x);
-  }
   constexpr int PER = 4;
   const int m = n * PER;
-  /* Distances as the graph shows them: a whole way up is `aspect` frames across, so the brush is a circle there. */
-  auto dist = [aspect](float2 a, float2 b) { return length(float2(a.x - b.x, (a.y - b.y) * aspect)); };
-  /* Samples a quarter frame apart, each with its frame (x) and how far along (y). */
-  std::vector<float2> s(size_t(m + 1));
-  for (int j = 0; j <= m; j++) {
-    const float x = float(j) / float(m);
-    s[size_t(j)] = {x * float(n), timing_progress(curve, x)};
+  const float fn = float(n);
+  StrokeSamples ss;
+  int j = 0;
+  for (size_t i = 0; i < c.points.size(); i++) {
+    const float x = c.points[i].co.x;
+    for (; j <= m && float(j) / float(m) < x - 1e-6f; j++) {
+      const float sx = float(j) / float(m);
+      ss.at.push_back({sx * fn, timing_progress(c, sx)});
+      ss.frame.push_back(j % PER == 0);
+    }
+    while (j <= m && float(j) / float(m) <= x + 1e-6f) {
+      j++;
+    }
+    ss.anchor.push_back(ss.at.size());
+    ss.at.push_back({x * fn, c.points[i].co.y});
+    ss.frame.push_back(0);
   }
-  std::vector<float> u(size_t(n + 1));
-  if (brush == TimingBrush::Grab && !lock_x) {
-    /* Grab in time too. Each sample goes up and down by the stroke as far as the brush reached it where the stroke
-     * began (as Blender's Grab); in time, the part of the curve the brush was pressed on goes with the mouse and the
-     * rest makes room, each side of it squeezed or stretched up to the key there, so no sample overtakes the one after
-     * it (moved one by one within the brush alone, they piled up against those they would pass and the brush stuck).
-     * Each frame then takes the progress where the moved samples cross it. */
+  ss.moved = ss.at;
+  return ss;
+}
+
+/* The brush's move of the samples. Grab: each goes up and down by the stroke as far as the brush reached it where the
+ * stroke began (as Blender's Grab); in time (without Lock X), the part of the curve the brush was pressed on goes with
+ * the mouse and the rest makes room, each side of it squeezed or stretched up to the key there, so no sample overtakes
+ * the one after it (moved one by one within the brush alone, they piled up against those they would pass and the brush
+ * stuck). Smooth: dabs along the stroke, each pulling the samples under it up or down toward their neighbours' average
+ * (within half the brush, at least a frame each way). */
+static void stroke_move(StrokeSamples &ss, const TimingCurve &c, int n, TimingBrush brush,
+                        const std::vector<float2> &path, float radius, float strength, float aspect, bool lock_x)
+{
+  /* Distances as the graph shows them: a whole way up is `aspect` frames across, so the brush is a circle there. */
+  const auto dist = [aspect](float2 a, float2 b) { return length(float2(a.x - b.x, (a.y - b.y) * aspect)); };
+  const size_t count = ss.at.size();
+  std::vector<float2> &s = ss.moved;
+  if (brush == TimingBrush::Grab) {
     const float2 from = path.front(), delta = path.back() - path.front();
     const float move = std::abs(delta.x);
     /* How far each side reaches in time: the brush, or further the further the stroke goes (the falloff is steepest
@@ -783,76 +714,468 @@ TimingCurve timing_sculpt(const TimingCurve &curve, int n, TimingBrush brush, co
       return smooth + (straight - smooth) * t;
     };
     /* Whether the brush was on the curve at all where it was pressed. */
-    const float on = brush_falloff(std::abs(timing_progress(curve, std::clamp(from.x / float(n), 0.0f, 1.0f)) - from.y) *
-                                       aspect,
-                                   radius) *
-                     strength;
-    std::vector<float2> moved = s;
-    for (int j = 1; j < m; j++) {
-      moved[size_t(j)].x += delta.x * in_time(s[size_t(j)].x) * on;
-      moved[size_t(j)].y += delta.y * brush_falloff(dist(s[size_t(j)], from), radius) * strength;
+    const float on = lock_x ? 0.0f :
+                              brush_falloff(std::abs(timing_progress(c, std::clamp(from.x / float(n), 0.0f, 1.0f)) -
+                                                     from.y) *
+                                                aspect,
+                                            radius) *
+                                  strength;
+    for (size_t j = 1; j + 1 < count; j++) {
+      const float2 a = ss.at[j];
+      s[j].x += delta.x * in_time(a.x) * on;
+      s[j].y += delta.y * brush_falloff(dist(a, from), radius) * strength;
     }
-    /* Time only goes forward (where the curve is steep, or near a key the reach runs into): each after the one before,
-     * the ends where they were. */
-    constexpr float gap = 1e-3f;
-    for (int j = 1; j < m; j++) {
-      moved[size_t(j)].x = std::clamp(moved[size_t(j)].x, moved[size_t(j - 1)].x + gap, float(n) - float(m - j) * gap);
-    }
-    size_t j = 0;
-    for (int k = 0; k <= n; k++) {
-      const float x = float(k);
-      while (j + 2 < moved.size() && moved[j + 1].x < x) {
-        j++;
+    if (!lock_x) {
+      /* Time only goes forward (where the curve is steep, or near a key the reach runs into): each after the one
+       * before, the ends where they were, those the stroke left alone too. */
+      const auto gap = [&](size_t j) { return std::min(1e-3f, ss.at[j].x - ss.at[j - 1].x); };
+      for (size_t j = 1; j + 1 < count; j++) {
+        s[j].x = std::max(s[j].x, s[j - 1].x + gap(j));
       }
-      const float2 p = moved[j], q = moved[j + 1];
-      const float t = q.x - p.x > 1e-9f ? std::clamp((x - p.x) / (q.x - p.x), 0.0f, 1.0f) : 0.0f;
-      u[size_t(k)] = k == 0 ? 0.0f : k == n ? 1.0f : p.y + (q.y - p.y) * t;
+      for (size_t j = count - 1; j-- > 1;) {
+        s[j].x = std::min(s[j].x, s[j + 1].x - gap(j + 1));
+      }
+    }
+    return;
+  }
+  const float reach = std::max(radius * 0.5f, 1.0f);
+  for (const float2 dab : stroke_dabs(path, radius, dist)) {
+    const std::vector<float2> cur = s;
+    for (size_t j = 1; j + 1 < count; j++) {
+      const float w = brush_falloff(dist(cur[j], dab), radius) * strength;
+      if (w <= 0.0f) {
+        continue;
+      }
+      float sum = 0.0f, wsum = 0.0f;
+      const auto add = [&](size_t o) {
+        const float t = 1.0f - std::abs(cur[o].x - cur[j].x) / (reach + 0.25f);
+        sum += cur[o].y * t;
+        wsum += t;
+      };
+      for (size_t o = j; o-- > 0 && cur[j].x - cur[o].x <= reach;) {
+        add(o);
+      }
+      for (size_t o = j; o < count && cur[o].x - cur[j].x <= reach; o++) {
+        add(o);
+      }
+      if (wsum > 0.0f) {
+        s[j].y += (sum / wsum - cur[j].y) * w;
+      }
     }
   }
-  else {
-    if (brush == TimingBrush::Grab) {
-      /* Up and down only (Lock X): each sample by the stroke, weighted by how near its first place it was. */
-      const float2 from = path.front(), delta = path.back() - path.front();
-      const std::vector<float2> start = s;
-      for (int j = 1; j < m; j++) {
-        s[size_t(j)].y += delta.y * brush_falloff(dist(start[size_t(j)], from), radius) * strength;
+}
+
+/* Which of the curve's pieces (point i to i + 1) the stroke moved: any of their samples. */
+static std::vector<char> pieces_touched(const StrokeSamples &ss)
+{
+  std::vector<char> touched(ss.anchor.size() - 1, 0);
+  for (size_t p = 0; p < touched.size(); p++) {
+    for (size_t j = ss.anchor[p]; j <= ss.anchor[p + 1] && !touched[p]; j++) {
+      touched[p] = std::abs(ss.moved[j].x - ss.at[j].x) > 1e-6f || std::abs(ss.moved[j].y - ss.at[j].y) > 1e-6f;
+    }
+  }
+  return touched;
+}
+
+/* The samples where the stroke took them, in the curve's terms (time 0-1). */
+static std::vector<float2> samples_moved(const StrokeSamples &ss, int n)
+{
+  std::vector<float2> out(ss.moved.size());
+  for (size_t j = 0; j < out.size(); j++) {
+    out[j] = {ss.moved[j].x / float(n), ss.moved[j].y};
+  }
+  return out;
+}
+
+/* The slopes point `i`'s handles go at as the curve uses them; a handle of no length goes the way the curve does. */
+static void point_slopes(const TimingCurve &c, size_t i, float &r_in, float &r_out)
+{
+  float2 in, out;
+  timing_point_handles(c, i, in, out);
+  const float x = c.points[i].co.x;
+  const auto slope = [&](float2 h, bool left) {
+    if (std::abs(h.x) > 1e-6f) {
+      return h.y / h.x;
+    }
+    const float a = left ? std::max(x - 1e-3f, 0.0f) : x, b = left ? x : std::min(x + 1e-3f, 1.0f);
+    return b > a ? (timing_progress(c, b) - timing_progress(c, a)) / (b - a) : 0.0f;
+  };
+  r_in = slope(in, true);
+  r_out = slope(out, false);
+}
+
+/* Least squares by Levenberg and Marquardt's steps: moves the few numbers `p` (at most four) to make `residuals`
+ * small, each try put back within bounds by `within`; `step` is how far each is nudged to see how the residuals change
+ * (0 keeps it as it is). */
+template<typename Residuals, typename Within>
+static void least_squares(std::vector<double> &p, const std::vector<double> &step, Residuals residuals, Within within,
+                          int iterations)
+{
+  const size_t k = p.size();
+  std::vector<double> r, tried;
+  std::vector<std::vector<double>> jac(k);
+  double sum = residuals(p, r);
+  double damp = 1e-3;
+  for (int it = 0; it < iterations && sum > 1e-14; it++) {
+    for (size_t a = 0; a < k; a++) {
+      jac[a].assign(r.size(), 0.0);
+      if (step[a] == 0.0) {
+        continue;
+      }
+      std::vector<double> q = p;
+      q[a] += step[a];
+      within(q);
+      const double d = q[a] - p[a];
+      if (d == 0.0) {
+        q[a] = p[a] - step[a];
+        within(q);
+      }
+      const double dd = q[a] - p[a];
+      if (dd == 0.0) {
+        continue;
+      }
+      residuals(q, jac[a]);
+      for (size_t i = 0; i < r.size(); i++) {
+        jac[a][i] = (jac[a][i] - r[i]) / dd;
       }
     }
-    else {
-      /* Dabs along the stroke, each pulling the samples under it toward their neighbours' average (within half the
-       * brush, at least a frame each way); up and down only, the samples staying a quarter frame apart. */
-      const float reach = std::max(radius * 0.5f, 1.0f);
-      /* Never wider than the whole stretch (a huge radius would overflow it). */
-      const int span = int(std::min(std::ceil(reach * float(PER)), float(m)));
-      for (const float2 c : stroke_dabs(path, radius, dist)) {
-        const std::vector<float2> cur = s;
-        for (int j = 1; j < m; j++) {
-          const float w = brush_falloff(dist(cur[size_t(j)], c), radius) * strength;
-          if (w <= 0.0f) {
-            continue;
-          }
-          float sum = 0.0f, wsum = 0.0f;
-          for (int o = std::max(0, j - span); o <= std::min(m, j + span); o++) {
-            const float t = 1.0f - std::abs(float(o - j)) / float(span + 1);
-            sum += cur[size_t(o)].y * t;
-            wsum += t;
-          }
-          if (wsum > 0.0f) {
-            s[size_t(j)].y += (sum / wsum - cur[size_t(j)].y) * w;
-          }
+    double A[4][4] = {}, g[4] = {};
+    for (size_t a = 0; a < k; a++) {
+      for (size_t i = 0; i < r.size(); i++) {
+        g[a] += jac[a][i] * r[i];
+      }
+      for (size_t b = 0; b < k; b++) {
+        for (size_t i = 0; i < r.size(); i++) {
+          A[a][b] += jac[a][i] * jac[b][i];
         }
       }
     }
-    for (int k = 0; k <= n; k++) {
-      u[size_t(k)] = k == 0 ? 0.0f : k == n ? 1.0f : s[size_t(k * PER)].y;
+    bool moved = false;
+    while (damp < 1e8) {
+      /* (A + damp diag A) x = g, by elimination. */
+      double M[4][5];
+      for (size_t a = 0; a < k; a++) {
+        for (size_t b = 0; b < k; b++) {
+          M[a][b] = A[a][b] + (a == b ? A[a][a] * damp + 1e-18 : 0.0);
+        }
+        M[a][k] = g[a];
+      }
+      bool solved = true;
+      for (size_t c = 0; c < k && solved; c++) {
+        size_t piv = c;
+        for (size_t a = c + 1; a < k; a++) {
+          if (std::abs(M[a][c]) > std::abs(M[piv][c])) {
+            piv = a;
+          }
+        }
+        if (!(std::abs(M[piv][c]) > 0.0)) {
+          solved = false;
+          break;
+        }
+        for (size_t b = 0; b <= k; b++) {
+          std::swap(M[c][b], M[piv][b]);
+        }
+        for (size_t a = 0; a < k; a++) {
+          if (a != c) {
+            const double f = M[a][c] / M[c][c];
+            for (size_t b = c; b <= k; b++) {
+              M[a][b] -= f * M[c][b];
+            }
+          }
+        }
+      }
+      std::vector<double> q = p;
+      for (size_t a = 0; a < k && solved; a++) {
+        q[a] -= M[a][k] / M[a][a];
+        solved = std::isfinite(q[a]);
+      }
+      if (!solved) {
+        damp *= 10.0;
+        continue;
+      }
+      within(q);
+      const double now = residuals(q, tried);
+      if (now < sum) {
+        p = q;
+        sum = now;
+        r.swap(tried);
+        damp = std::max(damp * 0.1, 1e-9);
+        moved = true;
+        break;
+      }
+      damp *= 10.0;
+    }
+    if (!moved) {
+      break;
     }
   }
-  for (const float v : u) {
-    if (!std::isfinite(v)) {
+}
+
+/* A piece's handles: `alpha` and `beta` long in time, going at `slope_a` (out of its first point) and `slope_b` (into
+ * its last). */
+struct PieceFit {
+  float alpha = 0.0f, beta = 0.0f, slope_a = 0.0f, slope_b = 0.0f;
+};
+
+/* The piece from `a` to `b` fitted to the samples between (`from` to `to`, both left out; the curve's terms), from
+ * `start`: its handles' lengths, and the slopes of those `free_a` and `free_b` (else kept). Kept within the piece in
+ * time (each handle at most across it, the two together too, so time only goes forward). */
+static PieceFit piece_fit(float2 a, float2 b, PieceFit start, bool free_a, bool free_b,
+                          const std::vector<float2> &samples, size_t from, size_t to)
+{
+  constexpr double SLOPE_MOST = 100.0;
+  const float len = b.x - a.x;
+  const auto within = [len, SLOPE_MOST](std::vector<double> &p) {
+    p[0] = std::clamp(p[0], double(len) * 0.02, double(len));
+    p[1] = std::clamp(p[1], double(len) * 0.02, double(len));
+    if (p[0] + p[1] > double(len)) {
+      const double k = double(len) / (p[0] + p[1]);
+      p[0] *= k;
+      p[1] *= k;
+    }
+    p[2] = std::clamp(p[2], -SLOPE_MOST, SLOPE_MOST);
+    p[3] = std::clamp(p[3], -SLOPE_MOST, SLOPE_MOST);
+  };
+  std::vector<double> p{start.alpha, start.beta, start.slope_a, start.slope_b};
+  if (!(len > 1e-7f)) {
+    return start;
+  }
+  within(p);
+  if (to > from + 1) {
+    const auto residuals = [&](const std::vector<double> &q, std::vector<double> &r) {
+      const Segment s = span_segment(a, float(q[2]), b, float(q[3]), float(q[0]), float(q[1]));
+      r.resize(to - from - 1);
+      double sum = 0.0;
+      for (size_t i = from + 1; i < to; i++) {
+        const double d = double(bezier(s, segment_param(s, samples[i].x)).y - samples[i].y);
+        r[i - from - 1] = d;
+        sum += d * d;
+      }
+      return sum;
+    };
+    const double h = double(len) * 1e-3;
+    least_squares(p,
+                  {h, h, free_a ? 1e-3 * std::max(1.0, std::abs(p[2])) : 0.0,
+                   free_b ? 1e-3 * std::max(1.0, std::abs(p[3])) : 0.0},
+                  residuals, within, 16);
+  }
+  return {float(p[0]), float(p[1]), float(p[2]), float(p[3])};
+}
+
+/* Without Dyntopo, as a drawing's sculpt does: each point goes where its sample went, the handles of each piece the
+ * stroke moved are fitted to its samples (a smooth point's two kept in line: along the way of both where both were
+ * fitted, else opposite the one left as it was), and the pieces it didn't move stay exactly as they were. None added or
+ * taken out. */
+static TimingCurve sculpt_fit_points(const TimingCurve &c, int n, const StrokeSamples &ss)
+{
+  const size_t count = c.points.size();
+  const std::vector<char> touched = pieces_touched(ss);
+  if (std::find(touched.begin(), touched.end(), 1) == touched.end()) {
+    return c;
+  }
+  const std::vector<float2> S = samples_moved(ss, n);
+  TimingCurve out = c;
+  for (size_t i = 1; i + 1 < count; i++) {
+    out.points[i].co = S[ss.anchor[i]];
+    out.points[i].co.x = std::clamp(out.points[i].co.x, out.points[i - 1].co.x + GAP, 1.0f - float(count - 1 - i) * GAP);
+  }
+  std::vector<float> was_in(count), was_out(count);
+  std::vector<float2> h_in(count), h_out(count);
+  for (size_t i = 0; i < count; i++) {
+    point_slopes(c, i, was_in[i], was_out[i]);
+    timing_point_handles(c, i, h_in[i], h_out[i]);
+  }
+  const auto smooth = [&](size_t i) { return i > 0 && i + 1 < count && c.points[i].aligned; };
+  std::vector<PieceFit> fit(count - 1);
+  const auto fit_piece = [&](size_t p, PieceFit start, bool free_a, bool free_b) {
+    fit[p] = piece_fit(out.points[p].co, out.points[p + 1].co, start, free_a, free_b, S, ss.anchor[p],
+                       ss.anchor[p + 1]);
+  };
+  for (size_t p = 0; p + 1 < count; p++) {
+    if (!touched[p]) {
+      continue;
+    }
+    const size_t a = p, b = p + 1;
+    /* A smooth point whose other side the stroke left keeps its slope, opposite the handle there. */
+    const bool free_a = !smooth(a) || touched[a - 1], free_b = !smooth(b) || touched[b];
+    PieceFit start;
+    start.alpha = std::max(h_out[a].x, 0.0f);
+    start.beta = std::max(-h_in[b].x, 0.0f);
+    start.slope_a = free_a ? was_out[a] : was_in[a];
+    start.slope_b = free_b ? was_in[b] : was_out[b];
+    fit_piece(p, start, free_a, free_b);
+  }
+  /* A smooth point fitted on both sides: its handles along the way between the two, each piece's lengths fitted to it. */
+  std::vector<char> again(count - 1, 0);
+  for (size_t i = 1; i + 1 < count; i++) {
+    if (smooth(i) && touched[i - 1] && touched[i]) {
+      const float way = std::tan(0.5f * (std::atan(fit[i - 1].slope_b) + std::atan(fit[i].slope_a)));
+      fit[i - 1].slope_b = fit[i].slope_a = way;
+      again[i - 1] = again[i] = 1;
+    }
+  }
+  for (size_t p = 0; p + 1 < count; p++) {
+    if (again[p]) {
+      fit_piece(p, fit[p], false, false);
+    }
+  }
+  for (size_t p = 0; p + 1 < count; p++) {
+    if (touched[p]) {
+      out.points[p].out = {fit[p].alpha, fit[p].slope_a * fit[p].alpha};
+      out.points[p + 1].in = {-fit[p].beta, -fit[p].slope_b * fit[p].beta};
+    }
+  }
+  return timing_valid(out) ? out : c;
+}
+
+/* The slope of samples `S` (the curve's terms) around sample `j`, over at least half a frame (`side` < 0: before it
+ * only, > 0: after). */
+static float samples_slope(const std::vector<float2> &S, size_t j, int n, int side)
+{
+  const float h = 0.5f / float(n);
+  size_t lo = j, hi = j;
+  while (side <= 0 && lo > 0 && S[j].x - S[lo].x < h) {
+    lo--;
+  }
+  while (side >= 0 && hi + 1 < S.size() && S[hi].x - S[j].x < h) {
+    hi++;
+  }
+  return S[hi].x > S[lo].x ? (S[hi].y - S[lo].y) / (S[hi].x - S[lo].x) : 0.0f;
+}
+
+/* With Dyntopo, as a drawing's does: where the stroke moved the curve it has a point every frame as well as its own,
+ * then those it made or moved that the curve keeps its shape without (TIMING_SCULPT_TOLERANCE) go, the cheapest first,
+ * each piece's handles fitted to its samples; the points and pieces it didn't move stay exactly as they were. */
+static TimingCurve sculpt_fit_dyntopo(const TimingCurve &c, int n, const StrokeSamples &ss)
+{
+  const size_t count = c.points.size();
+  const std::vector<char> touched = pieces_touched(ss);
+  if (std::find(touched.begin(), touched.end(), 1) == touched.end()) {
+    return c;
+  }
+  const std::vector<float2> S = samples_moved(ss, n);
+  /* What the fit holds to: the moved curve at each frame (as a dot shows it) and at each of its points, which the knots
+   * sit on (`on`: each point's). Every frame inside a piece the stroke moved is a knot too. */
+  std::vector<float2> F;
+  std::vector<size_t> on(count);
+  std::vector<int> frame_piece, frame_of;
+  /* The moved curve at each frame alone, for the slopes there (as timing_fit takes them). */
+  std::vector<float> u(size_t(n + 1));
+  size_t j = 0, next = 0;
+  for (int k = 0; k <= n || next < count;) {
+    const float fx = float(k) / float(n);
+    const bool point_first = next < count && (k > n || S[ss.anchor[next]].x <= fx + 1e-6f);
+    if (point_first) {
+      const float2 p = S[ss.anchor[next]];
+      if (k <= n && std::abs(p.x - fx) <= 1e-6f) {
+        k++;
+      }
+      on[next] = F.size();
+      F.push_back(p);
+      frame_piece.push_back(-1);
+      frame_of.push_back(-1);
+      next++;
+      continue;
+    }
+    while (j + 2 < S.size() && S[j + 1].x < fx) {
+      j++;
+    }
+    const float2 a = S[j], b = S[j + 1];
+    const float t = b.x - a.x > 1e-9f ? std::clamp((fx - a.x) / (b.x - a.x), 0.0f, 1.0f) : 0.0f;
+    F.push_back({fx, a.y + (b.y - a.y) * t});
+    u[size_t(k)] = F.back().y;
+    frame_of.push_back(k);
+    /* The piece it falls in: between the last point put and the next. */
+    frame_piece.push_back(next > 0 && next < count && touched[next - 1] ? int(next - 1) : -1);
+    k++;
+  }
+  for (size_t i = 0; i < count; i++) {
+    /* A point on a frame: the frame's progress is the point's. */
+    const float x = F[on[i]].x * float(n);
+    if (std::abs(x - std::round(x)) <= 1e-6f * float(n)) {
+      u[size_t(std::lround(x))] = F[on[i]].y;
+    }
+  }
+  const std::vector<float> m = frame_slopes(u);
+  std::vector<Knot> knots;
+  /* Each knot's point of the curve (-1: one the stroke made), and whether it may go. */
+  std::vector<int> of_point;
+  std::vector<char> can_go;
+  for (size_t f = 0, i = 0; f < F.size(); f++) {
+    if (i < count && on[i] == f) {
+      const bool left = i > 0 && touched[i - 1], right = i + 1 < count && touched[i];
+      float was_in, was_out;
+      point_slopes(c, i, was_in, was_out);
+      Knot k{f, was_in, was_out};
+      if (c.points[i].aligned && i > 0 && i + 1 < count && (left || right)) {
+        k.slope_in = k.slope_out = !left ? was_in : !right ? was_out : samples_slope(F, f, n, 0);
+      }
+      else {
+        k.slope_in = left ? samples_slope(F, f, n, -1) : was_in;
+        k.slope_out = right ? samples_slope(F, f, n, 1) : was_out;
+      }
+      knots.push_back(k);
+      of_point.push_back(int(i));
+      can_go.push_back(i > 0 && i + 1 < count && (left || right));
+      i++;
+    }
+    else if (frame_piece[f] >= 0) {
+      const float slope = m[size_t(frame_of[f])];
+      knots.push_back({f, slope, slope});
+      of_point.push_back(-1);
+      can_go.push_back(1);
+    }
+  }
+  std::vector<SpanFit> fits;
+  const std::vector<size_t> kept = knots_reduce(knots, F, TIMING_SCULPT_TOLERANCE, 0, fits, &can_go);
+  TimingCurve out;
+  for (size_t q = 0; q < kept.size(); q++) {
+    const Knot &k = knots[kept[q]];
+    const int point = of_point[kept[q]];
+    TimingPoint p;
+    if (point >= 0) {
+      p = c.points[size_t(point)];
+    }
+    else {
+      p.aligned = true;
+    }
+    p.co = F[k.sample];
+    out.points.push_back(p);
+  }
+  for (size_t q = 0; q + 1 < kept.size(); q++) {
+    const int a = of_point[kept[q]], b = of_point[kept[q + 1]];
+    /* A piece the stroke didn't move, between the same two points: as it was. */
+    const bool as_was = a >= 0 && b == a + 1 && !touched[size_t(a)];
+    if (as_was) {
+      continue;
+    }
+    out.points[q].out = {fits[q].alpha, knots[kept[q]].slope_out * fits[q].alpha};
+    out.points[q + 1].in = {-fits[q].beta, -knots[kept[q + 1]].slope_in * fits[q].beta};
+  }
+  out.points.front().co = {0.0f, 0.0f};
+  out.points.back().co = {1.0f, 1.0f};
+  return timing_valid(out) ? out : c;
+}
+
+TimingCurve timing_sculpt(const TimingCurve &curve, int n, TimingBrush brush, const std::vector<float2> &path,
+                          float radius, float strength, float aspect, bool lock_x, bool dyntopo)
+{
+  if (n < 2 || path.empty() || !(radius > 0.0f)) {
+    return curve;
+  }
+  if (!std::isfinite(aspect) || aspect <= 0.0f) {
+    aspect = 1.0f;
+  }
+  strength = std::clamp(strength, 0.0f, 1.0f);
+  const TimingCurve c = curve.empty() ? timing_even() : curve;
+  StrokeSamples ss = stroke_samples(c, n);
+  stroke_move(ss, c, n, brush, path, radius, strength, aspect, lock_x);
+  for (const float2 v : ss.moved) {
+    if (!std::isfinite(v.x) || !std::isfinite(v.y)) {
       return curve;
     }
   }
-  return timing_fit(u, TIMING_SCULPT_TOLERANCE);
+  return dyntopo ? sculpt_fit_dyntopo(c, n, ss) : sculpt_fit_points(c, n, ss);
 }
 
 }  // namespace oanim
