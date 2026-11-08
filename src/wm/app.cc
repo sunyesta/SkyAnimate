@@ -268,9 +268,12 @@ bool App::window_init()
   ImGui_ImplSDL3_InitForOpenGL(window_, gl_context_);
   ImGui_ImplOpenGL3_Init("#version 330");
 
+  workspaces_.push_back(workspace_new("Animation", WorkspaceKind::Animation));
   workspaces_.push_back(workspace_new("Layout", WorkspaceKind::Layout));
   workspaces_.push_back(workspace_new("Scripting", WorkspaceKind::Scripting));
   wm_.workspace_count = int(workspaces_.size());
+  /* Open Animate opens on Layout, with Animation to its left. */
+  wm_.workspace_index = 1;
 
   /* Files dragged in from Explorer are known while still being dragged, for the editors to preview. */
   file_drop_install(window_);
@@ -772,6 +775,18 @@ void App::build_default_layout(Workspace &workspace, ImGuiID dockspace_id)
         ImGui::DockBuilderSplitNode(node_of(EditorType::Info), ImGuiDir_Left, 0.6f, nullptr, &node_of(EditorType::Info));
     node_of(EditorType::Viewport) = main_id;
   }
+  else if (workspace.kind == WorkspaceKind::Animation) {
+    /* Layers above Properties down the right; the timeline along the bottom of the rest; beside the viewport the
+     * Path Timing graph above the Asset Shelf. */
+    ImGuiID right = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Right, 0.246f, nullptr, &main_id);
+    node_of(EditorType::Layers) = ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.47f, nullptr, &right);
+    node_of(EditorType::Properties) = right;
+    node_of(EditorType::Timeline) = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Down, 0.23f, nullptr, &main_id);
+    ImGuiID side = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Right, 0.207f, nullptr, &main_id);
+    node_of(EditorType::PathTiming) = ImGui::DockBuilderSplitNode(side, ImGuiDir_Up, 0.5f, nullptr, &side);
+    node_of(EditorType::AssetShelf) = side;
+    node_of(EditorType::Viewport) = main_id;
+  }
   else {
     /* Blender's Scripting: viewport, console and info down the left, the text editor in the
      * middle, properties on the right. */
@@ -866,6 +881,11 @@ static bool workspace_tab(const char *label, bool active, const char *tooltip = 
 Workspace App::workspace_new(const std::string &name, WorkspaceKind kind)
 {
   const auto area = [this](EditorType type) { return Area{next_area_id_++, type}; };
+  if (kind == WorkspaceKind::Animation) {
+    return {name, kind,
+            {area(EditorType::Viewport), area(EditorType::PathTiming), area(EditorType::AssetShelf),
+             area(EditorType::Layers), area(EditorType::Properties), area(EditorType::Timeline)}};
+  }
   if (kind == WorkspaceKind::Scripting) {
     return {name, kind,
             {area(EditorType::Viewport), area(EditorType::Console), area(EditorType::Info),
@@ -929,6 +949,9 @@ void App::draw_workspace_tabs()
   if (ImGui::BeginPopup("##add_workspace")) {
     ImGui::TextDisabled("General");
     ImGui::Separator();
+    if (ImGui::MenuItem("Animation")) {
+      add_kind = WorkspaceKind::Animation;
+    }
     if (ImGui::MenuItem("Layout")) {
       add_kind = WorkspaceKind::Layout;
     }
@@ -939,7 +962,9 @@ void App::draw_workspace_tabs()
   }
 
   if (add_kind) {
-    const char *base = *add_kind == WorkspaceKind::Scripting ? "Scripting" : "Layout";
+    const char *base = *add_kind == WorkspaceKind::Scripting ? "Scripting" :
+                       *add_kind == WorkspaceKind::Animation ? "Animation" :
+                                                               "Layout";
     workspaces_.push_back(workspace_new(workspace_unique_name(base), *add_kind));
     wm_.workspace_index = int(workspaces_.size()) - 1;
   }
@@ -1628,6 +1653,19 @@ void App::draw_ui()
 
   wm_.workspace_index = std::clamp(wm_.workspace_index, 0, int(workspaces_.size()) - 1);
   Workspace &workspace = workspaces_[wm_.workspace_index];
+  /* Gone to another workspace (its tab, Ctrl Page Up/Down, or the one beside a deleted one): Layout picks the
+   * Select Box tool and Animation the Motion Path tool; Scripting keeps the tool there was. */
+  if (workspace_shown_ != wm_.workspace_index) {
+    if (workspace_shown_ >= 0) {
+      if (workspace.kind == WorkspaceKind::Layout) {
+        operator_call(ctx_, "wm.tool_select");
+      }
+      else if (workspace.kind == WorkspaceKind::Animation) {
+        operator_call(ctx_, "wm.tool_motion_path");
+      }
+    }
+    workspace_shown_ = wm_.workspace_index;
+  }
   const ImGuiID dockspace_id = workspace_dockspace_id(workspace);
   ImGui::DockSpaceOverViewport(dockspace_id, ImGui::GetMainViewport());
   if (!workspace.layout_built) {

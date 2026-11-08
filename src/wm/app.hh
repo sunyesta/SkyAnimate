@@ -21,8 +21,9 @@ struct SDL_GLContextState;
 namespace oanim {
 
 /* A workspace: a saved screen layout for one kind of work, chosen from the top bar's tabs,
- * like Blender's Layout and Scripting workspaces. Each keeps its own areas and docking layout. */
-enum class WorkspaceKind { Layout, Scripting };
+ * like Blender's Layout, Animation and Scripting workspaces. Each keeps its own areas and docking layout; going to
+ * Layout picks the Select Box tool and going to Animation the Motion Path tool. */
+enum class WorkspaceKind { Layout, Scripting, Animation };
 
 struct Workspace {
   std::string name;
@@ -94,6 +95,9 @@ class App {
   Context ctx_;
 
   std::vector<Workspace> workspaces_;
+  /* The workspace drawn last frame: another one now was just gone to, and picks its tool. -1 at launch, which picks
+   * none. */
+  int workspace_shown_ = -1;
   int next_area_id_ = 1;
   bool show_about_ = false;
   /* A number field's scrub has the mouse grabbed (relative mouse mode). */
