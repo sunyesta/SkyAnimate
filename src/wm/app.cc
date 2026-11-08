@@ -776,11 +776,11 @@ void App::build_default_layout(Workspace &workspace, ImGuiID dockspace_id)
   else if (workspace.kind == WorkspaceKind::Animation) {
     /* Layers above Properties down the right; the timeline along the bottom of the rest; beside the viewport the
      * Path Timing graph above the Asset Shelf. */
-    ImGuiID right = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Right, 0.246f, nullptr, &main_id);
-    node_of(EditorType::Layers) = ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.47f, nullptr, &right);
+    ImGuiID right = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Right, 0.177f, nullptr, &main_id);
+    node_of(EditorType::Layers) = ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.454f, nullptr, &right);
     node_of(EditorType::Properties) = right;
     node_of(EditorType::Timeline) = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Down, 0.23f, nullptr, &main_id);
-    ImGuiID side = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Right, 0.207f, nullptr, &main_id);
+    ImGuiID side = ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Right, 0.171f, nullptr, &main_id);
     node_of(EditorType::PathTiming) = ImGui::DockBuilderSplitNode(side, ImGuiDir_Up, 0.5f, nullptr, &side);
     node_of(EditorType::AssetShelf) = side;
     node_of(EditorType::Viewport) = main_id;
