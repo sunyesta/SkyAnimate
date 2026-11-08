@@ -44,17 +44,12 @@ constexpr ImU32 KEY_FOCUS_FILL = IM_COL32(0x2a, 0xb0, 0xa8, 60);
  * zoom. */
 bool timeline_path_strip_busy();
 
-/* The timeline's sidebar (N) and its Path Timing tab (panel B of the spec's speed editing): one stretch at a time of
- * the last thing picked on, as a graph of its timing curve (how far along its path, 0-1, against its frames, the even
- * speed dashed), with arrows to the stretches either side and the shapes in its right click menu. Under it, Edit (the
- * curve's points and handles, as a drawing's) and Sculpt (Grab and Smooth brushes, F to size them). Its view zooms
- * with the wheel, pans with a middle drag and stretches with Ctrl middle drag; Home or showing another stretch fits it
- * to the stretch. 0 wide while it is hidden. */
-float timeline_sidebar_width(Context &C, float avail_w);
-void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max);
-/* Where the sidebar's tab (a small "<" at the right edge of the keys `min`..`max`, a third of the way down, as
- * Blender's region arrow) is while the sidebar is closed, so it shows it's there; false while it is open. */
-bool timeline_sidebar_tab(ImVec2 min, ImVec2 max, bool open, ImVec2 &r_min, ImVec2 &r_max);
+/* The Path Timing editor (path_timing_draw in editors.hh; panel B of the spec's speed editing) shows one stretch at a
+ * time of the last thing picked on, as a graph of its timing curve (how far along its path, 0-1, against its frames,
+ * the even speed dashed), with arrows to the stretches either side and the shapes in its right click menu. Under it,
+ * Edit (the curve's points and handles, as a drawing's) and Sculpt (Grab and Smooth brushes, F to size them). Its view
+ * zooms with the wheel, pans with a middle drag and stretches with Ctrl middle drag; Home or showing another stretch
+ * fits it to the stretch. */
 /* F sizing the graph's brush, as Blender's radial control: the centre one radius (`radius` frames, `per_frame`
  * pixels each) left of the mouse, so the brush keeps its size until the mouse moves; then the size the mouse's
  * distance from that centre gives. */

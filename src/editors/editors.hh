@@ -24,11 +24,11 @@ namespace oanim {
 struct Context;
 struct Document;
 
-enum class EditorType { Viewport, Properties, Layers, Timeline, TextEditor, Console, Info, AssetShelf };
+enum class EditorType { Viewport, Properties, Layers, Timeline, TextEditor, Console, Info, AssetShelf, PathTiming };
 
 inline constexpr EditorType EDITOR_TYPES[] = {EditorType::Viewport,   EditorType::Properties, EditorType::Layers,
-                                              EditorType::Timeline,   EditorType::AssetShelf, EditorType::TextEditor,
-                                              EditorType::Console,    EditorType::Info};
+                                              EditorType::Timeline,   EditorType::PathTiming, EditorType::AssetShelf,
+                                              EditorType::TextEditor, EditorType::Console,    EditorType::Info};
 
 const char *editor_type_label(EditorType type);
 /* Name of the editor's keymap, tried before "Window" while the mouse is over it. */
@@ -188,6 +188,8 @@ void layers_draw(Area &area, Context &C);
 void timeline_draw(Area &area, Context &C);
 /* Asset Shelf, in asset_shelf.cc. */
 void asset_shelf_draw(Area &area, Context &C);
+/* Path Timing: the Motion Path tool's timing graph for one stretch, in timeline_path.cc. */
+void path_timing_draw(Area &area, Context &C);
 /* The timeline's channel rows as a timeline with every row open lists them (for tests). */
 struct TimelineRowInfo {
   int depth = 0;

@@ -114,6 +114,9 @@ PENDING = [
     ('src/editors/timeline_path.cc', '  return ImVec2(mouse.x - radius * std::max(per_frame, 1e-3f), mouse.y);',
      '  return ImVec2(mouse.x, mouse.y);',
      "F sizes the timing graph's brush from the size it has", 'timing_curve'),
+    ('src/editors/editors.hh', 'EditorType::Timeline,   EditorType::PathTiming, EditorType::AssetShelf,',
+     'EditorType::Timeline,   EditorType::AssetShelf,',
+     "Path Timing is an editor of its own, next to the Timeline", 'motion_path_timing'),
 ]
 
 def build(root):

@@ -505,8 +505,6 @@ struct WindowManager {
   int path_timing_end = 0;
   /* The frame shown when it was picked or stepped to: once the frame changes the panel follows it again. */
   int path_timing_frame = 0;
-  /* The timeline's sidebar (N), with its Path Timing tab. */
-  bool timeline_sidebar = false;
   /* The Path Timing graph: the mouse over it (the timeline clears it each redraw, the graph sets it), so its keys come
    * before the timeline's; its Edit mode's picked curve point (-1: none), of the stretch ending on
    * `path_timing_point_end` of `path_timing_point_target`; F's request to size its Sculpt brush. */

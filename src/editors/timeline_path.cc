@@ -13,6 +13,7 @@
 #include "anim/timing_curve.hh"
 #include "data/document.hh"
 #include "data/vector.hh"
+#include "editors/editors.hh"
 #include "editors/ui.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
@@ -567,14 +568,6 @@ void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float
   wm.path_hover_target = g.target;
   wm.path_hover_frame = g.frame;
   wm.path_hover_tick = ImGui::GetFrameCount();
-}
-
-float timeline_sidebar_width(Context &C, float avail_w)
-{
-  if (!C.wm || !C.wm->timeline_sidebar) {
-    return 0.0f;
-  }
-  return std::min(ImGui::GetFontSize() * 17.0f, avail_w * 0.5f);
 }
 
 /* Joined buttons, Blender's expanded enum: the chosen one blue. Returns the one clicked (not the chosen), or -1. */
@@ -1196,46 +1189,23 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   g.snapshot = doc;
 }
 
-bool timeline_sidebar_tab(ImVec2 min, ImVec2 max, bool open, ImVec2 &r_min, ImVec2 &r_max)
+void path_timing_draw(Area &area, Context &C)
 {
-  constexpr float W = 12.0f, H = 24.0f;
-  if (open || max.x - min.x < W * 4.0f || max.y - min.y < H * 2.0f) {
-    return false;
+  area_editor_type_menu(area);
+  ImGui::Separator();
+  /* The graph says it is under the mouse as it draws; until then, it isn't. */
+  if (C.wm) {
+    C.wm->path_graph_hovered = false;
   }
-  const float y = min.y + (max.y - min.y) / 3.0f;
-  r_min = ImVec2(max.x - W, y - H * 0.5f);
-  r_max = ImVec2(max.x, y + H * 0.5f);
-  return true;
-}
-
-void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
-{
-  if (max.x - min.x < 20.0f || max.y - min.y < 20.0f || !C.document || !C.wm) {
+  if (!C.document || !C.wm) {
     return;
   }
   Document &doc = *C.document;
   WindowManager &wm = *C.wm;
   ImDrawList *dl = ImGui::GetWindowDrawList();
-  dl->AddRectFilled(min, max, IM_COL32(0x30, 0x30, 0x30, 255));
-  dl->AddLine(min, ImVec2(min.x, max.y), IM_COL32(0x18, 0x18, 0x18, 255), 2.0f);
-  ImGui::SetCursorScreenPos(ImVec2(min.x + 2.0f, min.y));
-  if (!ImGui::BeginChild("##timeline_sidebar", ImVec2(max.x - min.x - 2.0f, max.y - min.y),
-                         ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoBackground))
-  {
-    ImGui::EndChild();
-    return;
-  }
-  /* The one tab, as Blender's sidebar tabs. */
-  if (ImGui::BeginTabBar("##sidebar_tabs")) {
-    if (ImGui::BeginTabItem("Path Timing")) {
-      ImGui::EndTabItem();
-    }
-    ImGui::EndTabBar();
-  }
   const float w = ImGui::GetContentRegionAvail().x;
   if (wm.tool_settings.tool != Tool::MotionPath) {
     ImGui::TextWrapped("Pick the Motion Path tool to edit the timing of what its paths trace here.");
-    ImGui::EndChild();
     return;
   }
   MotionPathTarget t;
@@ -1243,7 +1213,6 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
   MotionPathPicks picks;
   if (!motion_path_timing_shown(C, t, s, &picks)) {
     ImGui::TextWrapped("Trace something with keys a few frames apart: its stretches show here.");
-    ImGui::EndChild();
     return;
   }
   /* Which thing and stretch, with arrows to the ones either side. */
@@ -1279,11 +1248,10 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
   const ImGuiStyle &style = ImGui::GetStyle();
   ToolSettings &ts = wm.tool_settings;
   const bool sculpt = ts.path_graph_sculpt;
-  /* The graph: as tall as there is room for, over the mode buttons and the mode's settings. */
+  /* The graph: as tall as the area has room for, over the mode buttons and the mode's settings. */
   const float row = ImGui::GetFrameHeightWithSpacing();
   const float below = row * (sculpt ? 5.0f : 2.0f) + style.ItemSpacing.y * 3.0f + 1.0f;
-  const float graph_h = std::clamp(ImGui::GetContentRegionAvail().y - below, ImGui::GetFontSize() * 4.0f,
-                                   ImGui::GetFontSize() * 16.0f);
+  const float graph_h = std::max(ImGui::GetContentRegionAvail().y - below, ImGui::GetFontSize() * 4.0f);
   const ImVec2 g0 = ImGui::GetCursorScreenPos();
   path_timing_graph(C, t, s, g0, ImVec2(g0.x + w, g0.y + graph_h));
   ImGui::SetCursorScreenPos(ImVec2(g0.x, g0.y + graph_h + style.ItemSpacing.y));
@@ -1377,7 +1345,6 @@ void timeline_sidebar(Context &C, ImVec2 min, ImVec2 max)
       ImGui::SetTooltip("The brushes move the curve up and down only, never in time");
     }
   }
-  ImGui::EndChild();
 }
 
 }  // namespace oanim

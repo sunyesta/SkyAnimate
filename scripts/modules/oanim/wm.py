@@ -462,9 +462,8 @@ def timing_chart_ticks_editable():
 
 
 def motion_path_timing_panel():
-    """The stretch the timeline's Path Timing panel shows: a dict with "label", "layer", "start", "end", "progress" (as
-    motion_path_timing gives them), "bone" and "head" (whose path), "sidebar" (whether the timeline's sidebar is
-    open) and "of" ((n, count): with picks in different stretches, which of them it shows; else None), or None."""
+    """The stretch the Path Timing editor shows: a dict with "label", "layer", "start", "end", "progress" (as
+    motion_path_timing gives them), "bone" and "head" (whose path) and "of" ((n, count): with picks in different stretches, which of them it shows; else None), or None."""
     return _oanim.motion_path_timing_panel()
 
 
@@ -608,6 +607,11 @@ def path_brush_settings():
 
 
 
+def editor_types():
+    """The editor types an area can show, as its editor menu lists them."""
+    return _oanim.editor_types()
+
+
 def timing_resize(radius, per_frame, moves):
     """F sizing the Path Timing graph's brush from radius frames (per_frame pixels each), the mouse starting at
     (0, 0): the radius at each mouse position in moves, a list of (x, y)."""
@@ -696,13 +700,6 @@ def timeline_key_press(row, frame, to_frame=None, *, ctrl=False, shift=False, do
     alt: just the one channel). Returns False when the row has no key there."""
     return _oanim.timeline_key_press(int(row), int(frame), int(frame if to_frame is None else to_frame), bool(ctrl),
                                      bool(shift), bool(double_click), bool(ripple), bool(alt), str(typed))
-
-
-def timeline_sidebar_tab(keys_min, keys_max, open=False):
-    """Test hook: where the timeline sidebar's "<" tab sits ((x0, y0, x1, y1) pixels) on the keys from keys_min to
-    keys_max while the sidebar is closed; None while it is open."""
-    return _oanim.timeline_sidebar_tab(float(keys_min[0]), float(keys_min[1]), float(keys_max[0]), float(keys_max[1]),
-                                       bool(open))
 
 
 def timeline_scrollbar_drag(start, end, part, frames):

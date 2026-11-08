@@ -242,12 +242,12 @@ doc.frame_current = 22
 assert oanim.wm.motion_path_timing_panel()["end"] == 30
 assert ops.anim.motion_path_select(none="1") == {'FINISHED'}
 
-# N opens the timeline's sidebar. O isn't there: proportional editing is always on in the chart and the graph.
-assert not oanim.wm.motion_path_timing_panel()["sidebar"]
-assert oanim.wm.event_simulate("N", area="Timeline")
-assert oanim.wm.motion_path_timing_panel()["sidebar"]
-assert oanim.wm.event_simulate("N", area="Timeline")
-assert not oanim.wm.motion_path_timing_panel()["sidebar"]
+# The graph is an editor of its own, next to the Timeline in the area menu; the timeline has no sidebar (N does
+# nothing there). O isn't there: proportional editing is always on in the chart and the graph.
+types = oanim.wm.editor_types()
+assert types.index("Path Timing") == types.index("Timeline") + 1, types
+assert "sidebar" not in oanim.wm.motion_path_timing_panel()
+assert not oanim.wm.event_simulate("N", area="Timeline"), "N opens no sidebar in the timeline"
 was = oanim.wm.path_brush_settings()["proportional"]
 oanim.wm.event_simulate("O", area="Timeline")
 assert oanim.wm.path_brush_settings()["proportional"] == was, "O no longer toggles it over the timeline"

@@ -154,7 +154,6 @@ KEYMAP = (
     ("Timeline", "anim.keys_paste", "V", {"ctrl": True}),
     ("Timeline", "anim.keys_deselect_all", "A", {"alt": True}),
     ("Timeline", "anim.interpolation_menu", "T", {}),
-    ("Timeline", "anim.timeline_sidebar_toggle", "N", {}),
     # Properties: a masking area under the mouse.
     ("Properties", "mask.area_delete_hovered", "X", {}),
     ("Properties", "mask.area_delete_hovered", "DEL", {}),

@@ -3326,11 +3326,7 @@ static void timeline_body(Area &area, Context &C)
   }
   /* The Motion Path tool's timing chart takes the bottom (at most half), its clicks its own. */
   const float strip_h = std::min(timeline_path_strip_height(C, ImGui::GetFrameHeight()), avail.y * 0.5f);
-  /* The sidebar (N) takes the right. */
-  /* The graph sets it again while the mouse is over it. */
-  C.wm->path_graph_hovered = false;
-  const float sidebar_w = timeline_sidebar_width(C, avail.x);
-  const ImVec2 size(avail.x - sidebar_w, avail.y - strip_h);
+  const ImVec2 size(avail.x, avail.y - strip_h);
   const ImVec2 p1 = p0 + size;
 
   if (!area.view_initialized) {
@@ -4572,29 +4568,6 @@ static void timeline_body(Area &area, Context &C)
     /* Back under the keys, where nothing else is placed: ImGui wants an item after the cursor moves there. */
     ImGui::SetCursorScreenPos(back);
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
-  }
-
-  /* With the sidebar closed, its tab at the right edge shows it's there; a click opens it (as N). */
-  ImVec2 tab0, tab1;
-  if (timeline_sidebar_tab(p0, p1, C.wm && C.wm->timeline_sidebar, tab0, tab1)) {
-    ImGui::SetCursorScreenPos(tab0);
-    if (ImGui::InvisibleButton("##sidebar_tab", tab1 - tab0)) {
-      operator_call(C, "anim.timeline_sidebar_toggle");
-    }
-    const bool over = ImGui::IsItemHovered();
-    if (over) {
-      ImGui::SetTooltip("Sidebar (N)");
-    }
-    ImDrawList *tab_dl = ImGui::GetWindowDrawList();
-    tab_dl->AddRectFilled(tab0, tab1, over ? IM_COL32(0x5a, 0x5a, 0x5a, 235) : IM_COL32(0x38, 0x38, 0x38, 220), 4.0f,
-                          ImDrawFlags_RoundCornersLeft);
-    const ImVec2 c = (tab0 + tab1) * 0.5f;
-    const ImU32 chevron = over ? IM_COL32(0xff, 0xff, 0xff, 255) : IM_COL32(0xc8, 0xc8, 0xc8, 255);
-    tab_dl->AddLine(ImVec2(c.x + 2.0f, c.y - 4.0f), ImVec2(c.x - 2.0f, c.y), chevron, 1.5f);
-    tab_dl->AddLine(ImVec2(c.x - 2.0f, c.y), ImVec2(c.x + 2.0f, c.y + 4.0f), chevron, 1.5f);
-  }
-  if (sidebar_w > 0.0f) {
-    timeline_sidebar(C, ImVec2(p1.x, p0.y), ImVec2(p1.x + sidebar_w, p0.y + avail.y));
   }
 
   /* Blender's Adjust Last Operation, over the keys' bottom-left corner (as in the viewport). */

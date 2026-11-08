@@ -56,6 +56,8 @@ const char *editor_type_label(EditorType type)
       return "Info";
     case EditorType::AssetShelf:
       return "Asset Shelf";
+    case EditorType::PathTiming:
+      return "Path Timing";
   }
   return "Unknown";
 }
@@ -2491,7 +2493,8 @@ bool area_draw(Area &area, Context &C)
   ImGui::SetNextWindowClass(&window_class);
   /* No title bar even while floating: the area is moved by its grip, like a Blender area. */
   ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse;
-  if (full_bleed) {
+  /* Path Timing's graph takes what height the area has, so it never scrolls (the wheel zooms the graph). */
+  if (full_bleed || area.type == EditorType::PathTiming) {
     flags |= ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
   }
   const bool visible = ImGui::Begin(area.window_name().c_str(), &area.open, flags);
@@ -2517,6 +2520,9 @@ bool area_draw(Area &area, Context &C)
         break;
       case EditorType::AssetShelf:
         asset_shelf_draw(area, C);
+        break;
+      case EditorType::PathTiming:
+        path_timing_draw(area, C);
         break;
       case EditorType::TextEditor:
         text_editor_draw(area, C);

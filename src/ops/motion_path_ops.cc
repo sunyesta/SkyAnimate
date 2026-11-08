@@ -1821,19 +1821,6 @@ void motion_path_operators_register()
   }
   {
     OperatorType ot;
-    ot.idname = "anim.timeline_sidebar_toggle";
-    ot.name = "Sidebar";
-    ot.description = "N: show or hide the timeline's sidebar (its Path Timing tab)";
-    ot.flag = OPTYPE_REGISTER;
-    ot.poll = [](Context &C) { return C.wm != nullptr; };
-    ot.exec = [](Context &C) {
-      C.wm->timeline_sidebar = !C.wm->timeline_sidebar;
-      return OpStatus::Finished;
-    };
-    operators().add(std::move(ot));
-  }
-  {
-    OperatorType ot;
     ot.idname = "anim.motion_path_scale_spacing";
     ot.name = "Scale Path Spacing";
     ot.description = "Alt S: the dots around frame=N (else around each dot and key selected) brought factor= as far "
