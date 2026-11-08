@@ -481,7 +481,7 @@ Version 1 covers 67 of the 98 features below: enough to draw, rig with action bo
 | Save Incremental: scene\_002.oanim, scene\_003.oanim and so on with one shortcut | Blender | v1 |
 | Auto-generated Python API docs, built from the property registry | Blender | v1 |
 
-**Top bar.** Like Blender, the top of the window holds the main menus on the left and the workspace tabs beside them. The tabs start as Animation, Layout and Scripting, opening on Layout. Animation has the viewport with the Path Timing graph above the Asset Shelf beside it, Layers above Properties down the right and the timeline along the bottom; going to it picks the Motion Path tool, and going to Layout picks the Select Box tool.
+**Top bar.** Like Blender, the top of the window holds the main menus on the left and the workspace tabs beside them. The tabs start as Layout, Animation and Scripting, opening on Layout. Animation has the viewport with the Path Timing graph above the Asset Shelf beside it, Layers above Properties down the right and the timeline along the bottom; going to it picks the Motion Path tool, and going to Layout picks the Select Box tool.
 
 | Menu | Contents |
 | --- | --- |

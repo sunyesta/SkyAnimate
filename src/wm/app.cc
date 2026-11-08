@@ -268,12 +268,10 @@ bool App::window_init()
   ImGui_ImplSDL3_InitForOpenGL(window_, gl_context_);
   ImGui_ImplOpenGL3_Init("#version 330");
 
-  workspaces_.push_back(workspace_new("Animation", WorkspaceKind::Animation));
   workspaces_.push_back(workspace_new("Layout", WorkspaceKind::Layout));
+  workspaces_.push_back(workspace_new("Animation", WorkspaceKind::Animation));
   workspaces_.push_back(workspace_new("Scripting", WorkspaceKind::Scripting));
   wm_.workspace_count = int(workspaces_.size());
-  /* Open Animate opens on Layout, with Animation to its left. */
-  wm_.workspace_index = 1;
 
   /* Files dragged in from Explorer are known while still being dragged, for the editors to preview. */
   file_drop_install(window_);
