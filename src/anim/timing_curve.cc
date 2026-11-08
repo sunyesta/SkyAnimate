@@ -686,7 +686,8 @@ static StrokeSamples stroke_samples(const TimingCurve &c, int n)
  * the mouse and the rest makes room, each side of it squeezed or stretched up to the key there, so no sample overtakes
  * the one after it (moved one by one within the brush alone, they piled up against those they would pass and the brush
  * stuck). Smooth: dabs along the stroke, each pulling the samples under it up or down toward their neighbours' average
- * (within half the brush, at least a frame each way). */
+ * (within half the brush, at least a frame each way, and near a key only as far on each side as the key is: an average
+ * of the neighbours on one side alone dragged the samples away from the key, which held, so the curve shot to it). */
 static void stroke_move(StrokeSamples &ss, const TimingCurve &c, int n, TimingBrush brush,
                         const std::vector<float2> &path, float radius, float strength, float aspect, bool lock_x)
 {
@@ -746,16 +747,17 @@ static void stroke_move(StrokeSamples &ss, const TimingCurve &c, int n, TimingBr
       if (w <= 0.0f) {
         continue;
       }
+      const float r = std::min({reach, cur[j].x, float(n) - cur[j].x});
       float sum = 0.0f, wsum = 0.0f;
       const auto add = [&](size_t o) {
-        const float t = 1.0f - std::abs(cur[o].x - cur[j].x) / (reach + 0.25f);
+        const float t = 1.0f - std::abs(cur[o].x - cur[j].x) / (r + 0.25f);
         sum += cur[o].y * t;
         wsum += t;
       };
-      for (size_t o = j; o-- > 0 && cur[j].x - cur[o].x <= reach;) {
+      for (size_t o = j; o-- > 0 && cur[j].x - cur[o].x <= r;) {
         add(o);
       }
-      for (size_t o = j; o < count && cur[o].x - cur[j].x <= reach; o++) {
+      for (size_t o = j; o < count && cur[o].x - cur[j].x <= r; o++) {
         add(o);
       }
       if (wsum > 0.0f) {

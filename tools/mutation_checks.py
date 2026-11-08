@@ -81,6 +81,8 @@ PENDING = [
     ('src/anim/timing_curve.cc', 'const bool as_was = a >= 0 && b == a + 1 && !touched[size_t(a)];\n    if (as_was) {',
      'const bool as_was = a >= 0 && b == a + 1 && !touched[size_t(a)] && false;\n    if (as_was) {',
      'Dyntopo leaves the pieces a stroke didn\'t move as they were', 'timing_curve'),
+    ('src/anim/timing_curve.cc', 'const float r = std::min({reach, cur[j].x, float(n) - cur[j].x});',
+     'const float r = reach;', 'Smooth never drags the curve away from a key so it shoots up to it', 'timing_curve'),
 ]
 
 def build(root):

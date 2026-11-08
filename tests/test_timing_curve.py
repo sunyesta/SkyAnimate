@@ -309,6 +309,21 @@ smoothed = key(box, 30)["timing"]
 assert len(smoothed) == 3 and smoothed[1][1] < 0.8 - 0.02, smoothed
 # Without Dyntopo the ends never move.
 assert smoothed[0][:2] == (0.0, 0.0) and smoothed[-1][:2] == (1.0, 1.0)
+# Smooth across a whole ease never makes it steeper by a key, with Dyntopo or without (averaged with the neighbours on
+# one side alone, the samples by a key were dragged away from it and the curve shot up to it in the last frame).
+for dyn in (0, 1):
+    for shape in ("EASE_IN", "EASE_OUT", "EASE_IN_OUT"):
+        assert ops.anim.motion_path_stretch_shape(shape="EVEN", **args(box)) == {'FINISHED'}
+        assert ops.anim.motion_path_stretch_shape(shape=shape, **args(box)) == {'FINISHED'}
+        u = played(box, 10, 30)
+        was = max(u[i + 1] - u[i] for i in range(20))
+        assert ops.anim.timing_sculpt(**args(box, brush="SMOOTH", path="12,0.1;16,0.3;20,0.5;24,0.7;28,0.9", radius=8,
+                                             strength=1, aspect=6, dyntopo=dyn)) == {'FINISHED'}
+        u = played(box, 10, 30)
+        steps = [u[i + 1] - u[i] for i in range(20)]
+        print("Smooth across %s, Dyntopo %d: biggest step %.3f (was %.3f), at the ends %.3f %.3f" %
+              (shape, dyn, max(steps), was, steps[0], steps[-1]))
+        assert max(steps) <= was + 0.01 and min(steps) > -1e-3, (shape, dyn, was, steps)
 
 # --- Alt drag on the curve: a point put there and dragged, one undo step (anim.timing_point_add with to_x=) ----------
 start()
