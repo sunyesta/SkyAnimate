@@ -306,6 +306,19 @@ template<typename T> void key_timing_set(std::vector<Key<T>> &keys, size_t i, Ti
 /* Where the stretch arriving at key `i` is `u` (0-1) of the way along its path by length, as Custom goes along it (in
  * the keys' own space); past either end (an overshoot), on along the end's direction. */
 float2 stretch_path_point(const std::vector<Key<float2>> &keys, size_t i, float u);
+/* And back: how far along it (by length, as stretch_path_point measures) the place nearest `v` is; past either end
+ * (an overshoot), under 0 or over 1, on along the end's direction. */
+float stretch_path_progress(const std::vector<Key<float2>> &keys, size_t i, float2 v);
+/* Convert to Control Point: key `i` (one either side) taken out, a control point of the stretch joining its neighbours
+ * where it was, so the path keeps its shape: the control points either side and the key, with the handles the path ran
+ * along there, are that stretch's, and the keys either side keep their handles. Its timing is the caller's. False with
+ * no key either side. */
+bool key_curve_join(std::vector<Key<float2>> &keys, size_t i);
+/* Convert to Key: control point `j` of the stretch arriving at key `i` made a key on `frame` (strictly between the
+ * stretch's keys) where the control point is, the curve cut there so both stretches keep its shape (the new key's
+ * handles the control point's, Broken where they weren't in line). The new key's index, or 0 changing nothing. Its
+ * timing is the caller's. */
+size_t key_control_to_key(std::vector<Key<float2>> &keys, size_t i, size_t j, int frame);
 
 /* A control point of the stretch from `a` to `b` as stored (Key::path_controls) as a value, and back: stored where it
  * is, so these are the same (a file before format 6 kept them relative to the keys; see oanim_file.cc). */

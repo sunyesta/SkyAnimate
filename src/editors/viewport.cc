@@ -2636,6 +2636,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     wm.path_under_target = under_control ? under_control->target : under_path->target;
     wm.path_under_frame = under_control ? under_control->near_frame : under_frame;
     wm.path_under_end = under_control ? under_control->end : 0;
+    wm.path_under_control = under_control ? under_control->index : -1;
   }
   if (tool && !editing) {
     motion_path_brush_input(C, area, view, dl, hovered, first, last);
@@ -5010,6 +5011,8 @@ static void decimate_menu_item(Context &C)
 static struct {
   bool valid = false, shape = false;
   OpArgs args;
+  /* On a control point: Convert to Key's arguments. */
+  OpArgs control;
 } g_path_stretch_menu;
 
 /* A path dot's or control point's stretch: Reset Stretch, Reset Shape, Reset Timing. True when it drew them. */
@@ -5035,6 +5038,14 @@ static bool path_stretch_items(Context &C)
     item("Reset Shape", "SHAPE", "A straight line from key to key, its timing kept; its control points go");
   }
   item("Reset Timing", "TIMING", "An even speed along it, its shape kept");
+  if (!g_path_stretch_menu.control.empty()) {
+    ImGui::Separator();
+    menu_operator(C, "Convert to Key", "anim.motion_path_control_to_key", g_path_stretch_menu.control);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+      ImGui::SetTooltip("A position key where the control point is, on the frame whose dot was nearest it: the path and "
+                        "every other dot stay");
+    }
+  }
   return true;
 }
 
@@ -5065,6 +5076,12 @@ static void motion_path_menus(Context &C, bool hovered)
         pressed.shape = motion_path_has_handles(doc, t);
         pressed.args = motion_path_target_args(doc, t);
         pressed.args["frame"] = std::to_string(frame);
+        pressed.control.clear();
+        if (control && wm.path_under_control >= 0) {
+          pressed.control = motion_path_target_args(doc, t);
+          pressed.control["end"] = std::to_string(wm.path_under_end);
+          pressed.control["index"] = std::to_string(wm.path_under_control);
+        }
       }
     }
   }
@@ -5104,6 +5121,12 @@ static void motion_path_menus(Context &C, bool hovered)
       ImGui::Separator();
       menu_operator(C, "Align Handles", "anim.motion_path_controls_align", {{"aligned", "1"}});
       menu_operator(C, "Unalign Handles", "anim.motion_path_controls_align", {{"aligned", "0"}});
+      if (std::any_of(wm.path_handle_picks.begin(), wm.path_handle_picks.end(),
+                      [](const MotionPathHandlePick &p) { return p.control >= 0 && p.control_handle == 0; }))
+      {
+        ImGui::Separator();
+        menu_operator(C, "Convert to Key", "anim.motion_path_control_to_key");
+      }
     }
     ui_menu_end();
   }
@@ -5123,6 +5146,22 @@ static void motion_path_menus(Context &C, bool hovered)
       menu_operator(C, "Auto Handles", "anim.motion_path_handles_type", {{"mode", "AUTO"}});
       menu_operator(C, "Break Handles", "anim.motion_path_handles_type", {{"mode", "BROKEN"}});
       ImGui::Separator();
+      /* Greyed, saying why, where none of them can be. */
+      std::string why;
+      bool convert = false;
+      for (const auto &[t, frame] : picked) {
+        if (motion_path_is_key(doc, t, frame)) {
+          convert = motion_path_key_to_control_allowed(doc, t, frame, &why) || convert;
+        }
+      }
+      if (ui_menu_item("Convert to Control Point", nullptr, false, convert)) {
+        operator_call(C, "anim.motion_path_key_to_control");
+      }
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("%s", convert ? "Each key becomes a control point where it is: the path and every dot stay, "
+                                          "the stretches either side now one to retime as a whole" :
+                                          why.c_str());
+      }
       menu_operator(C, "Delete Keys", "anim.motion_path_keys_delete");
     }
     if (!wm.path_dots.empty()) {

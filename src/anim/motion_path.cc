@@ -3550,6 +3550,206 @@ bool motion_path_control_set(Document &doc, const MotionPathTarget &target, int 
   return true;
 }
 
+/* The stretch arriving at keys[i] timed so each frame's dot is where `was` (one a frame from frame `from`) had it:
+ * Custom, as far along its path now as the nearest place to there, fitted. */
+static void stretch_timing_keep(Channel<float2> &ch, size_t i, const std::vector<float2> &was, int from)
+{
+  const Key<float2> &a = ch.keys[i - 1], &b = ch.keys[i];
+  const int start = std::min(a.frame + std::max(a.hold, 0), b.frame);
+  if (b.frame - start < 1) {
+    return;
+  }
+  std::vector<float> u;
+  for (int f = start; f <= b.frame; f++) {
+    u.push_back(stretch_path_progress(ch.keys, i, was[size_t(f - from)]));
+  }
+  u.front() = 0.0f;
+  u.back() = 1.0f;
+  key_timing_set(ch.keys, i, timing_fit(u));
+}
+
+static std::vector<float2> channel_values(const Channel<float2> &ch, int from, int to)
+{
+  std::vector<float2> was;
+  for (int f = from; f <= to; f++) {
+    was.push_back(ch.evaluate(f));
+  }
+  return was;
+}
+
+bool motion_path_key_to_control_allowed(const Document &doc, const MotionPathTarget &target, int frame,
+                                        std::string *r_why)
+{
+  const auto no = [&](const char *why) {
+    if (r_why) {
+      *r_why = why;
+    }
+    return false;
+  };
+  Channel<float2> *ch = handle_channel(const_cast<Document &>(doc), target);
+  if (!ch) {
+    return no("Only a position key can be a control point");
+  }
+  const Key<float2> *k = ch->key_at(frame);
+  if (!k) {
+    return no("No position key there");
+  }
+  const size_t i = size_t(k - ch->keys.data());
+  if (frame == 0 || i == 0 || i + 1 >= ch->keys.size()) {
+    return no("Only a key with a key either side of it");
+  }
+  if (ch->keys[i - 1].interp == Interp::Cycle || k->interp == Interp::Cycle) {
+    return no("Not where a Cycle plays");
+  }
+  const Layer *layer = layer_find(doc, target.layer);
+  if (target.point && layer && layer->key_whole_drawing) {
+    return no("Key Whole Drawing keeps a key on every point on this frame");
+  }
+  return true;
+}
+
+bool motion_path_key_to_control(Document &doc, const MotionPathTarget &target, int frame)
+{
+  if (!motion_path_key_to_control_allowed(doc, target, frame, nullptr)) {
+    return false;
+  }
+  Channel<float2> &ch = *handle_channel(doc, target);
+  const size_t i = size_t(ch.key_at(frame) - ch.keys.data());
+  const int from = ch.keys[i - 1].frame;
+  const std::vector<float2> was = channel_values(ch, from, ch.keys[i + 1].frame);
+  /* On 2s or 3s the frames step as they did, kept in the timing itself: the joined stretch on 1s. */
+  const bool stepped = ch.keys[i - 1].interval > 1 || ch.keys[i].interval > 1;
+  if (!key_curve_join(ch.keys, i)) {
+    return false;
+  }
+  if (stepped) {
+    ch.keys[i - 1].interval = 1;
+  }
+  stretch_timing_keep(ch, i, was, from);
+  channel_keys_changed();
+  animation_evaluate(doc, doc.frame_current);
+  return true;
+}
+
+bool motion_path_control_to_key(Document &doc, const MotionPathTarget &target, int end, int index, int *r_frame)
+{
+  Channel<float2> *ch = handle_channel(doc, target);
+  Key<float2> *b = ch ? ch->key_at(end) : nullptr;
+  if (!b || b == ch->keys.data() || index < 0 || index >= int(b->path_controls.size())) {
+    return false;
+  }
+  const size_t i = size_t(b - ch->keys.data());
+  const Key<float2> &a = ch->keys[i - 1];
+  const int from = a.frame, start = std::min(a.frame + std::max(a.hold, 0), b->frame);
+  const std::vector<float2> was = channel_values(*ch, from, b->frame);
+  /* On the frame whose dot is nearest it, after the hold (so the stretch into it has time to move). */
+  const float2 v = path_control_value(a.value, b->value, b->path_controls[size_t(index)]);
+  int frame = 0;
+  float best = std::numeric_limits<float>::max();
+  for (int f = start + 1; f < b->frame; f++) {
+    const float d = length(was[size_t(f - from)] - v);
+    if (d < best) {
+      best = d;
+      frame = f;
+    }
+  }
+  if (frame == 0) {
+    return false;
+  }
+  const bool stepped = a.interval > 1;
+  const size_t k = key_control_to_key(ch->keys, i, size_t(index), frame);
+  if (!k) {
+    return false;
+  }
+  if (stepped) {
+    ch->keys[k - 1].interval = 1;
+    ch->keys[k].interval = 1;
+  }
+  stretch_timing_keep(*ch, k, was, from);
+  stretch_timing_keep(*ch, k + 1, was, from);
+  channel_keys_changed();
+  if (r_frame) {
+    *r_frame = frame;
+  }
+  animation_evaluate(doc, doc.frame_current);
+  return true;
+}
+
+int motion_path_controls_to_keys(Document &doc, const std::vector<MotionPathHandlePick> &picks)
+{
+  std::vector<std::pair<MotionPathTarget, float2>> where;
+  for (const MotionPathHandlePick &p : picks) {
+    Channel<float2> *ch = p.control >= 0 && p.control_handle == 0 ? handle_channel(doc, p.target) : nullptr;
+    const Key<float2> *b = ch ? ch->key_at(p.frame) : nullptr;
+    if (b && b != ch->keys.data() && p.control < int(b->path_controls.size())) {
+      where.push_back({p.target, path_control_value((b - 1)->value, b->value, b->path_controls[size_t(p.control)])});
+    }
+  }
+  int done = 0;
+  for (const auto &[t, v] : where) {
+    Channel<float2> *ch = handle_channel(doc, t);
+    int end = 0, index = -1;
+    float best = 1e-4f;
+    for (size_t i = 1; ch && i < ch->keys.size(); i++) {
+      const Key<float2> &a = ch->keys[i - 1], &b = ch->keys[i];
+      for (size_t j = 0; j < b.path_controls.size(); j++) {
+        const float d = length(path_control_value(a.value, b.value, b.path_controls[j]) - v);
+        if (d < best) {
+          best = d;
+          end = b.frame;
+          index = int(j);
+        }
+      }
+    }
+    done += index >= 0 && motion_path_control_to_key(doc, t, end, index) ? 1 : 0;
+  }
+  return done;
+}
+
+std::vector<MotionPathTarget> motion_path_key_to_control_targets(const Document &doc, const std::vector<Layer *> &layers,
+                                                                const KeyFilter &filter, int frame,
+                                                                std::string *r_why)
+{
+  std::vector<MotionPathTarget> out;
+  for (Layer *layer : layers) {
+    std::set<const void *> shown;
+    for (const ChannelRef &ref : layer_filtered_channels(*layer, filter)) {
+      if (ref.vector) {
+        shown.insert(ref.vector);
+      }
+    }
+    std::vector<MotionPathTarget> candidates;
+    MotionPathTarget t;
+    t.layer = layer->id;
+    candidates.push_back(t);
+    for (const Bone &bone : layer->bones) {
+      MotionPathTarget b = t;
+      b.bone = bone.id;
+      b.head = true;
+      candidates.push_back(b);
+    }
+    for (const MeshPoint &p : layer->drawing.points) {
+      MotionPathTarget pt = t;
+      pt.point = p.id;
+      candidates.push_back(pt);
+    }
+    for (const MotionPathTarget &c : candidates) {
+      const Channel<float2> *ch = handle_channel(const_cast<Document &>(doc), c);
+      if (!ch || !shown.count(ch) || !ch->key_at(frame)) {
+        continue;
+      }
+      std::string why;
+      if (motion_path_key_to_control_allowed(doc, c, frame, &why)) {
+        out.push_back(c);
+      }
+      else if (r_why && r_why->empty()) {
+        *r_why = why;
+      }
+    }
+  }
+  return out;
+}
+
 int motion_path_controls_delete(Document &doc, const std::vector<MotionPathHandlePick> &picks)
 {
   /* Highest index first, so the others keep theirs. */

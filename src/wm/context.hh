@@ -505,6 +505,8 @@ struct WindowManager {
   MotionPathTarget path_under_target;
   int path_under_frame = 0;
   int path_under_end = 0;
+  /* With a control point: which of its stretch's (Key::path_controls). */
+  int path_under_control = -1;
   /* The dot under the mouse in the viewport or the timeline's timing chart, so the other rings it too: set each frame
    * it is hovered (`path_hover_tick` the ImGui frame it was), stale a frame later. */
   MotionPathTarget path_hover_target;

@@ -1178,6 +1178,167 @@ float2 stretch_path_point(const std::vector<Key<float2>> &keys, size_t i, float 
   return bezier_along(p, u);
 }
 
+float stretch_path_progress(const std::vector<Key<float2>> &keys, size_t i, float2 v)
+{
+  if (i == 0 || i >= keys.size()) {
+    return 0.0f;
+  }
+  /* Measured as stretch_path_point places it (the one curve built once), so a dot timed by the result lands on it. */
+  std::vector<float2> line;
+  float2 p[4];
+  if (!keys[i].path_controls.empty()) {
+    line = stretch_control_line(keys, i);
+  }
+  else {
+    float2 in, out, unused;
+    key_path_handles(keys, i - 1, unused, out);
+    key_path_handles(keys, i, in, unused);
+    p[0] = keys[i - 1].value;
+    p[1] = keys[i - 1].value + out;
+    p[2] = keys[i].value + in;
+    p[3] = keys[i].value;
+  }
+  const auto at = [&](float u) { return line.empty() ? bezier_along(p, u) : line_at(line, u); };
+  const auto off = [&](float u) { return length(at(u) - v); };
+  constexpr int SAMPLES = 200;
+  float best_u = 0.0f, best = std::numeric_limits<float>::max();
+  for (int k = 0; k <= SAMPLES; k++) {
+    const float u = float(k) / SAMPLES, d = off(u);
+    if (d < best) {
+      best = d;
+      best_u = u;
+    }
+  }
+  float lo = best_u - 1.0f / SAMPLES, hi = best_u + 1.0f / SAMPLES;
+  /* Nearest an end: perhaps past it (an overshoot), on along the end's direction. */
+  if (best_u <= 0.0f) {
+    lo = -1.0f;
+  }
+  if (best_u >= 1.0f) {
+    hi = 2.0f;
+  }
+  for (int it = 0; it < 60; it++) {
+    const float m1 = lo + (hi - lo) / 3.0f, m2 = hi - (hi - lo) / 3.0f;
+    if (off(m1) < off(m2)) {
+      hi = m2;
+    }
+    else {
+      lo = m1;
+    }
+  }
+  return 0.5f * (lo + hi);
+}
+
+bool key_curve_join(std::vector<Key<float2>> &keys, size_t i)
+{
+  if (i == 0 || i + 1 >= keys.size()) {
+    return false;
+  }
+  const StretchPoints s1 = stretch_points(keys, i), s2 = stretch_points(keys, i + 1);
+  const Key<float2> k = keys[i], b_was = keys[i + 1];
+  const bool a_broken = keys[i - 1].path_handles == PathHandles::Broken;
+  const bool b_broken = keys[i + 1].path_handles == PathHandles::Broken;
+  key_path_handles_freeze(keys, i - 1);
+  key_path_handles_freeze(keys, i + 1);
+  /* The two stretches as one: the key's place a point with the handles the path ran along either side of it. */
+  StretchPoints s = s1;
+  const size_t at = s.p.size() - 1;
+  s.out[at] = s2.out[0];
+  for (size_t j = 1; j < s2.p.size(); j++) {
+    s.p.push_back(s2.p[j]);
+    s.in.push_back(s2.in[j]);
+    s.out.push_back(s2.out[j]);
+  }
+  Key<float2> &a = keys[i - 1], &b = keys[i + 1];
+  b.path_controls.clear();
+  b.path_control_handles.clear();
+  for (size_t j = 1; j + 1 < s.p.size(); j++) {
+    PathControlHandles h;
+    h.set = true;
+    if (j == at) {
+      /* The key: in line as an Aligned (or Auto) key's handles are. */
+      h.aligned = k.path_handles != PathHandles::Broken;
+    }
+    else {
+      const PathControlHandles was = j < at ? path_control_handles_of(k, j - 1) :
+                                              path_control_handles_of(b_was, j - at - 1);
+      h.aligned = was.set ? was.aligned : true;
+    }
+    h.in = path_control_offset_stored(a.value, b.value, s.in[j]);
+    h.out = path_control_offset_stored(a.value, b.value, s.out[j]);
+    b.path_controls.push_back(path_control_stored(a.value, b.value, s.p[j]));
+    b.path_control_handles.push_back(h);
+  }
+  a.path_out = stretch_key_handle(s, true);
+  key_aligned_again(a, a_broken);
+  b.path_in = stretch_key_handle(s, false);
+  key_aligned_again(b, b_broken);
+  keys.erase(keys.begin() + long(i));
+  keys_changed();
+  return true;
+}
+
+size_t key_control_to_key(std::vector<Key<float2>> &keys, size_t i, size_t j, int frame)
+{
+  if (i == 0 || i >= keys.size() || j >= keys[i].path_controls.size() || frame <= keys[i - 1].frame ||
+      frame >= keys[i].frame)
+  {
+    return 0;
+  }
+  const StretchPoints s = stretch_points(keys, i);
+  const Key<float2> b_was = keys[i];
+  const PathControlHandles was = path_control_handles_of(b_was, j);
+  const bool a_broken = keys[i - 1].path_handles == PathHandles::Broken;
+  const bool b_broken = keys[i].path_handles == PathHandles::Broken;
+  key_path_handles_freeze(keys, i - 1);
+  key_path_handles_freeze(keys, i);
+  /* The curve cut at the control point: the stretch into the new key and the one out of it. */
+  const size_t at = j + 1, n = s.p.size() - 1;
+  StretchPoints s1, s2;
+  for (size_t q = 0; q <= at; q++) {
+    s1.p.push_back(s.p[q]);
+    s1.in.push_back(s.in[q]);
+    s1.out.push_back(s.out[q]);
+  }
+  for (size_t q = at; q <= n; q++) {
+    s2.p.push_back(s.p[q]);
+    s2.in.push_back(s.in[q]);
+    s2.out.push_back(s.out[q]);
+  }
+  Key<float2> k;
+  k.frame = frame;
+  k.value = s.p[at];
+  k.interval = keys[i - 1].interval;
+  k.path_handles = was.set && !was.aligned ? PathHandles::Broken : PathHandles::Aligned;
+  k.path_in = stretch_key_handle(s1, false);
+  k.path_out = stretch_key_handle(s2, true);
+  Key<float2> &a = keys[i - 1], &b = keys[i];
+  a.path_out = stretch_key_handle(s1, true);
+  key_aligned_again(a, a_broken);
+  b.path_in = stretch_key_handle(s2, false);
+  key_aligned_again(b, b_broken);
+  /* The control points either side, their handles as they ran. */
+  const auto store = [&](const Key<float2> &from, Key<float2> &to, const StretchPoints &part, size_t first_old) {
+    to.path_controls.clear();
+    to.path_control_handles.clear();
+    for (size_t q = 1; q + 1 < part.p.size(); q++) {
+      const PathControlHandles old = path_control_handles_of(b_was, first_old + q - 1);
+      PathControlHandles h;
+      h.set = true;
+      h.aligned = old.set ? old.aligned : true;
+      h.in = path_control_offset_stored(from.value, to.value, part.in[q]);
+      h.out = path_control_offset_stored(from.value, to.value, part.out[q]);
+      to.path_controls.push_back(path_control_stored(from.value, to.value, part.p[q]));
+      to.path_control_handles.push_back(h);
+    }
+  };
+  store(a, k, s1, 0);
+  store(k, b, s2, at);
+  keys.insert(keys.begin() + long(i), k);
+  keys_changed();
+  return i;
+}
+
 void key_path_handle_set(std::vector<Key<float2>> &keys, size_t i, bool out, float2 handle, bool broken)
 {
   if (i >= keys.size()) {

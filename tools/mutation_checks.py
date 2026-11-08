@@ -43,6 +43,23 @@ PENDING = [
     ('scripts/startup/oanim_keymap_default.py',
      '    ("Timeline", "anim.timeline_scale_spacing_modal", "S", {"alt": True}),\n', '',
      'Alt S over the timeline scales the timing around the ticks and keys picked', 'motion_path_edit_speed'),
+    ('src/anim/motion_path.cc', '''    ch.keys[i - 1].interval = 1;
+  }
+  stretch_timing_keep(ch, i, was, from);
+''', '''    ch.keys[i - 1].interval = 1;
+  }
+''', 'Convert to Control Point keeps every dot on its frame', 'motion_path_key_to_control'),
+    ('src/anim/motion_path.cc', '''  stretch_timing_keep(*ch, k + 1, was, from);
+''', '', 'Convert to Key keeps the dots after the new key on their frames', 'motion_path_key_to_control'),
+    ('src/anim/motion_path.cc', 'if (target.point && layer && layer->key_whole_drawing) {', 'if (false) {',
+     "a Key Whole Drawing point's key is not made a control point", 'motion_path_key_to_control'),
+    ('src/anim/channel.cc', '      h.aligned = k.path_handles != PathHandles::Broken;', '      h.aligned = false;',
+     'the key made a control point keeps its handles in line', 'motion_path_key_to_control'),
+    ('src/anim/motion_path.cc', '''  if (stepped) {
+    ch.keys[i - 1].interval = 1;
+  }''', '', 'a stretch on 2s made one with the key gone keeps its steps', 'motion_path_key_to_control'),
+    ('src/anim/channel.cc', '''  key_aligned_again(b, b_broken);
+  keys.erase(keys.begin() + long(i));''', '''  key_aligned_again(b, b_broken);''', 'Convert to Control Point takes the key out', 'motion_path_key_to_control'),
 ]
 
 def build(root):

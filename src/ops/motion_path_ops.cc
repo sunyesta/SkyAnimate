@@ -1110,6 +1110,92 @@ void motion_path_operators_register()
   }
   {
     OperatorType ot;
+    ot.idname = "anim.motion_path_key_to_control";
+    ot.name = "Convert to Control Point";
+    ot.description = "Turn a position key between two others into a control point where it is: the path keeps its "
+                     "shape and every dot stays on its frame, the two stretches now one to retime as a whole "
+                     "(frame=N of layer=, bone=, point=; else the keys selected on the paths)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<std::pair<MotionPathTarget, int>> keys;
+      if (op_has_arg(C, "layer")) {
+        std::vector<MotionPathTarget> targets;
+        if (!op_targets(C, targets)) {
+          return OpStatus::Cancelled;
+        }
+        keys.push_back({targets.front(), op_arg_int(C, "frame", doc.frame_current)});
+      }
+      else {
+        keys = path_selected_keys(C);
+      }
+      animation_sync(doc);
+      int done = 0;
+      std::string why;
+      for (const auto &[t, frame] : keys) {
+        if (!motion_path_key_to_control_allowed(doc, t, frame, &why)) {
+          continue;
+        }
+        done += motion_path_key_to_control(doc, t, frame) ? 1 : 0;
+      }
+      if (done == 0) {
+        report(ReportType::Warning, why.empty() ? "No position key to convert" : why);
+        return OpStatus::Cancelled;
+      }
+      if (C.wm) {
+        /* The keys it was are gone. */
+        C.wm->path_dots.clear();
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_control_to_key";
+    ot.name = "Convert to Key";
+    ot.description = "Turn a control point into a position key where it is, on the frame whose dot was nearest it: the "
+                     "path keeps its shape and every other dot stays on its frame (end=N, the frame of its stretch's "
+                     "key, and index=, of layer=, bone=, point=; else the control points picked)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = [](Context &C) { return C.document != nullptr; };
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathHandlePick> picks;
+      if (op_has_arg(C, "layer")) {
+        std::vector<MotionPathTarget> targets;
+        if (!op_targets(C, targets)) {
+          return OpStatus::Cancelled;
+        }
+        MotionPathHandlePick p;
+        p.target = targets.front();
+        p.frame = op_arg_int(C, "end", 0);
+        p.control = op_arg_int(C, "index", 0);
+        picks.push_back(p);
+      }
+      else if (C.wm) {
+        for (const MotionPathHandlePick &p : C.wm->path_handle_picks) {
+          if (p.control >= 0 && p.control_handle == 0) {
+            picks.push_back(p);
+          }
+        }
+      }
+      animation_sync(doc);
+      const int done = motion_path_controls_to_keys(doc, picks);
+      if (done == 0) {
+        report(ReportType::Warning, "No control point to convert (or no frame inside its stretch for a key)");
+        return OpStatus::Cancelled;
+      }
+      if (C.wm) {
+        C.wm->path_handle_picks.clear();
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
     ot.idname = "anim.motion_path_smooth_arc";
     ot.name = "Smooth Arc";
     ot.description = "Even out a lumpy path: each key inside the path's range moves onto a smooth curve through the "

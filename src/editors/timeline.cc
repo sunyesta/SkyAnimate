@@ -3869,6 +3869,48 @@ static void timeline_body(Area &area, Context &C)
       }
       ui_submenu_end();
     }
+    /* A position key with a key either side: a control point instead (greyed, saying why, on one that can't be). */
+    std::string why;
+    const std::vector<MotionPathTarget> convertible =
+        motion_path_key_to_control_targets(doc, these, g_keyed_here.filter, g_keyed_here.frame, &why);
+    if (!convertible.empty() || !why.empty()) {
+      ImGui::Separator();
+      const auto convert = [&](const MotionPathTarget &t) {
+        OpArgs args = {{"layer", std::to_string(t.layer)}, {"frame", std::to_string(g_keyed_here.frame)}};
+        if (const Layer *l = layer_find(doc, t.layer)) {
+          for (const Bone &b : l->bones) {
+            if (b.id == t.bone) {
+              args["bone"] = b.name;
+              args["head"] = "1";
+            }
+          }
+        }
+        if (t.point) {
+          args["point"] = std::to_string(t.point);
+        }
+        operator_call(C, "anim.motion_path_key_to_control", args);
+      };
+      const char *tip = "The key becomes a control point where it is: the path and every dot stay, the two stretches "
+                        "now one to retime as a whole";
+      if (convertible.size() > 1) {
+        if (ui_submenu_begin("Convert to Control Point")) {
+          for (const MotionPathTarget &t : convertible) {
+            if (ui_menu_item(motion_path_label(doc, t).c_str())) {
+              convert(t);
+            }
+          }
+          ui_submenu_end();
+        }
+      }
+      else {
+        if (ui_menu_item("Convert to Control Point", nullptr, false, !convertible.empty())) {
+          convert(convertible.front());
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+          ImGui::SetTooltip("%s", convertible.empty() ? why.c_str() : tip);
+        }
+      }
+    }
     ui_menu_end();
   }
   else if (hovered_still && !g_press.active && !ImGui::IsAnyMouseDown()) {

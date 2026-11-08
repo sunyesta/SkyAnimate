@@ -167,6 +167,16 @@ static void key_menu(Context &C, const char *name)
     ui_submenu_end();
   }
   ImGui::Separator();
+  std::string why;
+  const bool convert = motion_path_key_to_control_allowed(doc, t, frame, &why);
+  if (ui_menu_item("Convert to Control Point", nullptr, false, convert)) {
+    operator_call(C, "anim.motion_path_key_to_control", target_args(doc, t, frame));
+  }
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::SetTooltip("%s", convert ? "The key becomes a control point where it is: the path and every dot stay, the "
+                                      "two stretches now one to retime as a whole" :
+                                      why.c_str());
+  }
   if (ui_menu_item("Delete Key")) {
     operator_call(C, "anim.motion_path_key_delete", target_args(doc, t, frame));
   }

@@ -398,6 +398,27 @@ bool motion_path_control_add(Document &doc, const MotionPathTarget &target, int 
                              int *r_index = nullptr);
 /* Moves a control point to `at` (document space, as seen on frame `near`). */
 bool motion_path_control_set(Document &doc, const MotionPathTarget &target, int end, int index, int near_frame, float2 at);
+/* Whether the target's position key on `frame` can be a control point: one with a key either side, not where a Cycle
+ * plays, not a Key Whole Drawing point's (it keys every point on its frames). Why not in `r_why`. */
+bool motion_path_key_to_control_allowed(const Document &doc, const MotionPathTarget &target, int frame,
+                                        std::string *r_why = nullptr);
+/* Convert to Control Point: that key taken out, a control point where it was (with the handles it had), so the path
+ * keeps its shape and every dot stays on its frame: the stretch joining its neighbours made Custom, timed as they
+ * went (holds and steps on 2s kept in its timing). Only its position key: a turn or size keyed there stays. */
+bool motion_path_key_to_control(Document &doc, const MotionPathTarget &target, int frame);
+/* Convert to Key: control point `index` of the stretch ending on `end` made a key where it is, on the frame whose dot
+ * was nearest it, the curve cut there; both stretches timed so every other dot stays on its frame. The frame in
+ * `r_frame`. False with no frame inside the stretch for it. */
+bool motion_path_control_to_key(Document &doc, const MotionPathTarget &target, int end, int index,
+                                int *r_frame = nullptr);
+/* Each control point among `picks` (the points, not their handles) made a key so: found again by where it is after each
+ * one, as a key made splits its stretch. Returns how many. */
+int motion_path_controls_to_keys(Document &doc, const std::vector<MotionPathHandlePick> &picks);
+/* The paths whose position keys under a timeline row (its layers and filter) on `frame` could be control points; why
+ * the first that can't, can't, in `r_why`. */
+std::vector<MotionPathTarget> motion_path_key_to_control_targets(const Document &doc, const std::vector<Layer *> &layers,
+                                                                const KeyFilter &filter, int frame,
+                                                                std::string *r_why = nullptr);
 /* Deletes the control points among `picks` (the points themselves, not their handles). Returns how many. */
 int motion_path_controls_delete(Document &doc, const std::vector<MotionPathHandlePick> &picks);
 /* Moves a control point's handle (`out` the one toward the stretch's key) so its tip is at `at` (document space, as
