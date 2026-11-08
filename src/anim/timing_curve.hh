@@ -83,8 +83,8 @@ bool timing_point_remove(TimingCurve &curve, size_t i);
  * in frames from the stretch's start, y the way along), within `radius` frames of the brush (`aspect` frames to a whole
  * way along, as the graph shows them, so the brush is a circle there), `strength` how much, `lock_x` up and down only.
  * As a drawing's sculpt does, the curve is sampled finely (four places a frame and one on each point) and the brush
- * moves the samples: Grab raises them, and slides the timing along time under the brush so nothing piles up or crosses;
- * Smooth evens them out. The curve is then fitted back to them. Without `dyntopo`, each point goes where its sample
+ * moves the samples: Grab moves them by how near each was to where it was pressed, up and down and in time (time
+ * squeezed further ahead only as a long drag needs, smoothly, so nothing piles up or crosses); Smooth evens them out. The curve is then fitted back to them. Without `dyntopo`, each point goes where its sample
  * went and the pieces the stroke moved have their handles fitted again (a smooth point's in line), none added or taken
  * out. With it, those pieces get a point every frame, then the ones the curve keeps its shape without go (points it
  * neither made nor moved stay). Either way the pieces it didn't move stay exactly as they were. */

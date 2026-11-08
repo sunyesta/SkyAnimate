@@ -681,14 +681,34 @@ static StrokeSamples stroke_samples(const TimingCurve &c, int n)
   return ss;
 }
 
-/* The brush's move of the samples. Grab: each goes up and down by the stroke as far as the brush reached it where the
- * stroke began (as Blender's Grab); in time (without Lock X), the part of the curve the brush was pressed on goes with
- * the mouse and the rest makes room, each side of it squeezed or stretched up to the key there, so no sample overtakes
- * the one after it (moved one by one within the brush alone, they piled up against those they would pass and the brush
- * stuck). Smooth: dabs along the stroke, each pulling the samples under it up or down toward their neighbours' average
- * (within half the brush, at least a frame each way, and near a key only as far on each side as the key is: an average
- * of the neighbours on one side alone dragged the samples away from the key, which held, so the curve shot to it). */
-static void stroke_move(StrokeSamples &ss, const TimingCurve &c, int n, TimingBrush brush,
+/* How far along a squeeze that reaches `u` (0 to 1) of its way has gone: the falloff of time ahead of a Grab, as a
+ * share of the move. Its rate is a plateau with rounded shoulders, each `e` (at most half) of the way: at a half, the
+ * smoothstep (rate 6u(1 - u), at most 1.5); narrower shoulders squeeze more evenly (at most 1 / (1 - 2e / 3)), so a
+ * drag nearly to the key still needs no corner. */
+static float squeeze_gone(float u, float e)
+{
+  u = std::clamp(u, 0.0f, 1.0f);
+  const float h = 1.0f / (1.0f - 2.0f * e / 3.0f);
+  const auto rise = [&](float v) {
+    const float t = v / e;
+    return h * e * (t * t - t * t * t / 3.0f);
+  };
+  if (u > 0.5f) {
+    return 1.0f - squeeze_gone(1.0f - u, e);
+  }
+  return u <= e ? rise(u) : h * (2.0f * e / 3.0f + (u - e));
+}
+
+/* The brush's move of the samples. Grab, as Blender's and Maya's: each sample is weighed by how near it was to where the
+ * brush was pressed (the circle, as the graph shows it) and goes up and down by the stroke that much. In time (without
+ * Lock X) the curve where the brush was nearest goes with the mouse; behind it time stretches within the circle, and
+ * ahead it squeezes within the circle while that can hold the move, reaching further ahead (never behind, never past
+ * the key) only as the move needs, smoothly, so time never runs backward and the curve has no corners (a reach both
+ * ways that grew with the move and a straight falloff moved what the circle wasn't on and left kinks). Smooth: dabs
+ * along the stroke, each pulling the samples under it up or down toward their neighbours' average (within half the
+ * brush, at least a frame each way, and near a key only as far on each side as the key is: an average of the
+ * neighbours on one side alone dragged the samples away from the key, which held, so the curve shot to it). */
+static void stroke_move(StrokeSamples &ss, const TimingCurve & /*c*/, int n, TimingBrush brush,
                         const std::vector<float2> &path, float radius, float strength, float aspect, bool lock_x)
 {
   /* Distances as the graph shows them: a whole way up is `aspect` frames across, so the brush is a circle there. */
@@ -697,45 +717,53 @@ static void stroke_move(StrokeSamples &ss, const TimingCurve &c, int n, TimingBr
   std::vector<float2> &s = ss.moved;
   if (brush == TimingBrush::Grab) {
     const float2 from = path.front(), delta = path.back() - path.front();
-    const float move = std::abs(delta.x);
-    /* How far each side reaches in time: the brush, or further the further the stroke goes (the falloff is steepest
-     * at 1.5 / its reach), but never past the key on that side. */
-    const float reach = std::max(radius, move * 1.6f);
-    const auto in_time = [&](float x) {
-      const float d = x - from.x;
-      const float side = std::min(reach, d < 0.0f ? from.x : float(n) - from.x);
-      if (!(side > 1e-6f) || std::abs(d) >= side) {
-        return 0.0f;
-      }
-      const float q = std::abs(d) / side;
-      const float smooth = 1.0f - q * q * (3.0f - 2.0f * q), straight = 1.0f - q;
-      /* Straighter the further the stroke goes for the room it has, wholly so at half of it: a smooth falloff
-       * squeezes the curve most at its steepest (1.5 / side), a straight one evenly up to the key. */
-      const float t = std::clamp(2.0f * move / side, 0.0f, 1.0f);
-      return smooth + (straight - smooth) * t;
-    };
-    /* Whether the brush was on the curve at all where it was pressed. */
-    const float on = lock_x ? 0.0f :
-                              brush_falloff(std::abs(timing_progress(c, std::clamp(from.x / float(n), 0.0f, 1.0f)) -
-                                                     from.y) *
-                                                aspect,
-                                            radius) *
-                                  strength;
+    std::vector<float> w(count, 0.0f);
+    size_t c = 0;
     for (size_t j = 1; j + 1 < count; j++) {
-      const float2 a = ss.at[j];
-      s[j].x += delta.x * in_time(a.x) * on;
-      s[j].y += delta.y * brush_falloff(dist(a, from), radius) * strength;
+      w[j] = brush_falloff(dist(ss.at[j], from), radius) * strength;
+      s[j].y += delta.y * w[j];
+      if (w[j] > w[c]) {
+        c = j;
+      }
     }
-    if (!lock_x) {
-      /* Time only goes forward (where the curve is steep, or near a key the reach runs into): each after the one
-       * before, the ends where they were, those the stroke left alone too. */
-      const auto gap = [&](size_t j) { return std::min(1e-3f, ss.at[j].x - ss.at[j - 1].x); };
-      for (size_t j = 1; j + 1 < count; j++) {
-        s[j].x = std::max(s[j].x, s[j - 1].x + gap(j));
-      }
-      for (size_t j = count - 1; j-- > 1;) {
-        s[j].x = std::min(s[j].x, s[j + 1].x - gap(j + 1));
-      }
+    const float d = std::abs(delta.x);
+    if (lock_x || c == 0 || !(d > 0.0f)) {
+      return;
+    }
+    /* Each side of the nearest sample: how far the circle reaches along the curve (to the first sample it misses),
+     * never past the key. */
+    const float xc = ss.at[c].x, fn = float(n);
+    size_t lo = c, hi = c;
+    while (lo > 0 && w[lo] > 0.0f) {
+      lo--;
+    }
+    while (hi + 1 < count && w[hi] > 0.0f) {
+      hi++;
+    }
+    const float forward = delta.x > 0.0f ? 1.0f : -1.0f;
+    const float reach_up = std::clamp(ss.at[hi].x - xc, 0.25f, std::max(fn - xc, 0.25f));
+    const float reach_down = std::clamp(xc - ss.at[lo].x, 0.25f, std::max(xc, 0.25f));
+    const float behind = forward > 0.0f ? reach_down : reach_up;
+    /* Ahead: the circle, or as far as squeezes time to at most 2.5 times as fast with the smoothstep, up to the key.
+     * Where the key cuts that short, the shoulders narrow so the squeeze stays as even as it can. */
+    constexpr float MOST_SQUEEZE = 0.6f; /* the most a frame ahead may shrink to (1 - 1 / 2.5) */
+    const float move = d * w[c];
+    const float room = forward > 0.0f ? fn - xc : xc;
+    const float ahead = std::min(std::max(forward > 0.0f ? reach_up : reach_down, move * 1.5f / MOST_SQUEEZE), room);
+    const float q = ahead > 0.0f ? move / ahead : 1.0f;
+    const float e = std::clamp(1.5f * (1.0f - q / MOST_SQUEEZE), 0.05f, 0.5f);
+    for (size_t j = 1; j + 1 < count; j++) {
+      const float off = (ss.at[j].x - xc) * forward;
+      const float left = off >= 0.0f ? 1.0f - squeeze_gone(off / ahead, e) : 1.0f - squeeze_gone(-off / behind, 0.5f);
+      s[j].x += delta.x * w[c] * left;
+    }
+    /* Time only goes forward (a drag right to the key): each after the one before, the ends where they were. */
+    const auto gap = [&](size_t j) { return std::min(1e-3f, ss.at[j].x - ss.at[j - 1].x); };
+    for (size_t j = 1; j + 1 < count; j++) {
+      s[j].x = std::max(s[j].x, s[j - 1].x + gap(j));
+    }
+    for (size_t j = count - 1; j-- > 1;) {
+      s[j].x = std::min(s[j].x, s[j + 1].x - gap(j + 1));
     }
     return;
   }

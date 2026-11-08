@@ -245,6 +245,37 @@ assert len(key(box, 30)["timing"]) < 21
 assert ops.anim.timing_sculpt(**args(box, brush="PINCH", path="20,0.5")) == {'CANCELLED'}
 assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="")) == {'CANCELLED'}
 
+# Grab in time moves what the circle is on, as Blender's and Maya's: a short drag sideways leaves the curve outside the
+# circle as it was on both sides (with Dyntopo: without it a curve of two points is one piece, fitted again whole); a
+# long one squeezes further ahead only, smoothly (no corner where the speed jumps), and the brush's size still counts
+# (a reach both ways that grew with the drag and a straight falloff moved what the circle wasn't on, the same whatever
+# the brush, and left kinks).
+start()
+box = line_layer({10: 0.0, 50: 1.0})
+assert ops.anim.motion_path_stretch_shape(shape="EVEN", **args(box)) == {'FINISHED'}
+even = played(box, 10, 50)
+assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="30,0.5;31.5,0.5", radius=4, strength=1, aspect=10,
+                                     dyntopo=1)) == {'FINISHED'}
+u = played(box, 10, 50)
+assert close(u[:16], even[:16], 2e-3) and close(u[26:], even[26:], 2e-3), (
+    "outside the circle as it was", [round(v - e, 4) for v, e in zip(u, even)])
+ops.ed.undo()
+slid = {}
+for radius in (2, 5):
+    assert ops.anim.timing_sculpt(**args(box, brush="GRAB", path="30,0.5;33,0.5;36,0.5", radius=radius, strength=1,
+                                         aspect=10, dyntopo=1)) == {'FINISHED'}
+    u = played(box, 10, 50)
+    slid[radius] = u
+    steps = [u[i + 1] - u[i] for i in range(40)]
+    jump = max(abs(steps[i + 1] - steps[i]) for i in range(39))
+    print("Grab 6 frames later, radius %d: steps %.3f..%.3f, biggest change from one frame's to the next %.4f" %
+          (radius, min(steps), max(steps), jump))
+    assert close(u[:20 - radius - 1], even[:20 - radius - 1], 2e-3), ("nothing moved behind the circle", radius, u)
+    assert close(u[26], 0.5, 0.03), ("the middle went with the brush", radius, u[26])
+    assert min(steps) > 0.0 and jump < 0.02, ("squeezed smoothly, no corner", radius, steps)
+    ops.ed.undo()
+assert max(abs(a - b) for a, b in zip(slid[2], slid[5])) > 0.02, "the brush's size counts"
+
 # --- Sculpt without Dyntopo: as a drawing's sculpt, the brush moves samples of the curve and the curve is fitted back to
 # them, every point where its sample went, only the pieces the stroke moved fitted again; none added or taken out -------
 start()
