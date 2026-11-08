@@ -519,6 +519,12 @@ struct WindowManager {
   MotionPathTarget path_timing_point_target;
   int path_timing_point_end = 0;
   int path_timing_point = -1;
+  /* Its Edit mode's picks on that same stretch, points and handles (`path_timing_point` the active one, the Point row's);
+   * the graph under the mouse (its thing and stretch's end, for A and Alt A); G R S's request (0: none). */
+  std::vector<TimingPick> path_timing_picks;
+  MotionPathTarget path_graph_target;
+  int path_graph_end = 0;
+  char path_graph_transform_request = 0;
   bool path_graph_resize_request = false;
   bool path_scale_request = false;
   char path_keys_request = 0;

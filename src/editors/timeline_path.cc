@@ -15,6 +15,7 @@
 #include "data/document.hh"
 #include "data/vector.hh"
 #include "editors/editors.hh"
+#include "editors/num_input.hh"
 #include "editors/ui.hh"
 #include "ops/edit_ops.hh"
 #include "ops/operator.hh"
@@ -645,6 +646,54 @@ static struct {
   Document snapshot;
 } g_stroke;
 
+/* Edit mode's G R S on the picks, or a drag of several picked: live on the document as it was when it began, run as
+ * anim.timing_transform once kept (one undo step). X or Y keeps it to time or the way along; numbers typed (frames
+ * and %, degrees, a factor); Ctrl snaps; Shift is finer. */
+static struct {
+  bool active = false;
+  /* A drag of picks: kept when the button comes up. */
+  bool drag = false;
+  ImGuiID owner = 0;
+  char kind = 'G', axis = 0;
+  MotionPathTarget target;
+  int frame = 0, n = 1;
+  float aspect = 1.0f;
+  std::vector<TimingPick> picks;
+  /* The point Ctrl snaps to whole frames (the active one, else the first picked; -1: handles alone). */
+  int snap_point = -1;
+  ImVec2 press, pivot;
+  NumInput num;
+  PreciseMouse precise;
+  float2 offset{};
+  float angle = 0.0f, factor = 1.0f;
+  TimingCurve curve;
+  Document snapshot;
+} g_xform;
+
+/* A box drawn from empty space: picks the points and handle tips inside once let go (Shift adds, Ctrl takes away); a
+ * click that never moved picks nothing, or with Ctrl adds a point there. */
+static struct {
+  bool active = false;
+  ImGuiID owner = 0;
+  ImVec2 press;
+  bool ctrl = false, shift = false;
+} g_box;
+
+/* A right click that cancelled G R S: its release opens no menu. */
+static bool g_right_spent = false;
+
+static bool modal_key_take(Context &C, const char *type)
+{
+  std::vector<ModalKey> &keys = C.wm->modal_keys;
+  for (auto it = keys.begin(); it != keys.end(); ++it) {
+    if (it->type == type) {
+      keys.erase(it);
+      return true;
+    }
+  }
+  return false;
+}
+
 static struct {
   bool active = false;
   ImGuiID owner = 0;
@@ -773,10 +822,16 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   const bool hovered = ImGui::IsItemHovered();
   /* What this graph has going on, and whether another editor's graph has something going on. */
   const bool mine = (g_edit.active && g_edit.owner == graph_id) || (g_stroke.active && g_stroke.owner == graph_id) ||
-                    (g_resize.active && g_resize.owner == graph_id);
+                    (g_resize.active && g_resize.owner == graph_id) || (g_xform.active && g_xform.owner == graph_id) ||
+                    (g_box.active && g_box.owner == graph_id);
   if (hovered || mine) {
     wm.path_graph_hovered = true;
     wm.path_graph_hovered_frame = ImGui::GetFrameCount();
+  }
+  if (hovered) {
+    /* A and Alt A, G R S and V work on the graph under the mouse. */
+    wm.path_graph_target = t;
+    wm.path_graph_end = s.end;
   }
 
   /* The curve: a Custom stretch's own, else the one its timing makes (even: a straight line). A span across
@@ -792,7 +847,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   const bool sculpt = ts.path_graph_sculpt;
 
   /* Navigation, as the viewport's: not while something is dragged. */
-  const bool busy = g_edit.active || g_stroke.active || g_resize.active;
+  const bool busy = g_edit.active || g_stroke.active || g_resize.active || g_xform.active || g_box.active;
   if (!busy) {
     if (hovered && io.MouseWheel != 0.0f) {
       const float factor = std::pow(0.85f, io.MouseWheel);
@@ -915,8 +970,14 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
                         ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, 0.55f)));
   }
 
-  /* Edit mode: the curve's points (its ends are the keys' diamonds) and their handles, as a drawing's. */
+  /* Edit mode: the curve's points (its ends are the keys' diamonds) and their handles, as a drawing's; the picks (on
+   * this stretch) orange, a picked point's handles with it. */
   const int picked = editable ? picked_point(wm, t, s, curve) : -1;
+  const bool picks_here = editable && wm.path_timing_point_target.same(t) && wm.path_timing_point_end == s.end;
+  const auto is_picked = [&](int point, int part) {
+    return picks_here && std::find(wm.path_timing_picks.begin(), wm.path_timing_picks.end(),
+                                   TimingPick{point, part}) != wm.path_timing_picks.end();
+  };
   struct Hit {
     int point = -1, side = 0;
   };
@@ -934,7 +995,8 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
           continue;
         }
         const ImVec2 tip = curve_screen(p.co + (side < 0 ? in : out));
-        const bool on = int(i) == picked || (g_edit.active && g_edit.point == int(i));
+        const bool on = int(i) == picked || is_picked(int(i), 0) || is_picked(int(i), side) ||
+                        (g_edit.active && g_edit.point == int(i));
         dl->AddLine(at, tip, on ? IM_COL32(255, 175, 90, 230) : IM_COL32(160, 160, 160, 170), 1.0f);
         dl->AddCircleFilled(tip, 3.0f, on ? IM_COL32(255, 175, 90, 255) : IM_COL32(190, 190, 190, 220));
         const float d = std::hypot(io.MousePos.x - tip.x, io.MousePos.y - tip.y);
@@ -946,7 +1008,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
       if (i == 0 || i + 1 == curve.points.size()) {
         continue;
       }
-      const bool on = int(i) == picked;
+      const bool on = is_picked(int(i), 0) || (int(i) == picked && !picks_here);
       dl->AddCircleFilled(at, 4.5f, on ? IM_COL32(255, 160, 40, 255) : IM_COL32(235, 235, 235, 255));
       dl->AddCircle(at, 4.5f, IM_COL32(20, 20, 20, 220), 0, 1.2f);
       const float d = std::hypot(io.MousePos.x - at.x, io.MousePos.y - at.y);
@@ -1004,20 +1066,56 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
   }
 
   /* The right click's menu: the stretch's shapes, Even Spacing for the dots picked; on a key, the key's. */
-  if (hovered && !busy && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
-      !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right))
+  if (g_right_spent && !ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+    g_right_spent = false;
+  }
+  else if (hovered && !busy && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
+           !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Right))
   {
     if (key_hit) {
       key_menu_open(t, *key_hit, "##path_key_menu_graph");
     }
     else {
+      /* On a point or handle not picked: it alone, as the menu acts on the picks. */
+      if (hit && !sculpt && !is_picked(hit->point, hit->side) && !is_picked(hit->point, 0)) {
+        OpArgs args = target_args(doc, t, s.start + 1);
+        args["index"] = std::to_string(hit->point);
+        args["part"] = hit->side == 0 ? "POINT" : hit->side < 0 ? "IN" : "OUT";
+        operator_call(C, "anim.timing_select", args);
+      }
       ImGui::OpenPopup("##path_timing_menu");
     }
+  }
+  /* V: the picks' handle types. */
+  if (hovered && wm.menu_request == "timing_handles") {
+    wm.menu_request.clear();
+    ImGui::OpenPopup("##timing_handles");
+  }
+  const auto handle_items = [&]() {
+    const std::string asp = std::to_string(aspect);
+    for (const auto &[label, id] : {std::pair{"Aligned", "ALIGNED"}, std::pair{"Broken", "BROKEN"},
+                                    std::pair{"Flat", "FLAT"}})
+    {
+      if (ui_menu_item(label)) {
+        operator_call(C, "anim.timing_handles_type", {{"type", id}, {"aspect", asp}});
+      }
+    }
+  };
+  if (ui_menu_begin("##timing_handles")) {
+    ImGui::TextDisabled("Handles");
+    ImGui::Separator();
+    handle_items();
+    ui_menu_end();
   }
   key_menu(C, "##path_key_menu_graph");
   if (ui_menu_begin("##path_timing_menu")) {
     ImGui::TextDisabled("Path Timing");
     ImGui::Separator();
+    if (!sculpt && picks_here && !wm.path_timing_picks.empty()) {
+      ImGui::TextDisabled("Handles");
+      handle_items();
+      ImGui::Separator();
+    }
     OpArgs args = target_args(doc, t, s.start + 1);
     for (const auto &[label, id] : {std::pair{"Even", "EVEN"}, std::pair{"Ease In", "EASE_IN"},
                                     std::pair{"Ease Out", "EASE_OUT"}, std::pair{"Ease In-Out", "EASE_IN_OUT"}})
@@ -1103,6 +1201,213 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
                                                  ts.path_timing_strength[int(st.brush)], st.aspect,
                                                  ts.path_timing_lock_x, ts.path_timing_dyntopo));
       C.undo->mark_changed();
+    }
+    return;
+  }
+
+  /* G R S (or a drag of several picks) going on. */
+  auto &gx = g_xform;
+  if (gx.active && gx.owner == graph_id) {
+    const auto end = [&](bool keep) {
+      doc = std::move(gx.snapshot);
+      wm.modal_running = false;
+      wm.modal_keys.clear();
+      if (keep) {
+        OpArgs args = target_args(doc, gx.target, gx.frame);
+        args["mode"] = gx.kind == 'G' ? "MOVE" : gx.kind == 'R' ? "ROTATE" : "SCALE";
+        args["x"] = std::to_string(gx.offset.x);
+        args["y"] = std::to_string(gx.offset.y);
+        args["angle"] = std::to_string(gx.angle * 180.0f / 3.14159265f);
+        args["factor"] = std::to_string(gx.factor);
+        if (gx.axis && gx.kind == 'S') {
+          args["axis"] = std::string(1, gx.axis);
+        }
+        args["aspect"] = std::to_string(gx.aspect);
+        gx = {};
+        operator_call(C, "anim.timing_transform", args);
+      }
+      else {
+        gx = {};
+      }
+    };
+    if (modal_key_take(C, "ESC") || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+      g_right_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+      end(false);
+      return;
+    }
+    if (gx.kind != 'R') {
+      for (const char a : {'X', 'Y'}) {
+        if (modal_key_take(C, a == 'X' ? "X" : "Y")) {
+          gx.axis = gx.axis == a ? 0 : a;
+        }
+      }
+    }
+    num_input_keys(C, gx.num, gx.kind == 'G' ? 2 : 1);
+    const bool confirm = gx.drag ? !ImGui::IsMouseDown(ImGuiMouseButton_Left)
+                                 : modal_key_take(C, "RET") || modal_key_take(C, "KEYPAD_ENTER") ||
+                                       ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    const float2 m = gx.precise.update(float2{io.MousePos.x, io.MousePos.y}, io.KeyShift);
+    float2 offset{frame_at(m.x) - frame_at(gx.press.x), u_at(m.y) - u_at(gx.press.y)};
+    if (gx.axis == 'X') {
+      offset.y = 0.0f;
+    }
+    else if (gx.axis == 'Y') {
+      offset.x = 0.0f;
+    }
+    const float2 a{gx.press.x - gx.pivot.x, gx.press.y - gx.pivot.y}, b{m.x - gx.pivot.x, m.y - gx.pivot.y};
+    /* Screen y runs down: anticlockwise as shown is the other way. */
+    float angle = -std::remainder(std::atan2(b.y, b.x) - std::atan2(a.y, a.x), 6.2831853f);
+    float factor = length(b) / std::max(length(a), 1.0f);
+    if (io.KeyCtrl) {
+      if (gx.snap_point >= 0) {
+        /* The snapped point onto a whole frame and a 5% step. */
+        const float2 co = gx.curve.points[size_t(gx.snap_point)].co;
+        const float fx = co.x * float(gx.n);
+        offset.x = gx.axis == 'Y' ? 0.0f : std::round(fx + offset.x) - fx;
+        offset.y = gx.axis == 'X' ? 0.0f : std::round((co.y + offset.y) * 20.0f) / 20.0f - co.y;
+      }
+      else {
+        offset = {std::round(offset.x), std::round(offset.y * 20.0f) / 20.0f};
+      }
+      const float snap = 5.0f * 3.14159265f / 180.0f;
+      angle = std::round(angle / snap) * snap;
+      factor = std::round(factor * 10.0f) / 10.0f;
+    }
+    if (gx.num.any()) {
+      offset = {gx.num.value(0, offset.x), gx.num.value(1, offset.y * 100.0f) / 100.0f};
+      angle = gx.num.value(0, angle * 180.0f / 3.14159265f) * 3.14159265f / 180.0f;
+      factor = gx.num.value(0, factor);
+    }
+    gx.offset = offset;
+    gx.angle = angle;
+    gx.factor = std::max(factor, 0.0f);
+    TimingCurve moved = gx.curve;
+    timing_transform(moved, gx.picks, gx.kind, {offset.x / float(gx.n), offset.y}, gx.angle,
+                     {gx.axis == 'Y' ? 1.0f : gx.factor, gx.axis == 'X' ? 1.0f : gx.factor}, gx.n, gx.aspect);
+    doc = gx.snapshot;
+    motion_path_timing_curve_set(doc, gx.target, gx.frame, moved);
+    C.undo->mark_changed();
+    const char *only = gx.axis == 'X' ? "  (in time only)" : gx.axis == 'Y' ? "  (the way along only)" : "";
+    if (gx.kind == 'G') {
+      ImGui::SetTooltip("Move %s frames, %s%%%s", gx.num.shown(0, offset.x, "%.2f").c_str(),
+                        gx.num.shown(1, offset.y * 100.0f, "%.1f").c_str(), only);
+    }
+    else if (gx.kind == 'R') {
+      ImGui::SetTooltip("Rotate %s degrees", gx.num.shown(0, gx.angle * 180.0f / 3.14159265f, "%.1f").c_str());
+    }
+    else {
+      ImGui::SetTooltip("Scale %s%s", gx.num.shown(0, gx.factor, "%.2f").c_str(), only);
+    }
+    if (gx.kind != 'G') {
+      ImGui::GetForegroundDrawList()->AddLine(gx.pivot, io.MousePos, IM_COL32(255, 255, 255, 120), 1.0f);
+      ImGui::GetForegroundDrawList()->AddCircle(gx.pivot, 4.0f, IM_COL32(255, 160, 40, 255), 0, 2.0f);
+    }
+    if (confirm) {
+      end(true);
+    }
+    return;
+  }
+  /* Starts G R S, or a drag of the picks: what's picked on this stretch, about the middle of their points. */
+  const auto xform_start = [&](char kind, bool drag) {
+    std::vector<TimingPick> picks;
+    for (const TimingPick &k : wm.path_timing_picks) {
+      if (picks_here && k.point >= 0 && size_t(k.point) < curve.points.size()) {
+        picks.push_back(k);
+      }
+    }
+    if (picks.empty()) {
+      return false;
+    }
+    ImVec2 c(0.0f, 0.0f);
+    int count = 0;
+    for (const bool points : {true, false}) {
+      for (const TimingPick &k : picks) {
+        if ((k.part == 0) == points) {
+          const ImVec2 p = curve_screen(curve.points[size_t(k.point)].co);
+          c = ImVec2(c.x + p.x, c.y + p.y);
+          count++;
+        }
+      }
+      if (count > 0) {
+        break;
+      }
+    }
+    animation_sync(doc);
+    gx = {};
+    gx.active = true;
+    gx.drag = drag;
+    gx.owner = graph_id;
+    gx.kind = kind;
+    gx.target = t;
+    gx.frame = s.start + 1;
+    gx.n = n;
+    gx.aspect = aspect;
+    gx.picks = std::move(picks);
+    for (const TimingPick &k : gx.picks) {
+      if (k.part == 0 && (gx.snap_point < 0 || k.point == wm.path_timing_point)) {
+        gx.snap_point = k.point;
+      }
+    }
+    gx.press = io.MousePos;
+    gx.pivot = ImVec2(c.x / float(count), c.y / float(count));
+    gx.precise.reset(float2{io.MousePos.x, io.MousePos.y});
+    gx.curve = curve;
+    gx.snapshot = doc;
+    wm.modal_running = true;
+    wm.modal_keys.clear();
+    return true;
+  };
+  if (hovered && wm.path_graph_transform_request) {
+    const char kind = wm.path_graph_transform_request;
+    wm.path_graph_transform_request = 0;
+    if (editable && !sculpt && !busy) {
+      xform_start(kind, false);
+      return;
+    }
+  }
+
+  /* A box from empty space. */
+  auto &bx = g_box;
+  if (bx.active && bx.owner == graph_id) {
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+      g_right_spent |= ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+      bx = {};
+      return;
+    }
+    const bool moved = std::hypot(io.MousePos.x - bx.press.x, io.MousePos.y - bx.press.y) >= 3.0f;
+    if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      if (moved) {
+        const ImVec2 a(std::min(bx.press.x, io.MousePos.x), std::min(bx.press.y, io.MousePos.y));
+        const ImVec2 b(std::max(bx.press.x, io.MousePos.x), std::max(bx.press.y, io.MousePos.y));
+        dl->AddRectFilled(a, b, IM_COL32(255, 255, 255, 18));
+        dl->AddRect(a, b, IM_COL32(255, 255, 255, 140), 0.0f, 0, 1.0f);
+      }
+      return;
+    }
+    const auto box = bx;
+    bx = {};
+    OpArgs args = target_args(doc, t, s.start + 1);
+    if (moved) {
+      const auto cx = [&](float x) { return (frame_at(x) - float(s.start)) / float(n); };
+      char text[160];
+      std::snprintf(text, sizeof(text), "%g,%g,%g,%g", double(cx(box.press.x)), double(u_at(box.press.y)),
+                    double(cx(io.MousePos.x)), double(u_at(io.MousePos.y)));
+      args["box"] = text;
+      args["mode"] = box.ctrl ? "SUB" : box.shift ? "ADD" : "SET";
+      operator_call(C, "anim.timing_select", args);
+    }
+    else if (box.ctrl) {
+      /* Ctrl click: a point there, on the curve's time under the mouse. */
+      const float x = (frame_at(box.press.x) - float(s.start)) / float(n);
+      args["x"] = std::to_string(x);
+      args["y"] = std::to_string(u_at(box.press.y));
+      if (operator_call(C, "anim.timing_point_add", args) == OpStatus::Finished) {
+        point_pick_nearest(C, t, s.start + 1, s, x);
+      }
+    }
+    else if (!box.shift) {
+      args["action"] = "NONE";
+      operator_call(C, "anim.timing_select", args);
     }
     return;
   }
@@ -1210,18 +1515,7 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
     return;
   }
   if (!hit) {
-    if (io.KeyCtrl) {
-      /* Ctrl click: a point there, on the curve's time under the mouse. */
-      const float x = (frame_at(io.MousePos.x) - float(s.start)) / float(n);
-      OpArgs args = target_args(doc, t, s.start + 1);
-      args["x"] = std::to_string(x);
-      args["y"] = std::to_string(u_at(io.MousePos.y));
-      if (operator_call(C, "anim.timing_point_add", args) == OpStatus::Finished) {
-        point_pick_nearest(C, t, s.start + 1, s, x);
-      }
-      return;
-    }
-    if (io.KeyAlt) {
+    if (io.KeyAlt && !io.KeyCtrl) {
       /* Alt on the curve: a point put there, dragged until let go. */
       const float x = (frame_at(io.MousePos.x) - float(s.start)) / float(n);
       float near = 1e9f;
@@ -1252,10 +1546,34 @@ static void path_timing_graph(Context &C, const MotionPathTarget &t, const Motio
         return;
       }
     }
-    point_pick(wm, t, s, -1);
+    /* A box (or, not moved: nothing picked; Ctrl, a point added). */
+    bx = {};
+    bx.active = true;
+    bx.owner = graph_id;
+    bx.press = io.MousePos;
+    bx.ctrl = io.KeyCtrl;
+    bx.shift = io.KeyShift;
     return;
   }
-  point_pick(wm, t, s, hit->point);
+  {
+    OpArgs args = target_args(doc, t, s.start + 1);
+    args["index"] = std::to_string(hit->point);
+    args["part"] = hit->side == 0 ? "POINT" : hit->side < 0 ? "IN" : "OUT";
+    if (io.KeyShift) {
+      /* Shift click: in or out of the picks. */
+      args["extend"] = "1";
+      operator_call(C, "anim.timing_select", args);
+      return;
+    }
+    /* On one of several picked (or a handle of a picked point): they all go with the mouse. */
+    const bool with_others = (is_picked(hit->point, hit->side) || is_picked(hit->point, 0)) &&
+                             wm.path_timing_picks.size() > 1;
+    if (with_others && !io.KeyAlt) {
+      xform_start('G', true);
+      return;
+    }
+    operator_call(C, "anim.timing_select", args);
+  }
   animation_sync(doc);
   g.active = true;
   g.dragging = false;

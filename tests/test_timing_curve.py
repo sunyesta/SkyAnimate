@@ -367,6 +367,123 @@ assert len(pts) == 3 and close(pts[1][:2], (0.6, 0.7)), pts
 ops.ed.undo()
 assert key(box, 30) == shaped, "one undo step"
 
+# --- Edit mode: picking several points and handles, G R S on them, and handle types (V, the right click menu) ----------
+start()
+box = line_layer({10: 0.0, 30: 1.0})
+assert ops.anim.motion_path_stretch_shape(shape="EASE_IN_OUT", **args(box)) == {'FINISHED'}
+for x in (0.25, 0.5, 0.75):
+    assert ops.anim.timing_point_add(**args(box, x=x)) == {'FINISHED'}
+assert wm.timing_picks()["picks"] == [(3, "POINT")], ("a point added is picked alone", wm.timing_picks())
+five = key(box, 30)["timing"]
+assert len(five) == 5
+
+
+def pts():
+    return key(box, 30)["timing"]
+
+
+def turn_of(h):
+    """A handle's way as the graph shows it (20 frames; 10 frames a whole way along: aspect 10), in degrees."""
+    return math.degrees(math.atan2(h[1] * 10, h[0] * 20))
+
+
+def in_line(p):
+    return abs(p[2][0] * p[3][1] - p[2][1] * p[3][0]) < 1e-6 and p[2][0] < 0 < p[3][0]
+
+
+# A click picks one; Shift click adds and takes out; the active one follows the last clicked.
+assert ops.anim.timing_select(**args(box, index=2)) == {'FINISHED'}
+assert ops.anim.timing_select(**args(box, index=1, extend=1)) == {'FINISHED'}
+assert sorted(wm.timing_picks()["picks"]) == [(1, "POINT"), (2, "POINT")] and wm.timing_picks()["active"] == 1
+assert ops.anim.timing_select(**args(box, index=2, extend=1)) == {'FINISHED'}
+assert wm.timing_picks()["picks"] == [(1, "POINT")], "Shift click takes a picked one out"
+# G: the picked points move together; others and the ends stay. 2 frames later, 5% further along.
+assert ops.anim.timing_select(**args(box, index=2, extend=1)) == {'FINISHED'}
+assert ops.anim.timing_transform(mode="MOVE", x=2, y=0.05) == {'FINISHED'}
+moved = pts()
+for i in (1, 2):
+    assert close(moved[i][:2], (five[i][0] + 0.1, five[i][1] + 0.05)), (i, five[i], moved[i])
+    assert moved[i][2:4] == five[i][2:4], "its handles come with it"
+assert moved[0] == five[0] and moved[3] == five[3] and moved[4] == five[4], "the rest stay"
+ops.ed.undo()
+assert pts() == five, "one undo step"
+# Dragged far later they stop short of the next point not picked, still together.
+assert ops.anim.timing_transform(mode="MOVE", x=40) == {'FINISHED'}
+far = pts()
+assert far[2][0] < five[3][0] and close(far[2][0] - five[2][0], far[1][0] - five[1][0]), (five, far)
+ops.ed.undo()
+# The ends never move (A picks every point and the ends' handles).
+assert ops.anim.timing_select(**args(box, action="ALL")) == {'FINISHED'}
+assert len(wm.timing_picks()["picks"]) == 5
+assert ops.anim.timing_transform(mode="MOVE", x=1, y=0.1) == {'FINISHED'}
+assert pts()[0][:2] == (0.0, 0.0) and pts()[-1][:2] == (1.0, 1.0)
+ops.ed.undo()
+# R: one point's handles turn about it, as the graph shows them, staying in line and as long.
+assert ops.anim.timing_select(**args(box, index=2)) == {'FINISHED'}
+assert ops.anim.timing_transform(mode="ROTATE", angle=20, aspect=10) == {'FINISHED'}
+p, q = five[2], pts()[2]
+assert close(turn_of(q[3]) - turn_of(p[3]), 20, 0.05) and close(turn_of(q[2]) - turn_of(p[2]), 20, 0.05), (p, q)
+assert close(math.hypot(q[3][0] * 20, q[3][1] * 10), math.hypot(p[3][0] * 20, p[3][1] * 10), 1e-4), (p, q)
+assert in_line(q) and q[:2] == p[:2], q
+ops.ed.undo()
+# S: one point, its handles longer (within their pieces).
+assert ops.anim.timing_transform(mode="SCALE", factor=1.5) == {'FINISHED'}
+assert close(pts()[2][3][0], p[3][0] * 1.5, 1e-5) and close(pts()[2][2][1], p[2][1] * 1.5, 1e-5), pts()[2]
+ops.ed.undo()
+# S on several: their places about their middle; X keeps it to time.
+assert ops.anim.timing_select(**args(box, index=1)) == {'FINISHED'}
+assert ops.anim.timing_select(**args(box, index=3, extend=1)) == {'FINISHED'}
+assert ops.anim.timing_transform(mode="SCALE", factor=0.5, axis="X") == {'FINISHED'}
+mid = (five[1][0] + five[3][0]) / 2
+s1, s3 = pts()[1], pts()[3]
+assert close(s1[0], mid + (five[1][0] - mid) * 0.5) and close(s3[0], mid + (five[3][0] - mid) * 0.5), (s1, s3)
+assert close(s1[1], five[1][1]) and close(s3[1], five[3][1]), "X: the way along as it was"
+ops.ed.undo()
+# A handle picked alone: G moves it, the other turning to stay in line (aligned).
+assert ops.anim.timing_select(**args(box, index=2, part="OUT")) == {'FINISHED'}
+assert ops.anim.timing_transform(mode="MOVE", x=0, y=0.08) == {'FINISHED'}
+h = pts()[2]
+assert h[:2] == five[2][:2] and close(h[3][1], five[2][3][1] + 0.08) and in_line(h), h
+ops.ed.undo()
+# Handle types: Broken lets them go apart; Aligned puts them back in line, each as long; Flat lays them level.
+assert ops.anim.timing_select(**args(box, index=2)) == {'FINISHED'}
+assert ops.anim.timing_handles_type(type="BROKEN") == {'FINISHED'}
+assert pts()[2][4] is False
+assert ops.anim.timing_select(**args(box, index=2, part="OUT")) == {'FINISHED'}
+assert ops.anim.timing_transform(mode="MOVE", x=0, y=0.08) == {'FINISHED'}
+broken = pts()[2]
+assert broken[2] == five[2][2] and not in_line(broken), ("broken: the other stays", broken)
+assert ops.anim.timing_handles_type(type="ALIGNED", aspect=10) == {'FINISHED'}
+fixed = pts()[2]
+assert fixed[4] is True and in_line(fixed), ("Align puts them back in line", fixed)
+assert close(math.hypot(fixed[2][0] * 20, fixed[2][1] * 10), math.hypot(broken[2][0] * 20, broken[2][1] * 10), 1e-4)
+assert close(math.hypot(fixed[3][0] * 20, fixed[3][1] * 10), math.hypot(broken[3][0] * 20, broken[3][1] * 10), 1e-4)
+# along the way between theirs, as shown
+ways = sorted([turn_of(broken[3]), turn_of((-broken[2][0], -broken[2][1]))])
+assert ways[0] + 1 < turn_of(fixed[3]) < ways[1] - 1, (ways, turn_of(fixed[3]))
+assert close(turn_of(fixed[3]), (ways[0] + ways[1]) / 2, 0.5), (ways, turn_of(fixed[3]))
+assert ops.anim.timing_handles_type(type="FLAT") == {'FINISHED'}
+assert pts()[2][2][1] == 0.0 and pts()[2][3][1] == 0.0 and pts()[2][3][0] > 0 > pts()[2][2][0], pts()[2]
+ops.ed.undo()
+ops.ed.undo()
+ops.ed.undo()
+ops.ed.undo()
+assert pts() == five, pts()
+# A box picks the points and handle tips inside it; with SUB it takes them out; NONE picks none.
+assert ops.anim.timing_select(**args(box, box="%g,%g,%g,%g" % (0.2, -1, 0.55, 2))) == {'FINISHED'}
+got = wm.timing_picks()["picks"]
+assert (1, "POINT") in got and (2, "POINT") in got and (3, "POINT") not in got, got
+assert ops.anim.timing_select(**args(box, box="%g,%g,%g,%g" % (0.45, -1, 0.55, 2), mode="SUB")) == {'FINISHED'}
+got = wm.timing_picks()["picks"]
+assert (1, "POINT") in got and (2, "POINT") not in got, got
+assert ops.anim.timing_select(**args(box, action="NONE")) == {'FINISHED'}
+assert wm.timing_picks()["picks"] == []
+assert ops.anim.timing_transform(mode="MOVE", x=1) == {'CANCELLED'}, "nothing picked"
+# X takes out every point picked (never an end).
+assert ops.anim.timing_select(**args(box, action="ALL")) == {'FINISHED'}
+assert ops.anim.timing_point_delete() == {'FINISHED'}
+assert len(pts()) == 2 and wm.timing_picks()["picks"] == []
+
 # --- Decimate (the Edit mode's right click menu), its Ratio adjustable after ------------------------------------------
 start()
 box = line_layer({10: 0.0, 30: 1.0})

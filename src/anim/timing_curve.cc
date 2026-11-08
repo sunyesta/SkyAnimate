@@ -615,6 +615,230 @@ bool timing_point_remove(TimingCurve &curve, size_t i)
   return true;
 }
 
+/* The Edit mode's G R S and handle types work as the graph shows the curve: x in frames, y `aspect` frames a whole way
+ * along, so a turn or a level handle is one on screen. */
+namespace {
+
+struct ViewScale {
+  float x, y;
+  float2 to(float2 h) const { return {h.x * x, h.y * y}; }
+  float2 from(float2 v) const { return {v.x / x, v.y / y}; }
+};
+
+ViewScale view_scale(int n, float aspect)
+{
+  return {float(std::max(n, 1)), std::max(aspect, 1e-6f)};
+}
+
+/* Point `i`'s room in time on each side: to its neighbours. */
+float gap_before(const TimingCurve &c, size_t i)
+{
+  return i > 0 ? std::max(c.points[i].co.x - c.points[i - 1].co.x, 0.0f) : 0.0f;
+}
+float gap_after(const TimingCurve &c, size_t i)
+{
+  return i + 1 < c.points.size() ? std::max(c.points[i + 1].co.x - c.points[i].co.x, 0.0f) : 0.0f;
+}
+
+/* Both of point `i`'s handles set from what the curve shows (`in`, `out`), each kept pointing its way and within its
+ * segment; the aligned flag as it was. */
+void handles_put(TimingCurve &c, size_t i, float2 in, float2 out)
+{
+  TimingPoint &p = c.points[i];
+  if (i > 0) {
+    p.in = handle_within(in, false, gap_before(c, i));
+  }
+  if (i + 1 < c.points.size()) {
+    p.out = handle_within(out, true, gap_after(c, i));
+  }
+}
+
+float2 turned(float2 v, float angle)
+{
+  const float cs = std::cos(angle), sn = std::sin(angle);
+  return {v.x * cs - v.y * sn, v.x * sn + v.y * cs};
+}
+
+}  // namespace
+
+void timing_transform(TimingCurve &curve, const std::vector<TimingPick> &picks, char kind, float2 offset, float angle,
+                      float2 factor, int n, float aspect)
+{
+  if (curve.empty()) {
+    return;
+  }
+  const size_t count = curve.points.size();
+  const ViewScale vs = view_scale(n, aspect);
+  std::vector<char> point(count, 0);
+  std::vector<int> handles;
+  for (const TimingPick &k : picks) {
+    if (k.point < 0 || size_t(k.point) >= count) {
+      continue;
+    }
+    if (k.part == 0) {
+      point[size_t(k.point)] = 1;
+    }
+  }
+  /* Handles picked on their own (not with their point), as point * 2 + (0 in, 1 out). */
+  for (const TimingPick &k : picks) {
+    if (k.point >= 0 && size_t(k.point) < count && k.part != 0 && !point[size_t(k.point)]) {
+      const size_t i = size_t(k.point);
+      if ((k.part < 0 && i == 0) || (k.part > 0 && i + 1 == count)) {
+        continue;
+      }
+      const int code = k.point * 2 + (k.part > 0 ? 1 : 0);
+      if (std::find(handles.begin(), handles.end(), code) == handles.end()) {
+        handles.push_back(code);
+      }
+    }
+  }
+  const auto shown = [&](const TimingCurve &c, size_t i, bool out) {
+    float2 in, o;
+    timing_point_handles(c, i, in, o);
+    return out ? o : in;
+  };
+  size_t points = 0;
+  for (size_t i = 0; i < count; i++) {
+    points += point[i] ? 1 : 0;
+  }
+  const TimingCurve was = curve;
+
+  if (kind == 'G') {
+    /* The points picked go together, as far as the first not picked on each side lets them (the ends never move). */
+    float dx = offset.x;
+    for (size_t i = 1; i + 1 < count; i++) {
+      if (!point[i]) {
+        continue;
+      }
+      size_t next = i + 1, prev = i - 1;
+      while (next + 1 < count && point[next]) {
+        next++;
+      }
+      while (prev > 0 && point[prev]) {
+        prev--;
+      }
+      dx = std::min(dx, was.points[next].co.x - GAP - was.points[i].co.x);
+      dx = std::max(dx, was.points[prev].co.x + GAP - was.points[i].co.x);
+    }
+    for (size_t i = 1; i + 1 < count; i++) {
+      if (point[i]) {
+        curve.points[i].co = was.points[i].co + float2(dx, offset.y);
+      }
+    }
+    for (const int code : handles) {
+      const size_t i = size_t(code / 2);
+      const bool out = code % 2 == 1;
+      timing_handle_set(curve, i, out, shown(was, i, out) + offset, false);
+    }
+    return;
+  }
+
+  if (kind == 'R') {
+    /* Each picked point's handles about it; handles picked alone about their points. As shown, so a turn looks right. */
+    for (size_t i = 0; i < count; i++) {
+      if (point[i]) {
+        float2 in, out;
+        timing_point_handles(was, i, in, out);
+        handles_put(curve, i, vs.from(turned(vs.to(in), angle)), vs.from(turned(vs.to(out), angle)));
+      }
+    }
+    for (const int code : handles) {
+      const size_t i = size_t(code / 2);
+      const bool out = code % 2 == 1;
+      timing_handle_set(curve, i, out, vs.from(turned(vs.to(shown(was, i, out)), angle)), false);
+    }
+    return;
+  }
+
+  /* S. */
+  factor = {std::max(factor.x, 0.0f), std::max(factor.y, 0.0f)};
+  if (points >= 2) {
+    /* Their places about their middle, in order between the points not picked; their handles with them. */
+    float2 mid{0.0f, 0.0f};
+    for (size_t i = 0; i < count; i++) {
+      if (point[i]) {
+        mid += was.points[i].co;
+      }
+    }
+    mid *= 1.0f / float(points);
+    for (size_t i = 1; i + 1 < count; i++) {
+      if (point[i]) {
+        const float2 d = was.points[i].co - mid;
+        curve.points[i].co = mid + float2(d.x * factor.x, d.y * factor.y);
+      }
+    }
+    for (size_t i = 1; i + 1 < count; i++) {
+      curve.points[i].co.x = std::max(curve.points[i].co.x, curve.points[i - 1].co.x + GAP);
+    }
+    for (size_t i = count - 1; i-- > 1;) {
+      curve.points[i].co.x = std::min(curve.points[i].co.x, curve.points[i + 1].co.x - GAP);
+    }
+  }
+  for (size_t i = 0; i < count; i++) {
+    if (point[i]) {
+      float2 in, out;
+      timing_point_handles(was, i, in, out);
+      handles_put(curve, i, {in.x * factor.x, in.y * factor.y}, {out.x * factor.x, out.y * factor.y});
+    }
+  }
+  for (const int code : handles) {
+    const size_t i = size_t(code / 2);
+    const bool out = code % 2 == 1;
+    const float2 h = shown(was, i, out);
+    timing_handle_set(curve, i, out, {h.x * factor.x, h.y * factor.y}, false);
+  }
+}
+
+void timing_handles_type(TimingCurve &curve, const std::vector<int> &points, TimingHandles type, int n, float aspect)
+{
+  if (curve.empty()) {
+    return;
+  }
+  const size_t count = curve.points.size();
+  const ViewScale vs = view_scale(n, aspect);
+  for (const int pi : points) {
+    if (pi < 0 || size_t(pi) >= count) {
+      continue;
+    }
+    const size_t i = size_t(pi);
+    TimingPoint &p = curve.points[i];
+    if (type == TimingHandles::Broken) {
+      p.aligned = false;
+      continue;
+    }
+    float2 in, out;
+    timing_point_handles(curve, i, in, out);
+    const float2 vin = vs.to(in), vout = vs.to(out);
+    const float lin = length(vin), lout = length(vout);
+    if (type == TimingHandles::Flat) {
+      /* Level, each as long as it was on screen: the move eases into and out of the point. */
+      handles_put(curve, i, vs.from({-lin, 0.0f}), vs.from({lout, 0.0f}));
+      continue;
+    }
+    p.aligned = true;
+    if (i == 0 || i + 1 == count) {
+      continue;
+    }
+    /* In line along the way between theirs (as shown), each keeping its length; one of no length takes the other's. */
+    float2 way{0.0f, 0.0f};
+    if (lout > 1e-9f) {
+      way += vout / lout;
+    }
+    if (lin > 1e-9f) {
+      way -= vin / lin;
+    }
+    if (length(way) < 1e-9f) {
+      /* Back on themselves exactly: level. */
+      way = {1.0f, 0.0f};
+    }
+    way = normalize(way);
+    if (way.x < 0.0f) {
+      way = -way;
+    }
+    handles_put(curve, i, vs.from(-way * lin), vs.from(way * lout));
+  }
+}
+
 /* Smooth's dabs along a stroke: a dab every so often as the graph shows the way (`dist`), at most so many that a huge
  * stroke or brush can't go on for ever (spaced further apart on a stroke longer than that). None on a stroke too long
  * to measure. */

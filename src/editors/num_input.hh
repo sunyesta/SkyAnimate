@@ -7,6 +7,9 @@
 #include <string>
 #include <vector>
 
+#include "imgui.h"
+
+#include "core/math.hh"
 #include "wm/context.hh"
 
 namespace oanim {
@@ -105,5 +108,27 @@ inline bool num_input_keys(Context &C, NumInput &num, int fields)
   }
   return changed;
 }
+
+/* The mouse as G, R and S follow it: held Shift, it moves a tenth as far (Blender's precision), from
+ * wherever it was when Shift went down, so nothing jumps as Shift is pressed or let go. A Shift still held
+ * from the key that started it (Shift D, Shift E) counts only once let go and pressed again, as in Blender:
+ * otherwise the copy would crawl until the key came up. */
+struct PreciseMouse {
+  float2 raw, at;
+  bool armed = true;
+  void reset(float2 mouse)
+  {
+    raw = at = mouse;
+    /* No UI in background runs (tests): nothing held. */
+    armed = !ImGui::GetCurrentContext() || !ImGui::GetIO().KeyShift;
+  }
+  float2 update(float2 mouse, bool shift)
+  {
+    armed |= !shift;
+    at += (mouse - raw) * (shift && armed ? 0.1f : 1.0f);
+    raw = mouse;
+    return at;
+  }
+};
 
 }  // namespace oanim

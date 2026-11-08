@@ -1864,6 +1864,18 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["end"] = wm.path_under_end;
     return d;
   });
+  m.def("timing_picks", []() {
+    const WindowManager &wm = *current_context().wm;
+    py::dict d;
+    py::list picks;
+    for (const TimingPick &k : wm.path_timing_picks) {
+      picks.append(py::make_tuple(k.point, k.part == 0 ? "POINT" : k.part < 0 ? "IN" : "OUT"));
+    }
+    d["picks"] = picks;
+    d["active"] = wm.path_timing_point;
+    d["end"] = wm.path_timing_point_end;
+    return d;
+  });
   m.def("motion_path_dots", []() {
     py::list out;
     for (const auto &[t, frame] : current_context().wm->path_dots) {

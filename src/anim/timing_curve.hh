@@ -79,6 +79,26 @@ void timing_handle_set(TimingCurve &curve, size_t i, bool out, float2 h, bool fr
 /* Takes out point `i` (never an end); the curve fitted again over the frames it spanned would be another edit. */
 bool timing_point_remove(TimingCurve &curve, size_t i);
 
+/* A pick in the Path Timing graph's Edit mode: point `point` (`part` 0: its handles come with it) or one of its handles
+ * on its own (-1 in, 1 out). */
+struct TimingPick {
+  int point = -1;
+  int part = 0;
+  bool operator==(const TimingPick &) const = default;
+};
+/* G R S on the picks (`kind`), as the graph shows the curve: `n` the stretch's frames, `aspect` frames a whole way
+ * along. G moves the points picked by `offset` (x a share of the stretch's time, y the way along) together, kept between
+ * the first not picked each side (the ends never move), and handles picked by it. R turns each picked point's handles
+ * about it, and handles picked about their points, by `angle` radians (anticlockwise as shown). S scales by `factor`
+ * (across, up): several points their places about their middle (kept in order) and their handles with them; one point
+ * its handles; handles picked their lengths. An aligned point's handles stay in line; none reaches past its segment. */
+void timing_transform(TimingCurve &curve, const std::vector<TimingPick> &picks, char kind, float2 offset, float angle,
+                      float2 factor, int n, float aspect);
+/* The handles of `points`: Aligned in line along the way between theirs (as shown, each keeping its length), Broken
+ * free of each other, Flat level (each as long as it was on screen), so the move eases into and out of the point. */
+enum class TimingHandles { Aligned, Broken, Flat };
+void timing_handles_type(TimingCurve &curve, const std::vector<int> &points, TimingHandles type, int n, float aspect);
+
 /* Grab and Smooth, the Path Timing graph's Sculpt mode, on a stretch of `n` frames along the stroke's places `path` (x
  * in frames from the stretch's start, y the way along), within `radius` frames of the brush (`aspect` frames to a whole
  * way along, as the graph shows them, so the brush is a circle there), `strength` how much, `lock_x` up and down only.

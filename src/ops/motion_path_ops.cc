@@ -325,6 +325,142 @@ static OpStatus path_stretch_select(Context &C, const MotionPathTarget &target, 
   return OpStatus::Finished;
 }
 
+/* The Path Timing graph's Edit mode picks: the stretch they're on (its thing, a frame inside it, its curve and frames)
+ * and those still on its curve. */
+static bool timing_picked(Context &C, MotionPathTarget &r_target, int &r_frame, TimingCurve &r_curve, int &r_n,
+                          std::vector<TimingPick> &r_picks)
+{
+  WindowManager &wm = *C.wm;
+  Document &doc = *C.document;
+  animation_sync(doc);
+  r_target = wm.path_timing_point_target;
+  r_frame = wm.path_timing_point_end - 1;
+  int start = 0;
+  r_picks.clear();
+  if (!wm.path_timing_picks.empty() && motion_path_timing_curve(doc, r_target, r_frame, r_curve, &start, &r_n)) {
+    if (r_curve.empty()) {
+      r_curve = timing_even();
+    }
+    for (const TimingPick &k : wm.path_timing_picks) {
+      if (k.point >= 0 && size_t(k.point) < r_curve.points.size()) {
+        r_picks.push_back(k);
+      }
+    }
+  }
+  if (r_picks.empty()) {
+    report(ReportType::Warning, "Pick points or handles of the timing curve first");
+    return false;
+  }
+  return true;
+}
+
+/* Whether the graph under the mouse is the one its picks are on, and it is in Edit mode (G R S and V's poll). */
+static bool timing_picks_here(Context &C)
+{
+  if (!C.document || !C.wm) {
+    return false;
+  }
+  const WindowManager &wm = *C.wm;
+  return !wm.tool_settings.path_graph_sculpt && wm.path_graph_hovered && !wm.path_timing_picks.empty() &&
+         wm.path_timing_point_target.same(wm.path_graph_target) && wm.path_timing_point_end == wm.path_graph_end;
+}
+
+/* Picks a stretch's points and handles (the stretch's thing `t`, ending at `end`, its curve `curve`): action "ALL" or
+ * "NONE"; else point `index` (part: 0 the point, -1 or 1 a handle; `extend` toggles it in or out); or a box (x 0-1 of
+ * its time, y the way along) picking the points and handle tips inside, `mode` SET, ADD or SUB. */
+static void timing_select_apply(WindowManager &wm, const MotionPathTarget &t, int end, const TimingCurve &curve,
+                                const std::string &action, int index, int part, bool extend, const float *box,
+                                const std::string &mode)
+{
+  if (!wm.path_timing_point_target.same(t) || wm.path_timing_point_end != end) {
+    wm.path_timing_picks.clear();
+    wm.path_timing_point = -1;
+  }
+  wm.path_timing_point_target = t;
+  wm.path_timing_point_end = end;
+  std::vector<TimingPick> &picks = wm.path_timing_picks;
+  const size_t count = curve.points.size();
+  const auto has = [&](TimingPick k) { return std::find(picks.begin(), picks.end(), k) != picks.end(); };
+  const auto take = [&](TimingPick k) { picks.erase(std::remove(picks.begin(), picks.end(), k), picks.end()); };
+  if (action == "NONE") {
+    picks.clear();
+    wm.path_timing_point = -1;
+    return;
+  }
+  if (action == "ALL") {
+    picks.clear();
+    for (size_t i = 1; i + 1 < count; i++) {
+      picks.push_back({int(i), 0});
+    }
+    if (count >= 2) {
+      picks.push_back({0, 1});
+      picks.push_back({int(count) - 1, -1});
+    }
+    return;
+  }
+  if (box) {
+    const float x0 = std::min(box[0], box[2]), x1 = std::max(box[0], box[2]);
+    const float y0 = std::min(box[1], box[3]), y1 = std::max(box[1], box[3]);
+    const auto in_box = [&](float2 p) { return p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1; };
+    std::vector<TimingPick> found;
+    for (size_t i = 0; i < count; i++) {
+      const float2 co = curve.points[i].co;
+      if (i > 0 && i + 1 < count && in_box(co)) {
+        found.push_back({int(i), 0});
+      }
+      float2 in, out;
+      timing_point_handles(curve, i, in, out);
+      if (i > 0 && in_box(co + in)) {
+        found.push_back({int(i), -1});
+      }
+      if (i + 1 < count && in_box(co + out)) {
+        found.push_back({int(i), 1});
+      }
+    }
+    if (mode == "SET") {
+      picks.clear();
+    }
+    for (const TimingPick &k : found) {
+      if (mode == "SUB") {
+        take(k);
+      }
+      else if (!has(k)) {
+        picks.push_back(k);
+      }
+    }
+    if (std::none_of(picks.begin(), picks.end(), [&](const TimingPick &k) { return k.point == wm.path_timing_point; }))
+    {
+      wm.path_timing_point = -1;
+      for (const TimingPick &k : picks) {
+        if (k.part == 0) {
+          wm.path_timing_point = k.point;
+        }
+      }
+    }
+    return;
+  }
+  if (index < 0 || size_t(index) >= count) {
+    return;
+  }
+  const TimingPick k{index, part};
+  if (extend && has(k)) {
+    take(k);
+    if (wm.path_timing_point == index &&
+        std::none_of(picks.begin(), picks.end(), [&](const TimingPick &o) { return o.point == index; }))
+    {
+      wm.path_timing_point = -1;
+    }
+    return;
+  }
+  if (!extend) {
+    picks.clear();
+  }
+  if (!has(k)) {
+    picks.push_back(k);
+  }
+  wm.path_timing_point = index;
+}
+
 void motion_path_operators_register()
 {
   {
@@ -1494,6 +1630,16 @@ void motion_path_operators_register()
       if (!motion_path_timing_curve_set(*C.document, t, frame, curve)) {
         return OpStatus::Cancelled;
       }
+      if (C.wm) {
+        /* The new point picked, alone. */
+        int start = 0, n = 0;
+        TimingCurve now;
+        motion_path_timing_curve(*C.document, t, frame, now, &start, &n);
+        C.wm->path_timing_point_target = t;
+        C.wm->path_timing_point_end = start + n;
+        C.wm->path_timing_picks = {{i, 0}};
+        C.wm->path_timing_point = i;
+      }
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
@@ -1503,7 +1649,7 @@ void motion_path_operators_register()
     ot.idname = "anim.timing_point_delete";
     ot.name = "Delete Timing Point";
     ot.description = "The Path Timing graph's Edit mode (X): point index=N taken out of the timing curve of the stretch "
-                     "frame= is in (never an end: those are the keys); without index=, the point picked in the graph. "
+                     "frame= is in (never an end: those are the keys); without index=, the points picked in the graph. "
                      "Of what a path traces (layer=, bone=, point=, drawing=1, or the first traced)";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
     ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
@@ -1513,30 +1659,44 @@ void motion_path_operators_register()
       TimingCurve curve;
       size_t i = 0;
       WindowManager &wm = *C.wm;
+      std::vector<size_t> gone;
       if (!op_has_arg(C, "index")) {
-        /* X over the graph: the point picked there. */
+        /* X over the graph: the points picked there (the ends are the keys: never). */
         Document &doc = *C.document;
         animation_sync(doc);
         t = wm.path_timing_point_target;
         frame = wm.path_timing_point_end - 1;
-        if (wm.path_timing_point < 0 || !motion_path_timing_curve(doc, t, frame, curve) || curve.empty()) {
+        if (!motion_path_timing_curve(doc, t, frame, curve) || curve.empty()) {
           report(ReportType::Warning, "Pick a point of the timing curve first");
           return OpStatus::Cancelled;
         }
-        i = size_t(wm.path_timing_point);
-        if (i == 0 || i + 1 >= curve.points.size()) {
-          report(ReportType::Warning, "The curve's ends are the keys");
+        for (const TimingPick &k : wm.path_timing_picks) {
+          if (k.part == 0 && k.point > 0 && size_t(k.point) + 1 < curve.points.size()) {
+            gone.push_back(size_t(k.point));
+          }
+        }
+        if (gone.empty()) {
+          report(ReportType::Warning, wm.path_timing_picks.empty() ? "Pick a point of the timing curve first"
+                                                                    : "The curve's ends are the keys");
           return OpStatus::Cancelled;
         }
       }
       else if (!timing_curve_of(C, t, frame, curve, nullptr, nullptr) || !timing_point_of(C, curve, false, i)) {
         return OpStatus::Cancelled;
       }
-      timing_point_remove(curve, i);
+      else {
+        gone.push_back(i);
+      }
+      std::sort(gone.begin(), gone.end());
+      gone.erase(std::unique(gone.begin(), gone.end()), gone.end());
+      for (size_t g = gone.size(); g-- > 0;) {
+        timing_point_remove(curve, gone[g]);
+      }
       if (!motion_path_timing_curve_set(*C.document, t, frame, curve)) {
         return OpStatus::Cancelled;
       }
       wm.path_timing_point = -1;
+      wm.path_timing_picks.clear();
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
@@ -1580,6 +1740,7 @@ void motion_path_operators_register()
         return OpStatus::Cancelled;
       }
       C.wm->path_timing_point = -1;
+      C.wm->path_timing_picks.clear();
       const std::string count = std::to_string(gone) + " of " + std::to_string(inside) +
                                 (inside == 1 ? " point" : " points") + " removed";
       op_note(count);
@@ -1590,6 +1751,223 @@ void motion_path_operators_register()
                                   "The share of the curve's points to keep: 1 keeps them all. The ones the curve "
                                   "changes least without go first",
                                   "0.5", 0.0f, 1.0f, 0.01f)};
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.timing_select";
+    ot.name = "Select Timing Points";
+    ot.description = "The Path Timing graph's Edit mode: pick point index=N of the timing curve of the stretch frame= is "
+                     "in (part= POINT, or IN or OUT for one of its handles alone; extend=1 toggles it, as Shift click); "
+                     "action=ALL picks every point and the ends' handles, NONE none; box=\"x0,y0,x1,y1\" (0-1 of its "
+                     "time, the way along) the points and handle tips inside it, mode= SET, ADD or SUB. Of what a path "
+                     "traces (layer=, bone=, point=, drawing=1, or the first traced); with none of those nor frame=, "
+                     "the graph under the mouse";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
+    ot.exec = [timing_curve_of](Context &C) {
+      WindowManager &wm = *C.wm;
+      MotionPathTarget t;
+      int frame = 0, start = 0, n = 0;
+      TimingCurve curve;
+      const bool given = op_has_arg(C, "frame") || op_has_arg(C, "layer") || op_has_arg(C, "bone") ||
+                         op_has_arg(C, "point") || op_has_arg(C, "drawing");
+      if (given) {
+        if (!timing_curve_of(C, t, frame, curve, &start, &n)) {
+          return OpStatus::Cancelled;
+        }
+      }
+      else {
+        animation_sync(*C.document);
+        t = wm.path_graph_target;
+        frame = wm.path_graph_end - 1;
+        if (!motion_path_timing_curve(*C.document, t, frame, curve, &start, &n)) {
+          report(ReportType::Warning, "Over the Path Timing graph only");
+          return OpStatus::Cancelled;
+        }
+        if (curve.empty()) {
+          curve = timing_even();
+        }
+      }
+      const std::string action = op_arg(C, "action", "");
+      if (!action.empty() && action != "ALL" && action != "NONE") {
+        report(ReportType::Warning, "action= is ALL or NONE");
+        return OpStatus::Cancelled;
+      }
+      const std::string part_id = op_arg(C, "part", "POINT");
+      if (part_id != "POINT" && part_id != "IN" && part_id != "OUT") {
+        report(ReportType::Warning, "part= is POINT, IN or OUT");
+        return OpStatus::Cancelled;
+      }
+      const std::string mode = op_arg(C, "mode", "SET");
+      if (mode != "SET" && mode != "ADD" && mode != "SUB") {
+        report(ReportType::Warning, "mode= is SET, ADD or SUB");
+        return OpStatus::Cancelled;
+      }
+      float box[4];
+      bool has_box = false;
+      if (op_has_arg(C, "box")) {
+        has_box = std::sscanf(op_arg(C, "box").c_str(), "%f,%f,%f,%f", &box[0], &box[1], &box[2], &box[3]) == 4;
+        if (!has_box) {
+          report(ReportType::Warning, "box= is \"x0,y0,x1,y1\"");
+          return OpStatus::Cancelled;
+        }
+      }
+      const int index = op_arg_int(C, "index", -1);
+      if (action.empty() && !has_box && (index < 0 || size_t(index) >= curve.points.size())) {
+        report(ReportType::Warning,
+               "index= is one of the curve's points, 0 to " + std::to_string(curve.points.size() - 1));
+        return OpStatus::Cancelled;
+      }
+      timing_select_apply(wm, t, start + n, curve, action, index, part_id == "IN" ? -1 : part_id == "OUT" ? 1 : 0,
+                          op_arg_bool(C, "extend"), has_box ? box : nullptr, mode);
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  for (const bool all : {true, false}) {
+    OperatorType ot;
+    ot.idname = all ? "anim.timing_select_all" : "anim.timing_deselect_all";
+    ot.name = all ? "Select All Timing Points" : "Deselect All Timing Points";
+    ot.description = all ? "A over the Path Timing graph in Edit mode: pick every point of its curve and the ends' handles"
+                         : "Alt A over the Path Timing graph in Edit mode: pick none of its curve's points and handles";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = [](Context &C) {
+      return C.document && C.wm && C.wm->path_graph_hovered && !C.wm->tool_settings.path_graph_sculpt;
+    };
+    ot.exec = [all](Context &C) {
+      WindowManager &wm = *C.wm;
+      animation_sync(*C.document);
+      TimingCurve curve;
+      int start = 0, n = 0;
+      if (!motion_path_timing_curve(*C.document, wm.path_graph_target, wm.path_graph_end - 1, curve, &start, &n)) {
+        return OpStatus::Cancelled;
+      }
+      if (curve.empty()) {
+        curve = timing_even();
+      }
+      timing_select_apply(wm, wm.path_graph_target, start + n, curve, all ? "ALL" : "NONE", -1, 0, false, nullptr,
+                          "SET");
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.timing_transform";
+    ot.name = "Transform Timing Points";
+    ot.description = "The Path Timing graph's Edit mode (G R S): the points and handles picked, mode=MOVE by x= (frames) "
+                     "and y= (the way along: 1 is the whole way), ROTATE (each point's handles about it, handles picked "
+                     "alone about their points) by angle= (degrees, anticlockwise as shown), SCALE by factor= (several "
+                     "points: their places about their middle and their handles; one point: its handles; handles "
+                     "picked: their lengths); axis=X (time only) or Y (the way along only) for SCALE; aspect= frames "
+                     "a whole way along as the graph shows it (turns and lengths as seen there; default the stretch's "
+                     "frames). The points stay in order, the ends never move";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
+    ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
+    ot.exec = [](Context &C) {
+      const std::string mode = op_arg(C, "mode", "MOVE");
+      if (mode != "MOVE" && mode != "ROTATE" && mode != "SCALE") {
+        report(ReportType::Warning, "mode= is MOVE, ROTATE or SCALE");
+        return OpStatus::Cancelled;
+      }
+      const std::string axis = op_arg(C, "axis", "");
+      if (!axis.empty() && axis != "X" && axis != "Y") {
+        report(ReportType::Warning, "axis= is X or Y");
+        return OpStatus::Cancelled;
+      }
+      MotionPathTarget t;
+      int frame = 0, n = 0;
+      TimingCurve curve;
+      std::vector<TimingPick> picks;
+      if (!timing_picked(C, t, frame, curve, n, picks)) {
+        return OpStatus::Cancelled;
+      }
+      const float aspect = std::max(op_arg_float(C, "aspect", float(n)), 1e-3f);
+      const float f = op_arg_float(C, "factor", 1.0f);
+      const float2 factor{axis == "Y" ? 1.0f : f, axis == "X" ? 1.0f : f};
+      const float2 offset{op_arg_float(C, "x", 0.0f) / float(std::max(n, 1)), op_arg_float(C, "y", 0.0f)};
+      timing_transform(curve, picks, mode == "MOVE" ? 'G' : mode == "ROTATE" ? 'R' : 'S', offset,
+                       op_arg_float(C, "angle", 0.0f) * 3.14159265f / 180.0f, factor, n, aspect);
+      if (!motion_path_timing_curve_set(*C.document, t, frame, curve)) {
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.timing_handles_type";
+    ot.name = "Timing Handle Type";
+    ot.description = "The Path Timing graph's Edit mode (V, or its right click menu): the handles of the points picked "
+                     "(and of the points whose handles are picked), type=ALIGNED (in line, along the way between theirs "
+                     "as shown), BROKEN (free of each other) or FLAT (level: the move eases into and out of the "
+                     "point); aspect= frames a whole way along as the graph shows it (default the stretch's frames)";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_TIMING;
+    ot.poll = [](Context &C) { return C.document != nullptr && C.wm != nullptr; };
+    ot.exec = [](Context &C) {
+      const std::string type = op_arg(C, "type", "ALIGNED");
+      if (type != "ALIGNED" && type != "BROKEN" && type != "FLAT") {
+        report(ReportType::Warning, "type= is ALIGNED, BROKEN or FLAT");
+        return OpStatus::Cancelled;
+      }
+      MotionPathTarget t;
+      int frame = 0, n = 0;
+      TimingCurve curve;
+      std::vector<TimingPick> picks;
+      if (!timing_picked(C, t, frame, curve, n, picks)) {
+        return OpStatus::Cancelled;
+      }
+      std::vector<int> points;
+      for (const TimingPick &k : picks) {
+        if (std::find(points.begin(), points.end(), k.point) == points.end()) {
+          points.push_back(k.point);
+        }
+      }
+      timing_handles_type(curve, points,
+                          type == "ALIGNED"  ? TimingHandles::Aligned
+                          : type == "BROKEN" ? TimingHandles::Broken
+                                             : TimingHandles::Flat,
+                          n, std::max(op_arg_float(C, "aspect", float(n)), 1e-3f));
+      if (!motion_path_timing_curve_set(*C.document, t, frame, curve)) {
+        return OpStatus::Cancelled;
+      }
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  for (const char kind : {'G', 'R', 'S'}) {
+    OperatorType ot;
+    ot.idname = kind == 'G' ? "anim.timing_grab" : kind == 'R' ? "anim.timing_rotate" : "anim.timing_scale";
+    ot.name = kind == 'G' ? "Move Timing Points" : kind == 'R' ? "Rotate Timing Handles" : "Scale Timing Points";
+    ot.description = kind == 'G' ? "G over the Path Timing graph in Edit mode: move the points and handles picked with "
+                                   "the mouse (X or Y: in time or the way along only; numbers typed in frames and %; "
+                                   "Ctrl snaps to whole frames and 5%)"
+                     : kind == 'R' ? "R over the Path Timing graph in Edit mode: turn each picked point's handles "
+                                     "about it, and handles picked about their points (Ctrl snaps to 5 degrees)"
+                                   : "S over the Path Timing graph in Edit mode: scale the points picked about their "
+                                     "middle, or one point's handles (X or Y: in time or the way along only; Ctrl "
+                                     "snaps to 0.1)";
+    ot.flag = 0;
+    ot.poll = timing_picks_here;
+    ot.exec = [kind](Context &C) {
+      C.wm->path_graph_transform_request = kind;
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.timing_handles_menu";
+    ot.name = "Timing Handle Type Menu";
+    ot.description = "V over the Path Timing graph in Edit mode: the picked points' handle types";
+    ot.flag = 0;
+    ot.poll = timing_picks_here;
+    ot.exec = [](Context &C) {
+      C.wm->menu_request = "timing_handles";
+      return OpStatus::Finished;
+    };
     operators().add(std::move(ot));
   }
   {
@@ -1632,6 +2010,10 @@ void motion_path_operators_register()
           op_has_arg(C, "dyntopo") ? op_arg_bool(C, "dyntopo") : ts.path_timing_dyntopo);
       if (!motion_path_timing_curve_set(*C.document, t, frame, sculpted)) {
         return OpStatus::Cancelled;
+      }
+      if (sculpted.points.size() != curve.points.size()) {
+        C.wm->path_timing_picks.clear();
+        C.wm->path_timing_point = -1;
       }
       return OpStatus::Finished;
     };

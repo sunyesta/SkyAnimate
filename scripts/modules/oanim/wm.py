@@ -590,6 +590,12 @@ def motion_path_under():
     return _oanim.motion_path_under()
 
 
+def timing_picks():
+    """The Path Timing graph's Edit mode picks: a dict with picks (a list of (point index, "POINT", "IN" or "OUT")),
+    active (the Point row's point, -1 for none) and end (the frame of the key ending the stretch they are on)."""
+    return _oanim.timing_picks()
+
+
 def motion_path_dots():
     """The dots selected between keys with the Motion Path tool's Edit: dicts with layer, bone, point (ids, 0 for
     none), head and frame. Keys selected are the timeline's (keyframes()' "selected")."""

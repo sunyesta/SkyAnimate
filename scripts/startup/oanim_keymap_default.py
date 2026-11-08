@@ -188,6 +188,12 @@ KEYMAP = (
     ("Path Timing Graph", "anim.timing_point_delete", "X", {}),
     ("Path Timing Graph", "anim.timing_point_delete", "DEL", {}),
     ("Path Timing Graph", "anim.timing_radius_adjust", "F", {}),
+    ("Path Timing Graph", "anim.timing_grab", "G", {}),
+    ("Path Timing Graph", "anim.timing_rotate", "R", {}),
+    ("Path Timing Graph", "anim.timing_scale", "S", {}),
+    ("Path Timing Graph", "anim.timing_handles_menu", "V", {}),
+    ("Path Timing Graph", "anim.timing_select_all", "A", {}),
+    ("Path Timing Graph", "anim.timing_deselect_all", "A", {"alt": True}),
     ("Motion Path", "anim.motion_path_radius_adjust", "F", {}),
     ("Motion Path", "anim.motion_path_strength_adjust", "F", {"shift": True}),
     # The Edit brush: G R S on the selected keys, Alt S the timing around the selection, V handle types, X delete.
