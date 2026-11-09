@@ -481,6 +481,9 @@ struct MotionPathPlaces {
   uint64_t copies = 0;
   /* Timing curves fitted to speeds (timing_fits_made). */
   uint64_t fits = 0;
+  /* Frames of paths placed from their keys with what actions add to their bones kept from frames worked out before
+   * (the bones' keys edited since). */
+  uint64_t offsets = 0;
 };
 MotionPathPlaces motion_path_places();
 void motion_path_places_clear();

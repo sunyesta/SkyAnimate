@@ -258,6 +258,11 @@ void animation_strip_action_bones(Document &doc);
  * its setup value (frame 0), or with `from_now` the value it has now, its drawings then taking that as
  * their setup pose. With `keep_actions` its actions' keys (action bone actions) stay. */
 void layer_strip_keys(Layer &layer, bool from_now, bool keep_actions);
+/* `doc` as only what evaluating a frame works from: its keys, its plain values, its settings, no values a frame worked
+ * out (a keyed channel's value, what action bone actions added, a bone's or a point's place, constraints' shapes).
+ * Two documents alike this way show every frame alike. False where an edit isn't taken into its changes from the setup
+ * pose yet (a bone or a point moved and not recorded): nothing to compare by. */
+bool animation_inputs_only(Document &doc);
 /* Works action bone actions out again for the bones as they are now (a bone turned without changing
  * frame). animation_sync does this when the frame hasn't moved. */
 /* As animation_sync, for the main loop's own frame changes (playing): `edits` stamps every edit the app can see

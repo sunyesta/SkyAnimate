@@ -1,6 +1,7 @@
 """Editing a path quickly. A layer's origin is placed with no copy of the document (its own transform given the values,
 layer_world_transform_with); a point by itself, not with every point of its layer (layer_point_shown): weighted to
-bones, or bent by a deform; a bone (a controller's knob too) from its keys, posed with its rig as shown. Each comes out
+bones, or bent by a deform; a bone (a controller's knob too) from its keys, posed with its rig as shown, and one that
+actions move with what they add kept from before while only its keys change. Each comes out
 as working everything out on copies makes it: dots, key handles and control points. A dot moved is placed on the document held as shown, not on another copy of it; a timing edit on a drawing
 keyed whole fits its timing once for all its channels.
 
@@ -311,6 +312,64 @@ for name in ("finger",):
     for f in (11, 20, 29):
         doc.frame_current = f
         same_ways("%s, frame %d" % (name, f))
+
+# Its keys edited after its paths were drawn: what the action adds on each frame is kept from the frames worked out
+# before, not worked out again. Anything else edited (the knob that plays the action) works them out afresh. What the
+# edit changes as shown (a knob the finger carries bends the face's handle) is worked out from the keys all the same.
+doc.frame_current = 0
+assert ops.anim.action_new(name="bend") == {'FINISHED'}
+doc.auto_key = True
+doc.frame_current = 10
+face.move_handle(0, 0, "OUT", (4.5, 6.8))
+doc.frame_current = 11
+doc.action = ""
+doc.frame_current = 0
+doc.auto_key = False
+layers.active = arm_rig
+ops.armature.select_none()
+ops.armature.bone_add(name="nub", head_x="2", head_y="-3", tail_x="2.5", tail_y="-3", parent="")
+assert ops.armature.bone_convert(type="CONTROLLER_2D") == {'FINISHED'}
+assert ops.armature.controller_side(side="UP", action="bend") == {'FINISHED'}
+assert ops.armature.bone_relations_set(bone="nub", knob_independent="1") == {'FINISHED'}
+assert ops.armature.bone_relations_set(bone="nub", knob_parent="finger") == {'FINISHED'}
+arm_rig.bone_set("nub", controller_frame_size=0.5)
+ops.armature.select_none()
+arm_rig.select_bone("finger")
+doc.frame_current = 25
+grab()
+
+
+def finger_key(at):
+    doc.auto_key = True
+    doc.frame_current = 30
+    arm_rig.bone_set("finger", position=at)
+    doc.frame_current = 25
+    doc.auto_key = False
+
+
+def stick_key(at):
+    doc.auto_key = True
+    doc.frame_current = 28
+    arm_rig.bone_set("stick", knob=at)
+    doc.frame_current = 25
+    doc.auto_key = False
+    ops.armature.select_none()
+    arm_rig.select_bone("finger")
+
+
+for what, edit, kept in (("the finger's key", lambda: finger_key((2.5, -0.8)), True),
+                         ("the finger's key again", lambda: finger_key((1.6, -0.2)), True),
+                         ("the knob's key", lambda: stick_key((0.0, 0.04)), False),
+                         ("the finger's key after", lambda: finger_key((2.2, -0.4)), True)):
+    bent = face.curve_handles(0)
+    edit()
+    if what == "the finger's key":
+        assert not close(face.curve_handles(0), bent), ("the knob the finger carries bends the face", bent)
+    wm.motion_path_places_clear()
+    grab()
+    counts = wm.motion_path_places()
+    assert (counts["offsets"] > 0) == kept, (what, counts)
+    same_ways(what)
 
 doc.frame_current = 0
 layers.active = anchor

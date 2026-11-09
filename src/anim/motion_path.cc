@@ -191,6 +191,291 @@ thread_local const Document *g_shown = nullptr;
 /* g_shown where it is a MotionPathOnFrame's own copy, which placing may change so long as it puts it back. */
 thread_local Document *g_shown_own = nullptr;
 
+/* --- What action bone actions add to a bone's own values, kept -----------------------------------------------------
+ * A bone actions move (a head a head turn turns) has its path worked out frame by frame on copies of the document.
+ * What the actions add to it on each frame (its channels' from_action_bones then) is kept from that, with the document
+ * it was worked out from: while that stays the same but for the bone's own keys and values, and its setup values are
+ * the same (what an action adds is from them), its own values on a kept frame are its keys then plus what was added.
+ * So long as nothing that picks those actions' frames can follow the bone (action_offsets_apart). */
+struct ActionOffsets {
+  float2 transform{0.0f, 0.0f}, scale{0.0f, 0.0f};
+  float turn = 0.0f;
+};
+struct KeptActionOffsets {
+  uint64_t layer = 0, bone = 0;
+  std::unique_ptr<Document> from;
+  /* The bone's setup values as the actions took them: its keys on frame 0, else its plain values. */
+  float2 setup_transform{0.0f, 0.0f}, setup_scale{1.0f, 1.0f};
+  float setup_turn = 0.0f;
+  std::map<int, ActionOffsets> frames;
+};
+static std::mutex g_offsets_mutex;
+static std::vector<std::shared_ptr<KeptActionOffsets>> g_offsets;
+/* The kept offsets found good for the document being worked on, on this thread (ActionOffsetsScope). */
+thread_local std::vector<std::shared_ptr<const KeptActionOffsets>> t_offsets;
+static std::atomic<uint64_t> g_offsets_used{0};
+
+template<typename T> static T setup_of(const Channel<T> &ch, const T &value)
+{
+  return ch.animated() ? ch.evaluate(0) : value - ch.from_action_bones;
+}
+
+static bool bone_played(const Bone &b)
+{
+  return !b.position_keys.actions.empty() || !b.angle_keys.actions.empty() || !b.scale_keys.actions.empty();
+}
+
+static bool bone_played_at(const Document &doc, const MotionPathTarget &t)
+{
+  const Layer *l = layer_find(doc, t.layer);
+  const int i = l && t.bone ? bone_index(*l, t.bone) : -1;
+  return i >= 0 && bone_played(l->bones[size_t(i)]);
+}
+
+/* Whether what plays `name` (its bone's turn, its knob's place, its own Frame, a fix's drivers) is had from that bone's
+ * or knob's own values alone, none of them `bone` or hanging from it, posed by nothing drawn (a knob held in its box by
+ * its pose, an independent one, plays where it is posed). */
+static bool action_played_apart(const Layer &owner, const std::string &name, const Bone &bone, int depth = 0)
+{
+  if (depth > 4) {
+    return false;
+  }
+  const auto hangs_from_bone = [&](const Bone *b) {
+    for (int guard = 0; b && guard < 256; guard++) {
+      if (b->id == bone.id || b->outer_bone != 0) {
+        return true;
+      }
+      for (const BoneConstraint &c : b->constraints) {
+        if (c.enabled && (c.type == BoneConstraintType::FollowPoint || c.type == BoneConstraintType::LimitShape ||
+                          c.type == BoneConstraintType::LookAt))
+        {
+          return true;
+        }
+      }
+      b = bone_find(owner, b->parent);
+    }
+    return b != nullptr;
+  };
+  const Bone *holder = nullptr;
+  switch (action_frame_by(owner, name, &holder)) {
+    case ActionFrameBy::Fix: {
+      const FixAction *fix = fix_action_find(owner, name);
+      return fix && std::all_of(fix->drivers.begin(), fix->drivers.end(), [&](const std::string &d) {
+               return d != name && action_played_apart(owner, d, bone, depth + 1);
+             });
+    }
+    case ActionFrameBy::Knob:
+      if (!holder || holder->controller_knob_independent || controller_constrained(*holder) ||
+          holder->controller_knob_parent != 0 || hangs_from_bone(holder))
+      {
+        return false;
+      }
+      /* Moved by nothing but its keys (its own sides' actions key its timing). */
+      for (const auto &[by, keys] : holder->position_keys.actions) {
+        if (std::find(holder->controller_actions.begin(), holder->controller_actions.end(), by) ==
+            holder->controller_actions.end())
+        {
+          return false;
+        }
+      }
+      return holder->angle_keys.actions.empty() && holder->scale_keys.actions.empty();
+    case ActionFrameBy::Bone:
+      /* A linked dial: its knob's. */
+      if (const Bone *knob = holder ? controller_of_dial(owner, *holder) : nullptr) {
+        for (const std::string &side : knob->controller_actions) {
+          if (!side.empty() && !action_played_apart(owner, side, bone, depth + 1)) {
+            return false;
+          }
+        }
+        return !hangs_from_bone(holder);
+      }
+      break;
+    case ActionFrameBy::Own:
+      break;
+  }
+  if (const Bone *b = action_bone_of(owner, name)) {
+    if (hangs_from_bone(b)) {
+      return false;
+    }
+    /* Turned by nothing but its keys and its own action. */
+    for (const auto &[by, keys] : b->angle_keys.actions) {
+      if (by != name) {
+        return false;
+      }
+    }
+    return true;
+  }
+  const ActionPlay *play = action_play_find(owner, name);
+  return !play || play->frame_keys.actions.empty();
+}
+
+static bool action_offsets_apart(const Document &doc, const Layer &owner, const Bone &b)
+{
+  /* (Nor itself an action bone: what it plays, it may move.) */
+  const bool action_bone = std::any_of(owner.actions.begin(), owner.actions.end(), [&](const std::string &name) {
+    return controller_dial_of_action(owner, name) == &b;
+  });
+  if (bone_is_controller(b) || action_bone || !doc.action.empty()) {
+    return false;
+  }
+  const auto apart = [&](const auto &actions) {
+    for (const auto &[name, keys] : actions) {
+      if (!action_played_apart(owner, name, b)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  return apart(b.position_keys.actions) && apart(b.angle_keys.actions) && apart(b.scale_keys.actions);
+}
+
+/* Whether `inputs` (a document as animation_inputs_only leaves it) is what `kept` was worked out from but for the
+ * bone's own keys. */
+static bool offsets_inputs_same(KeptActionOffsets &kept, const Document &inputs)
+{
+  Layer *fl = layer_find(*kept.from, kept.layer);
+  const Layer *dl = layer_find(inputs, kept.layer);
+  const int fi = fl ? bone_index(*fl, kept.bone) : -1, di = dl ? bone_index(*dl, kept.bone) : -1;
+  if (fi < 0 || di < 0) {
+    return false;
+  }
+  Bone &f = fl->bones[size_t(fi)];
+  const Bone &d = dl->bones[size_t(di)];
+  std::vector<Key<float2>> position = std::move(f.position_keys.keys), scale = std::move(f.scale_keys.keys);
+  std::vector<Key<float>> angle = std::move(f.angle_keys.keys);
+  f.position_keys.keys = d.position_keys.keys;
+  f.angle_keys.keys = d.angle_keys.keys;
+  f.scale_keys.keys = d.scale_keys.keys;
+  const bool same = *kept.from == inputs;
+  f.position_keys.keys = std::move(position);
+  f.angle_keys.keys = std::move(angle);
+  f.scale_keys.keys = std::move(scale);
+  return same;
+}
+
+/* Kept offsets found good, remembered for the document the caller counts as `document` (its changes), until more are
+ * kept. */
+static std::atomic<uint64_t> g_offsets_kept_count{0};
+struct OffsetsFound {
+  const Document *doc = nullptr;
+  uint64_t document = 0, kept = 0;
+  std::vector<std::shared_ptr<const KeptActionOffsets>> good;
+};
+thread_local OffsetsFound t_offsets_found;
+
+/* The kept offsets good for `doc` (`document`: what the caller counts it as, 0 for nothing), for the bones of
+ * `targets` that actions move, on this thread while it is open. */
+struct ActionOffsetsScope {
+  std::vector<std::shared_ptr<const KeptActionOffsets>> was;
+  ActionOffsetsScope(const Document &doc, const std::vector<MotionPathTarget> &targets, uint64_t document)
+  {
+    OANIM_PROFILE("action_offsets_check");
+    was = std::move(t_offsets);
+    t_offsets.clear();
+    if (!g_own_from_keys) {
+      return;
+    }
+    const auto wanted = [&](const KeptActionOffsets &k) {
+      return std::any_of(targets.begin(), targets.end(),
+                         [&](const MotionPathTarget &t) { return t.layer == k.layer && t.bone == k.bone; });
+    };
+    OffsetsFound &found = t_offsets_found;
+    if (document != 0 && found.doc == &doc && found.document == document && found.kept == g_offsets_kept_count) {
+      for (const std::shared_ptr<const KeptActionOffsets> &k : found.good) {
+        if (wanted(*k)) {
+          t_offsets.push_back(k);
+        }
+      }
+      return;
+    }
+    std::lock_guard lock(g_offsets_mutex);
+    if (std::none_of(g_offsets.begin(), g_offsets.end(), [&](const auto &k) { return wanted(*k); })) {
+      return;
+    }
+    Document inputs = doc;
+    g_doc_copies++;
+    if (!animation_inputs_only(inputs)) {
+      return;
+    }
+    found = {&doc, document, g_offsets_kept_count, {}};
+    for (const std::shared_ptr<KeptActionOffsets> &k : g_offsets) {
+      if (offsets_inputs_same(*k, inputs)) {
+        found.good.push_back(k);
+        if (wanted(*k)) {
+          t_offsets.push_back(k);
+        }
+      }
+    }
+  }
+  ~ActionOffsetsScope() { t_offsets = std::move(was); }
+};
+
+/* What the actions add to bone `b` of `owner` on `frame`, kept and good now, its setup (with `position` for its
+ * position keys) as they took it. */
+static const ActionOffsets *action_offsets_kept(const Layer &owner, const Bone &b, const Channel<float2> &position,
+                                                int frame)
+{
+  for (const std::shared_ptr<const KeptActionOffsets> &k : t_offsets) {
+    if (k->layer != owner.id || k->bone != b.id) {
+      continue;
+    }
+    const auto it = k->frames.find(frame);
+    if (it == k->frames.end() || !(setup_of(position, b.transform) == k->setup_transform) ||
+        setup_of(b.angle_keys, b.turn) != k->setup_turn || !(setup_of(b.scale_keys, b.scale) == k->setup_scale))
+    {
+      return nullptr;
+    }
+    return &it->second;
+  }
+  return nullptr;
+}
+
+/* Keeps what the actions added to `bone` of `layer` on frames of copies of `doc` worked out then (`added`). */
+static void action_offsets_keep(const Document &doc, uint64_t layer, uint64_t bone,
+                                const std::vector<std::pair<int, ActionOffsets>> &added)
+{
+  const Layer *l = layer_find(doc, layer);
+  const int i = l ? bone_index(*l, bone) : -1;
+  if (i < 0 || added.empty()) {
+    return;
+  }
+  const Bone &b = l->bones[size_t(i)];
+  auto inputs = std::make_unique<Document>(doc);
+  g_doc_copies++;
+  if (!animation_inputs_only(*inputs)) {
+    return;
+  }
+  auto keep = std::make_shared<KeptActionOffsets>();
+  keep->layer = layer;
+  keep->bone = bone;
+  keep->setup_transform = setup_of(b.position_keys, b.transform);
+  keep->setup_turn = setup_of(b.angle_keys, b.turn);
+  keep->setup_scale = setup_of(b.scale_keys, b.scale);
+  std::lock_guard lock(g_offsets_mutex);
+  for (std::shared_ptr<KeptActionOffsets> &k : g_offsets) {
+    if (k->layer == layer && k->bone == bone) {
+      /* The same document, keys and all: more frames of it. (A scope may be reading the one kept: made anew.) */
+      if (k->setup_transform == keep->setup_transform && k->setup_turn == keep->setup_turn &&
+          k->setup_scale == keep->setup_scale && *k->from == *inputs)
+      {
+        keep->frames = k->frames;
+      }
+      k = nullptr;
+    }
+  }
+  g_offsets.erase(std::remove(g_offsets.begin(), g_offsets.end(), nullptr), g_offsets.end());
+  keep->from = std::move(inputs);
+  for (const auto &[f, o] : added) {
+    keep->frames[f] = o;
+  }
+  /* A few bones' at most. */
+  if (g_offsets.size() >= 4) {
+    g_offsets.erase(g_offsets.begin());
+  }
+  g_offsets.push_back(std::move(keep));
+  g_offsets_kept_count++;
+}
+
 /* Document space to the space the paths are drawn relative to, as `doc` shows it now. */
 Transform2D relative_space(const Document &doc)
 {
@@ -621,7 +906,7 @@ static uint64_t g_fits_base = 0;
 MotionPathPlaces motion_path_places()
 {
   return {g_places.load(), g_places_threads.load(), g_path_frames.load(), g_doc_copies.load(),
-          timing_fits_made() - g_fits_base};
+          timing_fits_made() - g_fits_base, g_offsets_used.load()};
 }
 
 void motion_path_own_from_keys(const bool on)
@@ -635,6 +920,7 @@ void motion_path_places_clear()
   g_places_threads = 0;
   g_path_frames = 0;
   g_doc_copies = 0;
+  g_offsets_used = 0;
   g_fits_base = timing_fits_made();
 }
 
@@ -791,12 +1077,12 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
     /* Every path Own Motion with nothing but its keys moving it: each frame's own values from them, no copy worked out
      * (where it really goes, and the space drawn relative to, are wanted only where it can't be placed, which it then
      * can't be either). */
+    const ActionOffsetsScope offsets_kept(doc, targets, kept ? kept->document : 0);
     bool from_keys = true;
     for (size_t i = 0; from_keys && i < paths.size(); i++) {
       OwnValues v;
       from_keys = own[i] && own_values_from_keys(doc, paths[i].target, first, v);
     }
-    const size_t runs = from_keys ? 0 : dynamics_in(doc) ? 1 : place_lanes(frames);
     for (size_t k = 0; from_keys && k < frames; k++) {
       g_path_frames++;
       for (size_t i = 0; i < paths.size(); i++) {
@@ -808,6 +1094,30 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
           q.own_scale = v.scale;
           q.own_angle = v.angle;
         }
+        else if (paths[i].target.bone) {
+          /* (A frame whose actions' part isn't kept: every frame worked out.) */
+          from_keys = false;
+        }
+      }
+    }
+    if (!from_keys) {
+      f_kept.places.assign(frames, std::vector<Place>(paths.size()));
+    }
+    else if (!t_offsets.empty()) {
+      g_offsets_used += frames;
+    }
+    const size_t runs = from_keys ? 0 : dynamics_in(doc) ? 1 : place_lanes(frames);
+    /* Bones actions move, whose actions' part can be kept: what they add on each frame, from the frames worked out. */
+    std::vector<char> keep_offsets(paths.size(), 0);
+    std::vector<std::vector<std::pair<int, ActionOffsets>>> offsets(paths.size());
+    for (size_t i = 0; !from_keys && g_own_from_keys && i < paths.size(); i++) {
+      const MotionPathTarget &t = paths[i].target;
+      const Layer *rig = own[i] && t.bone ? layer_find(doc, t.layer) : nullptr;
+      const int b = rig ? bone_index(*rig, t.bone) : -1;
+      keep_offsets[i] = b >= 0 && bone_played(rig->bones[size_t(b)]) && !dynamics_in(doc) &&
+                        action_offsets_apart(doc, *rig, rig->bones[size_t(b)]);
+      if (keep_offsets[i]) {
+        offsets[i].assign(frames, {});
       }
     }
     places_side_by_side(doc, runs, [&](size_t run, Document &copy) {
@@ -830,9 +1140,27 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
             q.own_scale = v.scale;
             q.own_angle = v.angle;
           }
+          if (keep_offsets[i]) {
+            const Layer *rig = layer_find(copy, paths[i].target.layer);
+            const int b = rig ? bone_index(*rig, paths[i].target.bone) : -1;
+            if (b >= 0) {
+              const Bone &bone = rig->bones[size_t(b)];
+              offsets[i][k] = {f, {bone.position_keys.from_action_bones, bone.scale_keys.from_action_bones,
+                                   bone.angle_keys.from_action_bones}};
+            }
+          }
         }
       }
     });
+    for (size_t i = 0; i < paths.size(); i++) {
+      const MotionPathTarget &t = paths[i].target;
+      if (keep_offsets[i] && std::none_of(paths.begin(), paths.begin() + std::ptrdiff_t(i), [&](const MotionPath &o) {
+            return o.target.layer == t.layer && o.target.bone == t.bone;
+          }))
+      {
+        action_offsets_keep(doc, t.layer, t.bone, offsets[i]);
+      }
+    }
     f_kept.made = true;
     f_kept.made_for = f_kept.document;
     f_kept.targets = targets;
@@ -1356,23 +1684,26 @@ bool own_values_from_keys(const Document &doc, const MotionPathTarget &t, const 
     }
     const Bone &b = layer->bones[size_t(i)];
     const Channel<float2> &ch = position ? *position : b.position_keys;
-    /* (A controller's dial among them: its knob plays its action, which turns it.) */
-    if (!b.position_keys.actions.empty() || !ch.actions.empty() || !b.angle_keys.actions.empty() ||
-        !b.scale_keys.actions.empty())
-    {
-      return false;
-    }
     /* Its values as evaluate sets them from its Transform and Angle (bone_values_from_changes). An edit not taken into
      * those yet (by the time paths are worked out it always has been) is left to working the frames out. */
     if (b.position != bone_position_from_transform(b, b.transform) || b.angle != b.setup_angle + b.turn) {
       return false;
     }
-    float2 at_position = bone_position_from_transform(b, at(ch, b.transform));
+    /* What actions add (a controller's dial among them: its knob plays its action, which turns it), only as kept. */
+    ActionOffsets added;
+    if (bone_played(b) || !ch.actions.empty()) {
+      const ActionOffsets *kept = action_offsets_kept(*layer, b, ch, frame);
+      if (!kept) {
+        return false;
+      }
+      added = *kept;
+    }
+    float2 at_position = bone_position_from_transform(b, at(ch, b.transform) + added.transform);
     /* Frame 0 is the rig at rest: a knob with no keys back on its rest point (controllers_rest). */
     if (frame == 0 && bone_is_controller(b) && !ch.animated()) {
       at_position = b.setup_position;
     }
-    r = {at_position, at(b.scale_keys, b.scale), b.setup_angle + at(b.angle_keys, b.turn)};
+    r = {at_position, at(b.scale_keys, b.scale) + added.scale, b.setup_angle + (at(b.angle_keys, b.turn) + added.turn)};
     return true;
   }
   if (t.point) {
@@ -1571,20 +1902,34 @@ static void held_places(const Document &copy, const MotionPathTarget &t, std::ve
   /* Own Motion with nothing but its keys moving it: its own values from the keys changed, no copy worked out (see
    * own_values_from_keys), one after another. */
   OwnValues probe;
-  if (motion_path_own_motion(copy, t) && own_values_from_keys(copy, t, 0, probe)) {
+  const bool own = motion_path_own_motion(copy, t);
+  std::optional<ActionOffsetsScope> offsets;
+  if (own && t.bone && !places.empty()) {
+    offsets.emplace(copy, std::vector<MotionPathTarget>{t}, kept ? kept->document : 0);
+  }
+  if (own && own_values_from_keys(copy, t, places.empty() ? 0 : places[0].frame, probe)) {
     const Channel<float2> *keys = base ? base : handle_channel(const_cast<Document &>(copy), t);
     for (size_t i = 0; i < places.size(); i++) {
       Entry &w = worked[i];
       if (known[i]) {
         continue;
       }
+      Channel<float2> changed = keys ? *keys : Channel<float2>();
+      const bool made = keys && set_keys(changed, places[i]);
+      OwnValues v;
+      bool got = false;
+      if (made) {
+        got = own_values_from_keys(copy, t, places[i].frame, v, &changed);
+        /* (A bone actions move, on a frame whose actions' part isn't kept: worked out below.) */
+        if (!got && t.bone && bone_played_at(copy, t)) {
+          continue;
+        }
+      }
       g_places++;
       w.own = true;
-      Channel<float2> changed = keys ? *keys : Channel<float2>();
-      w.set = keys && set_keys(changed, places[i]);
-      OwnValues v;
-      if (w.set) {
-        w.got = own_values_from_keys(copy, t, places[i].frame, v, &changed);
+      w.set = made;
+      if (made) {
+        w.got = got;
         w.own_position = v.position;
         w.own_scale = v.scale;
         w.own_angle = v.angle;

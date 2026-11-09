@@ -1667,6 +1667,88 @@ static void evaluate_frame(Document &doc, int frame, bool recorded)
   doc.evaluated_frame = frame;
 }
 
+bool animation_inputs_only(Document &doc)
+{
+  bool taken_in = true;
+  const auto plain = [](auto &ch, auto &value) {
+    using T = std::decay_t<decltype(value)>;
+    if (ch.animated()) {
+      value = T{};
+    }
+    else {
+      value -= ch.from_action_bones;
+    }
+    ch.from_action_bones = T{};
+    ch.last = T{};
+    ch.has_last = false;
+    ch.action_bone_live = false;
+  };
+  const auto one = [&](Layer &l) {
+    for (const Bone &b : l.bones) {
+      taken_in = taken_in && b.position == bone_position_from_transform(b, b.transform) &&
+                 b.angle == b.setup_angle + b.turn;
+    }
+    for (const MeshPoint &p : l.drawing.points) {
+      taken_in = taken_in && p.pos == p.setup_pos + p.transform &&
+                 (p.detail.level == 0 || p.detail.pos == p.detail.setup_pos + p.transform);
+    }
+    for (const Curve &c : l.drawing.curves) {
+      for (const CurvePoint &cp : c.points) {
+        const PointDetail &dt = l.drawing.points[size_t(cp.point)].detail;
+        taken_in = taken_in && (dt.level > 0 ? dt.in == dt.setup_in + cp.change_in && dt.out == dt.setup_out + cp.change_out :
+                                               cp.handle_in == handle_from_change(cp.setup_in, cp.change_in) &&
+                                                   cp.handle_out == handle_from_change(cp.setup_out, cp.change_out));
+      }
+    }
+    layer_for_each_channel<false>(l, plain);
+    if (l.visible_keys.animated()) {
+      l.visible = true;
+    }
+    for (Bone &b : l.bones) {
+      b.position = {};
+      b.angle = 0.0f;
+      b.outer_pose = Transform2D();
+      b.controller_knob_pull_now = {};
+      b.controller_frames_to_keys = Transform2D();
+      for (BoneConstraint &c : b.constraints) {
+        c.look_reach = {};
+        c.shape_region.clear();
+        c.shape_footprint.clear();
+        c.shape_error.clear();
+        c.follow_offset = {};
+        c.follow_now = c.follow_now2 = c.follow_now3 = {};
+        c.follow_error.clear();
+        c.follow_turn = 0.0f;
+        c.follow_stretch = 1.0f;
+        c.follow_shape = Transform2D();
+      }
+    }
+    for (MeshPoint &p : l.drawing.points) {
+      p.pos = {};
+      p.detail.pos = p.detail.in = p.detail.out = {};
+      p.detail.built_pos = p.detail.built_in = p.detail.built_out = {};
+      p.detail.built = false;
+    }
+    for (Curve &c : l.drawing.curves) {
+      for (CurvePoint &cp : c.points) {
+        cp.handle_in = cp.handle_out = {};
+      }
+    }
+  };
+  const auto all = [&](auto &&self, std::vector<Layer> &layers) -> void {
+    for (Layer &l : layers) {
+      one(l);
+      self(self, l.children);
+    }
+  };
+  all(all, doc.layers);
+  one(doc.simulation);
+  one(document_camera(doc));
+  doc.evaluated_frame = -1;
+  doc.action_bones_applied = false;
+  return taken_in;
+}
+
 void layer_strip_keys(Layer &layer, bool from_now, bool keep_actions)
 {
   layer_for_each_channel(layer, [&](auto &ch, auto &value) {

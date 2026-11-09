@@ -238,7 +238,7 @@ PENDING = [
     ('src/anim/motion_path.cc', 'if (!g_own_from_keys || t.drawing) {', 'if (!g_own_from_keys || t.bone || t.drawing) {',
      "a bone's own values come from its keys, with no copy worked out", 'motion_path_edit_fast'),
     ('src/anim/motion_path.cc', '!b.angle_keys.actions.empty() ||', 'false ||',
-     "a bone an action turns is worked out on copies", 'motion_path_edit_fast'),
+     "a bone an action turns takes what the action adds", 'motion_path_edit_fast'),
     ('src/anim/motion_path.cc', 'if (frame == 0 && bone_is_controller(b) && !ch.animated()) {', 'if (false) {',
      "a knob with no keys is at rest on frame 0", 'motion_path_edit_fast'),
     ('src/anim/motion_path.cc', 'at(b.scale_keys, b.scale)', 'b.scale',
@@ -246,6 +246,18 @@ PENDING = [
     ('src/anim/motion_path.cc', 'const Channel<float2> &ch = position ? *position : b.position_keys;',
      'const Channel<float2> &ch = b.position_keys;',
      "a bone's handles and control points take its keys changed", 'motion_path_edit_fast'),
+    ('src/anim/motion_path.cc', '  const bool same = *kept.from == inputs;', '  const bool same = true;',
+     "what actions add is kept only while nothing but the bone's keys changed", 'motion_path_edit_fast'),
+    ('src/anim/motion_path.cc', '      added = *kept;', '      (void)kept;',
+     "a bone's path from its keys adds what its actions add, kept", 'motion_path_edit_fast'),
+    ('src/anim/motion_path.cc', '  f.position_keys.keys = d.position_keys.keys;', '',
+     "the bone's own keys are set aside when comparing what it was worked out from", 'motion_path_edit_fast'),
+    ('src/anim/animation.cc', '        cp.handle_in = cp.handle_out = {};', '',
+     'handles worked out from their changes are left out of what evaluation takes in', 'motion_path_edit_fast'),
+    ('src/anim/animation.cc', '      b.controller_frames_to_keys = Transform2D();', '',
+     "a controller's frame map is left out of what evaluation takes in", 'motion_path_edit_fast'),
+    ('src/anim/motion_path.cc', 'const ActionOffsets *kept = action_offsets_kept(*layer, b, ch, frame);', 'const ActionOffsets *kept = nullptr;',
+     "a bone's keys edited reuse what its actions added before", 'motion_path_edit_fast'),
 ]
 
 def build(root):
