@@ -536,6 +536,8 @@ add_test(NAME timing_chart_rows
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timing_chart_rows.py)
 add_test(NAME key_together_fold
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together_fold.py)
+add_test(NAME key_together_sweep
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together_sweep.py)
 add_test(NAME motion_path_key_to_control
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_key_to_control.py)
 add_test(NAME motion_path_sculpt

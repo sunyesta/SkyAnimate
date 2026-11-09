@@ -6,6 +6,7 @@
 #include <map>
 #include <set>
 
+#include "anim/animation.hh"
 #include "anim/draw_order.hh"
 #include "data/document.hh"
 
@@ -907,6 +908,8 @@ static void set_raw(Document &doc, Layer &sw, float value)
     ch.set_key(0, switch_default(sw)).interp = Interp::Step;
   }
   if (frame != 0 || ch.animated()) {
+    /* Auto-Freeze Keys: the poses either side keep the child they showed. */
+    auto_freeze_hold(doc, sw, ch, frame);
     ch.set_key(frame, value).interp = Interp::Step;
   }
   if (frame == 0 || !ch.animated()) {

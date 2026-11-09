@@ -341,11 +341,132 @@ template<typename T> static void fillers_hold_around(Channel<T> &ch, int frame)
   hold(after, held_after);
 }
 
+/* A key on `frame` (none there yet) holding `held`, put in as the stretch it splits plays: arriving as that stretch
+ * did, playing on as the key before did, with what is left of its hold, on its interval, a breakdown inside a span
+ * across breakdowns (scalar_key_add_in_place's way; a stretch shaped on the motion path, key_add_in_place's). */
+template<typename T> static void hold_key_put(Channel<T> &ch, int frame, const T &held)
+{
+  const auto b = std::find_if(ch.keys.begin(), ch.keys.end(), [&](const Key<T> &k) { return k.frame > frame; });
+  if (b == ch.keys.begin() || b == ch.keys.end()) {
+    ch.set_key(frame, held);
+    return;
+  }
+  if constexpr (std::is_same_v<T, float2>) {
+    if (!b->path_controls.empty() || b->interp == Interp::Custom) {
+      key_add_in_place(ch, frame);
+      return;
+    }
+  }
+  const Key<T> &a = *(b - 1);
+  const KeySettings arriving = key_settings(*b);
+  const int interval = a.interval;
+  const int start = std::min(a.frame + std::max(a.hold, 0), b->frame);
+  const bool span = a.type == KeyType::Breakdown || b->type == KeyType::Breakdown;
+  Key<T> &k = ch.set_key(frame, held);
+  key_settings_apply(k, arriving);
+  k.hold = std::max(start - frame, 0);
+  k.interval = interval;
+  k.type = span ? KeyType::Breakdown : KeyType::Key;
+}
+
+/* Auto-Freeze Keys: before `ch` is keyed on `frame`, a key at its layer's pose either side (`poses`) holding what it
+ * shows there, unless it has one, so the edit changes it only between those poses. The frame keyed is a pose from
+ * then on, which later edits nearby hold in turn: the poses stay without every channel keyed on every one. What each
+ * pose shows is worked out first (hold_plan), before anything on the channel changes, then the nearest held
+ * (hold_apply) and, once the key is in, any further out it still reaches (hold_reach). */
+template<typename T> struct HoldPlan {
+  int frames[2] = {INT32_MIN, INT32_MIN};
+  T held[2] = {};
+  /* Every pose but the frame keyed, with what it shows. */
+  std::vector<std::pair<int, T>> all;
+};
+
+static bool hold_same(float a, float b)
+{
+  return std::abs(a - b) <= 1e-6f * std::max(1.0f, std::abs(a));
+}
+
+static bool hold_same(const float2 &a, const float2 &b)
+{
+  return hold_same(a.x, b.x) && hold_same(a.y, b.y);
+}
+
+template<typename T> static HoldPlan<T> hold_plan(const Channel<T> &ch, const std::vector<int> *poses, int frame)
+{
+  HoldPlan<T> plan;
+  if (!poses) {
+    return plan;
+  }
+  const auto after = std::upper_bound(poses->begin(), poses->end(), frame);
+  const auto before = std::lower_bound(poses->begin(), poses->end(), frame);
+  plan.frames[0] = before != poses->begin() ? *std::prev(before) : INT32_MIN;
+  plan.frames[1] = after != poses->end() ? *after : INT32_MIN;
+  for (int i = 0; i < 2; i++) {
+    if (plan.frames[i] != INT32_MIN) {
+      plan.held[i] = ch.evaluate(plan.frames[i]);
+    }
+  }
+  plan.all.reserve(poses->size());
+  for (const int pose : *poses) {
+    if (pose != frame) {
+      plan.all.push_back({pose, ch.evaluate(pose)});
+    }
+  }
+  return plan;
+}
+
+template<typename T> static void hold_apply(Channel<T> &ch, const HoldPlan<T> &plan)
+{
+  for (int i = 0; i < 2; i++) {
+    if (plan.frames[i] != INT32_MIN && !ch.key_at(plan.frames[i])) {
+      hold_key_put(ch, plan.frames[i], plan.held[i]);
+    }
+  }
+}
+
+/* A Smooth key leans on its neighbours (key_slope), so the edit's key and the holds bend the stretches past the held
+ * poses too: the moved pose nearest the edit on each side is held as well (a filler there made the channel's own), and
+ * so on out until none moves. Linear and Step stretches need none. */
+template<typename T> static void hold_reach(Channel<T> &ch, const HoldPlan<T> &plan, int frame)
+{
+  for (size_t round = 0; round < plan.all.size(); round++) {
+    int nearest[2] = {-1, -1};
+    for (size_t i = 0; i < plan.all.size(); i++) {
+      const auto &[pose, held] = plan.all[i];
+      const Key<T> *k = ch.key_at(pose);
+      if ((k && !k->filler) || hold_same(ch.evaluate(pose), held)) {
+        continue;
+      }
+      const int side = pose > frame ? 1 : 0;
+      if (nearest[side] < 0 || std::abs(pose - frame) < std::abs(plan.all[size_t(nearest[side])].first - frame)) {
+        nearest[side] = int(i);
+      }
+    }
+    if (nearest[0] < 0 && nearest[1] < 0) {
+      return;
+    }
+    for (const int i : nearest) {
+      if (i < 0) {
+        continue;
+      }
+      const auto &[pose, held] = plan.all[size_t(i)];
+      if (Key<T> *k = ch.key_at(pose)) {
+        k->value = held;
+        k->filler = false;
+        k->filler_inside = false;
+      }
+      else {
+        hold_key_put(ch, pose, held);
+      }
+    }
+  }
+}
+
 /* Turns a change to `ch` since it was last evaluated into a key at `frame` (auto-key on). Replace
- * (Blender's auto-keying mode) only changes a key already on the frame. `before(ch)` runs just before the key goes
- * in (the channel animated by then, holding what it had). Returns whether it keyed. */
-template<typename T, typename Before>
-static bool record_with(Channel<T> &ch, const T &value, int frame, bool auto_key, bool replace, Before &&before)
+ * (Blender's auto-keying mode) only changes a key already on the frame. `poses()` gives the layer's poses for
+ * Auto-Freeze Keys to hold either side (hold_plan), or null. Returns whether it keyed. */
+template<typename T, typename Poses>
+static bool record_with(Channel<T> &ch, const T &value, int frame, bool auto_key, bool replace, Poses &&poses)
 {
   if (!ch.has_last) {
     /* New data (a point just drawn): it is simply there, on every frame. */
@@ -373,9 +494,25 @@ static bool record_with(Channel<T> &ch, const T &value, int frame, bool auto_key
     if (!ch.animated()) {
       ch.set_key(0, ch.last - ch.from_action_bones);
     }
+    /* What the poses either side show, before a filler there becomes its own or anything goes in. */
+    HoldPlan<T> plan = hold_plan(ch, poses(), frame);
+    if (plan.all.empty()) {
+      /* Key Together without Auto-Freeze: its fillers are the poses its Smooth curve mustn't bend past either. */
+      for (const Key<T> &f : ch.keys) {
+        if (f.filler && f.frame != frame) {
+          plan.all.push_back({f.frame, ch.evaluate(f.frame)});
+        }
+      }
+    }
     fillers_hold_around(ch, frame);
-    before(ch);
-    key_put(ch, frame, base);
+    hold_apply(ch, plan);
+    /* The channel's own, even over a filler not taken yet (just opened: fillers_check can't tell it was edited). */
+    Key<T> &k = key_put(ch, frame, base);
+    k.filler = false;
+    k.filler_inside = false;
+    if (!plan.all.empty()) {
+      hold_reach(ch, plan, frame);
+    }
     ch.last = value;
     return true;
   }
@@ -385,7 +522,7 @@ static bool record_with(Channel<T> &ch, const T &value, int frame, bool auto_key
 
 template<typename T> static bool record(Channel<T> &ch, const T &value, int frame, bool auto_key, bool replace = false)
 {
-  return record_with(ch, value, frame, auto_key, replace, [](Channel<T> &) {});
+  return record_with(ch, value, frame, auto_key, replace, [] { return static_cast<const std::vector<int> *>(nullptr); });
 }
 
 /* A layer's poses: the frames keyed anywhere on it (its own channels, its bones', its drawing's points'), sorted. */
@@ -400,25 +537,6 @@ static std::vector<int> layer_pose_frames(Layer &layer)
   return {frames.begin(), frames.end()};
 }
 
-/* Auto-Freeze Keys: before `ch` is keyed on `frame`, a key at the layer's pose either side (`poses`) holding what it
- * shows there, unless it has one, so the edit changes it only between those poses. The frame keyed is a pose from
- * then on, which later edits nearby hold in turn: the poses stay without every channel keyed on every one. */
-template<typename T> static void hold_poses_around(Channel<T> &ch, const std::vector<int> &poses, int frame)
-{
-  const auto after = std::upper_bound(poses.begin(), poses.end(), frame);
-  auto before = std::lower_bound(poses.begin(), poses.end(), frame);
-  const int at_before = before != poses.begin() ? *std::prev(before) : INT32_MIN;
-  const int at_after = after != poses.end() ? *after : INT32_MIN;
-  /* Both worked out before either goes in. */
-  const T held_before = at_before != INT32_MIN ? ch.evaluate(at_before) : T{};
-  const T held_after = at_after != INT32_MIN ? ch.evaluate(at_after) : T{};
-  if (at_before != INT32_MIN && !ch.key_at(at_before)) {
-    key_put(ch, at_before, held_before);
-  }
-  if (at_after != INT32_MIN && !ch.key_at(at_after)) {
-    key_put(ch, at_after, held_after);
-  }
-}
 
 template<typename T> static void evaluate(Channel<T> &ch, T &value, int frame)
 {
@@ -784,6 +902,11 @@ static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bo
       }
       /* What it has there now: between its keys, or (not keyed) the value it holds everywhere. */
       const auto held = was_animated ? ch.evaluate(frame) : value - ch.from_action_bones;
+      if (!fillers) {
+        /* A key of its own (Key Whole Drawing's) in a group keying together: the fillers either side hold, as
+         * record_with's do, or its curve would run past them and move the poses there. */
+        fillers_hold_around(ch, frame);
+      }
       auto &k = ch.set_key(frame, held);
       key_timing_set(k, *timing);
       k.filler = fillers;
@@ -1040,6 +1163,17 @@ static std::pair<int, int> key_together_leavers_release(Document &doc, Layer &gr
       [&](bool to_changes) { layers_changes(left, to_changes); });
 }
 
+void auto_freeze_hold(Document &doc, Layer &layer, Channel<float> &ch, int frame)
+{
+  if (!doc.auto_key || !doc.auto_freeze_keys || doc.auto_key_mode == AutoKeyMode::Replace || frame == 0 ||
+      ch.key_at(frame))
+  {
+    return;
+  }
+  const std::vector<int> poses = layer_pose_frames(layer);
+  hold_apply(ch, hold_plan(ch, &poses, frame));
+}
+
 std::pair<int, int> key_together_release(Document &doc, Layer &group)
 {
   group.key_together_members.clear();
@@ -1156,15 +1290,15 @@ void animation_record(Document &doc)
       std::vector<int> poses;
       bool poses_known = false;
       layer_for_each_channel(layer, [&](auto &ch, auto &value) {
-        record_with(ch, value, frame, keys, replace, [&](auto &keyed) {
+        record_with(ch, value, frame, keys, replace, [&]() -> const std::vector<int> * {
           if (!freezing) {
-            return;
+            return nullptr;
           }
           if (!poses_known) {
             poses = layer_pose_frames(layer);
             poses_known = true;
           }
-          hold_poses_around(keyed, poses, frame);
+          return &poses;
         });
       });
     }
@@ -1198,6 +1332,12 @@ void animation_record(Document &doc)
   std::vector<Layer *> together_on;
   for (Layer *group : flat) {
     if (!key_together_allowed(*group)) {
+      /* No longer a kind that keys together (a group made a switch): off, its fillers let go. */
+      if (group->key_together_settled) {
+        group->key_together = false;
+        group->key_together_settled = false;
+        key_together_release(doc, *group);
+      }
       continue;
     }
     const Layer *parent = layer_parent(doc, group->id);
@@ -5755,9 +5895,49 @@ std::set<const void *> time_together_linked(Document &doc, const std::vector<Lay
   return out;
 }
 
-int keys_move_selected(Document &doc, const std::vector<Layer *> &layers, const std::function<int(int)> &to,
+/* Key Together: a key moved alone takes its frame's keys on every layer of its group along (picked with it), the group
+ * staying keyed as one as its folded row moves them; else keys_together_sync would read the frame it left as deleted
+ * from them all. Returns `layers` and those groups' layers. */
+static std::vector<Layer *> together_picks_widen(Document &doc, const std::vector<Layer *> &layers)
+{
+  std::vector<Layer *> out = layers;
+  std::vector<Layer *> groups;
+  for (Layer *layer : layers) {
+    Layer *group = key_together_group(doc, layer->id);
+    if (group && std::find(groups.begin(), groups.end(), group) == groups.end()) {
+      groups.push_back(group);
+    }
+  }
+  for (Layer *group : groups) {
+    std::set<int> frames;
+    together_channels(doc, *group, [&](auto &ch, auto & /*value*/, const void * /*unit*/) {
+      for (const auto &k : ch.keys) {
+        if (k.selected) {
+          frames.insert(k.frame);
+        }
+      }
+    });
+    if (frames.empty()) {
+      continue;
+    }
+    together_channels(doc, *group, [&](auto &ch, auto & /*value*/, const void * /*unit*/) {
+      for (auto &k : ch.keys) {
+        k.selected = k.selected || frames.count(k.frame) > 0;
+      }
+    });
+    for (Layer *l : together_layers(doc, *group)) {
+      if (std::find(out.begin(), out.end(), l) == out.end()) {
+        out.push_back(l);
+      }
+    }
+  }
+  return out;
+}
+
+int keys_move_selected(Document &doc, const std::vector<Layer *> &layers_picked, const std::function<int(int)> &to,
                        bool ripple, bool together)
 {
+  const std::vector<Layer *> layers = together_picks_widen(doc, layers_picked);
   std::vector<Stretch> sts;
   std::vector<AnyChannel> linked;
   if (together && doc.time_together) {

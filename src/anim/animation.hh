@@ -345,6 +345,10 @@ std::vector<ChannelRef> key_together_channels(Document &doc, Layer &group);
 int key_together_sync(Document &doc, Layer &group, bool settle);
 /* Turned off: the filler keys never edited go. Returns how many went and how many fillers stayed. */
 std::pair<int, int> key_together_release(Document &doc, Layer &group);
+/* Auto-Freeze Keys for a channel keyed outside animation_record (a switch pick): before its key on `frame` goes in,
+ * a key at `layer`'s poses either side holding what it shows there. Nothing when Auto-Freeze doesn't apply or it has a
+ * key on the frame already. */
+void auto_freeze_hold(Document &doc, Layer &layer, Channel<float> &ch, int frame);
 
 /* Frames where the layer (or its drawing) has keys, sorted, each once. */
 std::vector<int> layer_key_frames(const Layer &layer);

@@ -62,6 +62,11 @@ stroke off the curve) is CANCELLED with no undo step and nothing changed, not ev
 "make it so" op pressed twice (Aligned, Flat, a handle type) changes nothing the second time. Picks or selections
 stored as bare indexes or frames go stale when the thing they index moves: move the key under them, then edit.
 
+For keying features (Auto-Freeze Keys, Key Together, Key Whole Drawing) one more: what every channel of the layer
+shows on each of its poses (frames keyed anywhere on it) is the same before and after an edit on another frame, with
+Smooth keys too (they lean on their neighbours, so a key bends the stretches past it), and right after opening a file
+(state rebuilt on the first edit, such as a filler not yet taken, behaves differently from mid-session).
+
 ## 3. Confirm every report
 
 A probe's report is a claim. Rerun each repro yourself (in parallel) and read the numbers before telling the user it's
@@ -89,6 +94,10 @@ while probes keep reporting:
   (`ctest -R` over every area the change touches), not only the new one: a fix in a shared path (how a key goes in,
   how a frame is evaluated) can change everyday behaviour. Keep such a fix to the cases the bug is about (a key put in
   a stretch shaped on the path, not every key) and the plain cases as they were.
+- The frozen app in `<sweep>/bin/` is the build before the fixes: write the new test as `# --- ` sections that each
+  build their own scene (shared helpers in the header), then run each section on its own against both builds (exec
+  the header, then the section). Every section should fail on the frozen copy and pass on the new build, which proves
+  the tests without touching the source.
 - A test that passes with its fix undone tests nothing: undo the fix by hand once (`if (false && ...)`), rebuild and
   see the test fail before relying on it. Build its scene like the repro's (the eye file's Look At had an Eye Shape;
   without one the bug never showed).
