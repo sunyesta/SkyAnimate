@@ -316,13 +316,33 @@ std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std
   return out;
 }
 
+MotionPathTarget motion_path_timing_owner(const Document &doc, const MotionPathTarget &target)
+{
+  Document &d = const_cast<Document &>(doc);
+  const Layer *group = key_together_group(d, target.layer);
+  if (!group || (target.drawing && target.layer == group->id) || !drawing_animated(doc, *group)) {
+    return target;
+  }
+  MotionPathTarget t;
+  t.layer = group->id;
+  t.drawing = true;
+  return t;
+}
+
 std::vector<MotionPathTarget> motion_path_timing_targets(const Document &doc, const std::vector<Layer *> &editing,
                                                          bool edit_layer)
 {
   std::vector<MotionPathTarget> out = motion_path_targets(doc, editing, edit_layer);
   if (edit_layer) {
-    /* The layer itself: no drawing's timing. */
-    return out;
+    /* The layer itself: no drawing's timing, but inside a folded group the group's, keyed as one. */
+    std::vector<MotionPathTarget> owned;
+    for (const MotionPathTarget &t : out) {
+      const MotionPathTarget o = motion_path_timing_owner(doc, t);
+      if (std::none_of(owned.begin(), owned.end(), [&](const MotionPathTarget &x) { return x.same(o); })) {
+        owned.push_back(o.same(t) ? t : o);
+      }
+    }
+    return owned;
   }
   std::vector<const Layer *> layers;
   if (const Layer *active = layer_find(doc, doc.active_layer)) {
@@ -847,6 +867,20 @@ std::vector<Color> motion_path_dot_colors(const Document &doc, const MotionPath 
   return out;
 }
 
+std::vector<int> motion_path_lit_dots(const Document &doc, const MotionPathTarget &target,
+                                      const std::vector<std::pair<MotionPathTarget, int>> &dots)
+{
+  std::vector<int> out;
+  const MotionPathTarget owner = motion_path_timing_owner(doc, target);
+  const bool owned = !owner.same(target);
+  for (const auto &[t, f] : dots) {
+    if (t.same(target) || (owned && motion_path_timing_owner(doc, t).same(owner))) {
+      out.push_back(f);
+    }
+  }
+  return out;
+}
+
 /* --- Editing (the Motion Path tool) ----------------------------------------------------------------------------- */
 
 static void stretch_shape_line(const std::vector<Key<float2>> &keys, size_t i, std::vector<float2> &r_line,
@@ -1196,11 +1230,9 @@ bool key_jacobian(const Document &doc, const MotionPathTarget &t, int frame, flo
 std::vector<int> own_key_frames(const Document &doc, const MotionPathTarget &t)
 {
   std::vector<int> frames;
-  if (Layer *layer = layer_find(const_cast<Document &>(doc), t.layer)) {
-    for (const auto &[frame, summary] : layers_key_summary({layer}, motion_path_key_filter(doc, t))) {
-      if (frame > 0) {
-        frames.push_back(frame);
-      }
+  for (const auto &[frame, summary] : layers_key_summary(motion_path_key_layers(doc, t), motion_path_key_filter(doc, t))) {
+    if (frame > 0) {
+      frames.push_back(frame);
     }
   }
   return frames;
@@ -2427,7 +2459,8 @@ bool motion_path_stretch_at(const Document &doc, const MotionPathTarget &target,
     return false;
   }
   /* Frame 0 is the setup: its key starts the first stretch. */
-  const std::set<int> frames = layers_filtered_key_frames({layer}, motion_path_key_filter(doc, target));
+  const std::set<int> frames = layers_filtered_key_frames(motion_path_key_layers(doc, target),
+                                                         motion_path_key_filter(doc, target));
   const auto it = frames.lower_bound(std::max(frame, 1));
   if (it == frames.end() || it == frames.begin()) {
     return false;
@@ -2450,11 +2483,12 @@ std::vector<MotionPathPickedStretch> motion_path_picked_stretches(
     }
     return false;
   };
+  /* A dot or handle on the path of a layer in a folded group: the group's stretch, keyed as one. */
   for (const auto &[t, f] : dots) {
-    add(t, f);
+    add(motion_path_timing_owner(doc, t), f);
   }
   for (const MotionPathHandlePick &hp : handles) {
-    add(hp.target, hp.out ? hp.frame + 1 : hp.frame);
+    add(motion_path_timing_owner(doc, hp.target), hp.out ? hp.frame + 1 : hp.frame);
   }
   for (const auto &[t, f] : motion_path_selected_keys(doc, key_targets)) {
     /* The side the frame shown is on; where there is none (a path's end), the other. */
@@ -2636,8 +2670,15 @@ template<typename F> static bool with_timing_channels(Document &doc, const Motio
   return with_path_channels(doc, t, [&](auto &ch) { f(ch); });
 }
 
-template<typename F> static bool with_path_channels(Document &doc, const MotionPathTarget &t, F &&f)
+template<typename F> static bool with_path_channels(Document &doc, const MotionPathTarget &target, F &&f)
 {
+  /* A path inside a folded Key Together group: the group's timing, keyed as one, led by the channel moving this
+   * path's dot (the edit is made on its dots). */
+  const MotionPathTarget t = motion_path_timing_owner(doc, target);
+  const void *own = nullptr;
+  if (!t.same(target)) {
+    with_path_channel(doc, target, [&](auto &ch) { own = &ch; });
+  }
   if (!t.drawing) {
     return with_path_channel(doc, t, f);
   }
@@ -2648,7 +2689,21 @@ template<typename F> static bool with_path_channels(Document &doc, const MotionP
   std::vector<int> first_before, first_after;
   if (layer) {
     /* The lead channel first (see with_path_channel): what the tool does to it, the others follow. */
-    const int lead = drawing_lead_channel(doc, *layer);
+    int lead = -1;
+    if (own) {
+      int i = 0;
+      drawing_channels(doc, *layer, [&](auto &ch) {
+        if (static_cast<const void *>(&ch) == own) {
+          lead = i;
+          return false;
+        }
+        i++;
+        return true;
+      });
+    }
+    if (lead < 0) {
+      lead = drawing_lead_channel(doc, *layer);
+    }
     int index = 0;
     const auto visit = [&](auto &ch) {
       if (!found) {
@@ -3283,8 +3338,10 @@ bool motion_path_key_add(Document &doc, const MotionPathTarget &target, int fram
   return added;
 }
 
-int motion_path_key_type_set(Document &doc, const MotionPathTarget &target, int frame, KeyType type)
+int motion_path_key_type_set(Document &doc, const MotionPathTarget &target_in, int frame, KeyType type)
 {
+  /* In a folded group, the group's key on the frame: every layer's. */
+  const MotionPathTarget target = motion_path_timing_owner(doc, target_in);
   Layer *layer = layer_find(doc, target.layer);
   if (frame <= 0 || !layer) {
     return 0;
@@ -3296,9 +3353,12 @@ int motion_path_key_type_set(Document &doc, const MotionPathTarget &target, int 
       count++;
     }
   };
-  for (const ChannelRef &ref : layer_filtered_channels(*layer, motion_path_key_filter(doc, target))) {
-    set(ref.scalar);
-    set(ref.vector);
+  const KeyFilter filter = motion_path_key_filter(doc, target);
+  for (Layer *l : motion_path_key_layers(doc, target)) {
+    for (const ChannelRef &ref : layer_filtered_channels(*l, filter)) {
+      set(ref.scalar);
+      set(ref.vector);
+    }
   }
   if (count > 0) {
     channel_keys_changed();
@@ -4319,6 +4379,19 @@ bool motion_path_breakdown(Document &doc, const MotionPathTarget &target, float 
   return true;
 }
 
+std::vector<Layer *> motion_path_key_layers(const Document &doc, const MotionPathTarget &target)
+{
+  Document &d = const_cast<Document &>(doc);
+  Layer *layer = layer_find(d, target.layer);
+  if (!layer) {
+    return {};
+  }
+  if (target.drawing && key_together_allowed(*layer) && layer->key_together) {
+    return key_together_layers(d, *layer);
+  }
+  return {layer};
+}
+
 KeyFilter motion_path_key_filter(const Document &doc, const MotionPathTarget &target)
 {
   KeyFilter filter;
@@ -4331,6 +4404,15 @@ KeyFilter motion_path_key_filter(const Document &doc, const MotionPathTarget &ta
   else if (layer && target.point) {
     filter.kinds = KEY_POINTS;
     filter.path = "points[" + std::to_string(std::max(0, point_index(*layer, target.point))) + "].";
+  }
+  else if (target.drawing && layer && key_together_allowed(*layer) && layer->key_together) {
+    /* A folded group: every channel it keys as one, on the layers inside it. */
+    auto channels = std::make_shared<std::set<const void *>>();
+    drawing_channels(const_cast<Document &>(doc), const_cast<Layer &>(*layer), [&](auto &ch) {
+      channels->insert(&ch);
+      return true;
+    });
+    filter.channels = std::move(channels);
   }
   else if (target.drawing) {
     /* A drawing keyed as a whole: all its points' keys there. */

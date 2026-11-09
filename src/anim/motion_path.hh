@@ -34,6 +34,9 @@ std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std
  * Drawing layer's points trace no path of their own. */
 std::vector<MotionPathTarget> motion_path_timing_targets(const Document &doc, const std::vector<Layer *> &editing,
                                                          bool edit_layer = false);
+/* Whose timing `target`'s stretches are: inside a folded Key Together group (the outermost), the group's (its
+ * drawing target, "<group> together"), keyed as one; else its own. */
+MotionPathTarget motion_path_timing_owner(const Document &doc, const MotionPathTarget &target);
 /* The kept style of `target` (pin, colour, end), or null. */
 const MotionPathTarget *motion_path_style(const Document &doc, const MotionPathTarget &target);
 MotionPathTarget &motion_path_style_ensure(Document &doc, const MotionPathTarget &target);
@@ -101,6 +104,10 @@ bool motion_path_stretch_lit(int start, int end, int current, const std::vector<
 /* Each of a path's dots' colour, by doc.path_dot_colors; `dots` the frames of its selected dots. Keys are drawn as
  * keys, so theirs is the unlit grey. */
 std::vector<Color> motion_path_dot_colors(const Document &doc, const MotionPath &path, const std::vector<int> &dots);
+/* The frames of the dots picked (`dots`) that light `target`'s path: its own, and in a folded group any picked on the
+ * group's timing (the stretch is the group's, lit on every path in it). */
+std::vector<int> motion_path_lit_dots(const Document &doc, const MotionPathTarget &target,
+                                      const std::vector<std::pair<MotionPathTarget, int>> &dots);
 
 /* --- Editing, the Motion Path tool's: every edit lands on keys (motion_path_record keys it whatever auto-key says). */
 
@@ -120,8 +127,11 @@ bool motion_path_straighten(const Document &doc, const MotionPathTarget &target,
 /* A breakdown, as tweenMachine's: the target's own values on the frame shown become `factor` (0-1) of the way from
  * those on the key before to those on the key after, so a turning bone stays on its arc. */
 bool motion_path_breakdown(Document &doc, const MotionPathTarget &target, float factor);
-/* The channels of `target` itself, for picking its keys. */
+/* The channels of `target` itself, for picking its keys, on the layers motion_path_key_layers gives. */
 KeyFilter motion_path_key_filter(const Document &doc, const MotionPathTarget &target);
+/* The layers `target`'s keys are on: its layer, or for a folded Key Together group's path the group and every layer
+ * inside it. */
+std::vector<Layer *> motion_path_key_layers(const Document &doc, const MotionPathTarget &target);
 /* Keys the edits on the frame shown, with auto-key on or off. */
 void motion_path_record(Document &doc);
 /* Dragging a dot with Edit: the dot on `frame` (between keys) slides along its path to the place on it nearest `at` (document space

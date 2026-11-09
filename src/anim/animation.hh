@@ -340,6 +340,8 @@ Layer *key_together_group(Document &doc, uint64_t layer_id);
 /* The channels a Key Together group keys as one: its layers' turn, move, size and opacity, their bones', and their
  * drawings' shapes. */
 std::vector<ChannelRef> key_together_channels(Document &doc, Layer &group);
+/* The group and every layer inside it, flat. */
+std::vector<Layer *> key_together_layers(Document &doc, Layer &group);
 /* Keys the group's channels as one (drawing_key_whole's way, the keys added fillers). Returns how many keys had their
  * timing changed (with `settle`). */
 int key_together_sync(Document &doc, Layer &group, bool settle);
@@ -412,9 +414,11 @@ struct KeyFilter {
   /* Bones' channels only for the picked bones (other channels all pass): a picked bone layer's timeline row
    * with Only Selected, its own keys and its picked bones'. */
   bool picked_bones_only = false;
+  /* Only these channels (a folded Key Together group's path: what the group keys as one, on the layers inside it). */
+  std::shared_ptr<const std::set<const void *>> channels;
   bool everything() const
   {
-    return kinds == KEY_ALL && !selected_only && path.empty() && !pinned_only && !picked_bones_only;
+    return kinds == KEY_ALL && !selected_only && path.empty() && !pinned_only && !picked_bones_only && !channels;
   }
 };
 /* The kind of channel a path names (see ChannelRef). */

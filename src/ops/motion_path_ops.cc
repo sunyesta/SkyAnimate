@@ -48,8 +48,8 @@ std::vector<MotionPathTarget> motion_path_key_pick_targets(Context &C)
   std::vector<MotionPathTarget> out;
   const bool edit_layer = C.wm && C.wm->tool_settings.path_edit_layer;
   for (const MotionPathTarget &t : motion_path_timing_targets(C)) {
-    /* Edit Layer off: bones and points, never the layer's own position. */
-    if (edit_layer == (!t.bone && !t.point && !t.drawing)) {
+    /* Edit Layer off: bones and points, never the layer's own position. A folded group's timing either way. */
+    if (edit_layer == (!t.bone && !t.point && !t.drawing) || (t.drawing && key_together_group(*C.document, t.layer))) {
       out.push_back(t);
     }
   }
@@ -132,7 +132,7 @@ bool motion_path_pick_at(Context &C, const std::vector<MotionPathTarget> &target
       continue;
     }
     if (motion_path_is_key(doc, t, frame)) {
-      layers_select_keys({layer}, frame, frame, true, motion_path_key_filter(doc, t));
+      layers_select_keys(motion_path_key_layers(doc, t), frame, frame, true, motion_path_key_filter(doc, t));
       wm.path_timing_target = t;
       wm.path_timing_end = frame;
       picked = true;
@@ -301,7 +301,8 @@ static OpStatus path_stretch_select(Context &C, const MotionPathTarget &target, 
               picks.end());
   C.wm->path_dots.clear();
   for (const MotionPathStretch &s : stretches) {
-    layers_select_keys({layer}, s.start, s.end, !deselect, motion_path_key_filter(doc, target));
+    layers_select_keys(motion_path_key_layers(doc, target), s.start, s.end, !deselect,
+                       motion_path_key_filter(doc, target));
     /* Each key in it keeps the control points of the way arriving at it. */
     for (int f = s.start + 1; f <= s.end; f++) {
       for (int i = 0;; i++) {
@@ -680,22 +681,25 @@ void motion_path_operators_register()
         if (!layer) {
           continue;
         }
+        /* In a folded group, the group's key (every layer's on the frame) and stretch. */
+        const MotionPathTarget owner = motion_path_timing_owner(doc, t);
         if (motion_path_is_key(doc, t, frame)) {
           /* The key, on every channel the path's keys are on (as the timeline shows them). */
-          const bool was = motion_path_key_selected(doc, t, frame);
-          C.wm->path_timing_target = t;
+          const bool was = motion_path_key_selected(doc, owner, frame);
+          C.wm->path_timing_target = owner;
           C.wm->path_timing_end = frame;
           C.wm->path_timing_frame = doc.frame_current;
-          layers_select_keys({layer}, frame, frame, !(was && op_arg_bool(C, "extend")), motion_path_key_filter(doc, t));
+          layers_select_keys(motion_path_key_layers(doc, owner), frame, frame, !(was && op_arg_bool(C, "extend")),
+                             motion_path_key_filter(doc, owner));
           continue;
         }
         if (frame == 0) {
           continue;
         }
         /* The Path Timing panel shows the stretch picked on. */
-        C.wm->path_timing_target = t;
+        C.wm->path_timing_target = owner;
         C.wm->path_timing_frame = doc.frame_current;
-        for (const MotionPathStretch &s : motion_path_stretches(doc, t)) {
+        for (const MotionPathStretch &s : motion_path_stretches(doc, owner)) {
           if (frame > s.start && frame < s.end) {
             C.wm->path_timing_end = s.end;
           }
@@ -781,7 +785,7 @@ void motion_path_operators_register()
       else {
         picks.push_back(pick);
       }
-      C.wm->path_timing_target = pick.target;
+      C.wm->path_timing_target = motion_path_timing_owner(doc, pick.target);
       C.undo->mark_changed();
       return OpStatus::Finished;
     };
@@ -2615,9 +2619,8 @@ void motion_path_operators_register()
       }
       layers_deselect_keys(all);
       C.wm->path_dots.clear();
-      if (Layer *layer = layer_find(doc, targets.front().layer)) {
-        layers_select_keys({layer}, frame, frame, true, motion_path_key_filter(doc, targets.front()));
-      }
+      layers_select_keys(motion_path_key_layers(doc, targets.front()), frame, frame, true,
+                         motion_path_key_filter(doc, targets.front()));
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));

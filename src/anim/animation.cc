@@ -1033,8 +1033,7 @@ Layer *key_together_group(Document &doc, uint64_t layer_id)
   return found;
 }
 
-/* The group and every layer inside it, flat. */
-static std::vector<Layer *> together_layers(Document &doc, Layer &group)
+std::vector<Layer *> key_together_layers(Document &doc, Layer &group)
 {
   std::vector<Layer *> out;
   for (const Layer *l : document_layers_flat(doc)) {
@@ -1088,7 +1087,7 @@ static void layer_together_channels(Layer &l, std::set<const void *> &seen, bool
 template<typename F> static void together_channels(Document &doc, Layer &group, F &&f)
 {
   std::set<const void *> seen;
-  for (Layer *l : together_layers(doc, group)) {
+  for (Layer *l : key_together_layers(doc, group)) {
     layer_together_channels(*l, seen, !controller_in_action(doc, *l), f);
   }
 }
@@ -1109,7 +1108,7 @@ static void layers_changes(const std::vector<Layer *> &layers, bool to_changes)
 
 static void together_changes(Document &doc, Layer &group, bool to_changes)
 {
-  layers_changes(together_layers(doc, group), to_changes);
+  layers_changes(key_together_layers(doc, group), to_changes);
 }
 
 std::vector<ChannelRef> key_together_channels(Document &doc, Layer &group)
@@ -1134,7 +1133,7 @@ int key_together_sync(Document &doc, Layer &group, bool settle)
 {
   /* A layer new to the group (moved in, made or pasted inside it) misses its frames without any being deleted: its
    * channels aren't Channel::together_synced yet. */
-  const std::vector<Layer *> inside = together_layers(doc, group);
+  const std::vector<Layer *> inside = key_together_layers(doc, group);
   const int changed = keys_together_sync(
       group, [&](auto &&f) { together_channels(doc, group, f); },
       [&](bool to_changes) { together_changes(doc, group, to_changes); }, settle,
@@ -1150,7 +1149,7 @@ int key_together_sync(Document &doc, Layer &group, bool settle)
  * given and never edited go, as when the group is turned off; their own keys stay. */
 static std::pair<int, int> key_together_leavers_release(Document &doc, Layer &group)
 {
-  const std::vector<Layer *> inside = together_layers(doc, group);
+  const std::vector<Layer *> inside = key_together_layers(doc, group);
   std::vector<uint64_t> gone;
   std::vector<Layer *> left;
   for (const uint64_t id : group.key_together_members) {
@@ -1403,7 +1402,7 @@ void animation_record(Document &doc)
     if (group->key_together_settled && group->key_whole_action != timeline) {
       /* Another timeline than it last keyed together (an action entered): filled once something in it is keyed, so
        * entering an action and leaving (as Keep Poses does to see each) changes nothing. */
-      const std::vector<Layer *> inside = together_layers(doc, *group);
+      const std::vector<Layer *> inside = key_together_layers(doc, *group);
       if (std::none_of(inside.begin(), inside.end(), [&](const Layer *l) { return keyed_layers.count(l) > 0; })) {
         continue;
       }
@@ -5263,7 +5262,20 @@ bool key_filter_path_matches(const KeyFilter &filter, const std::string &path)
   return path == filter.path;
 }
 
+static std::vector<ChannelRef> layer_filtered_channels_all(Layer &layer, const KeyFilter &filter);
+
 std::vector<ChannelRef> layer_filtered_channels(Layer &layer, const KeyFilter &filter)
+{
+  std::vector<ChannelRef> refs = layer_filtered_channels_all(layer, filter);
+  if (filter.channels) {
+    std::erase_if(refs, [&](const ChannelRef &r) {
+      return !filter.channels->count(r.scalar ? static_cast<const void *>(r.scalar) : r.vector);
+    });
+  }
+  return refs;
+}
+
+static std::vector<ChannelRef> layer_filtered_channels_all(Layer &layer, const KeyFilter &filter)
 {
   std::vector<ChannelRef> refs;
   /* Pinned ones are asked of every layer every frame (the timeline's Pinned row): most have none. */
@@ -5341,7 +5353,26 @@ bool layers_channel_among(const std::vector<Layer *> &layers, const KeyFilter &f
   return found;
 }
 
+template<typename F>
+static void filtered_for_each_all(const std::vector<Layer *> &layers, const KeyFilter &filter, F &&f);
+
 template<typename F> static void filtered_for_each(const std::vector<Layer *> &layers, const KeyFilter &filter, F &&f)
+{
+  if (!filter.channels) {
+    filtered_for_each_all(layers, filter, f);
+    return;
+  }
+  KeyFilter rest = filter;
+  rest.channels.reset();
+  filtered_for_each_all(layers, rest, [&](auto &ch) {
+    if (filter.channels->count(&ch)) {
+      f(ch);
+    }
+  });
+}
+
+template<typename F>
+static void filtered_for_each_all(const std::vector<Layer *> &layers, const KeyFilter &filter, F &&f)
 {
   for (Layer *layer : layers) {
     if (filter.everything()) {
@@ -5958,7 +5989,7 @@ static std::vector<Layer *> together_picks_widen(Document &doc, const std::vecto
         k.selected = k.selected || frames.count(k.frame) > 0;
       }
     });
-    for (Layer *l : together_layers(doc, *group)) {
+    for (Layer *l : key_together_layers(doc, *group)) {
       if (std::find(out.begin(), out.end(), l) == out.end()) {
         out.push_back(l);
       }

@@ -1579,12 +1579,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
         }
       }
       d["handles"] = handles;
-      std::vector<int> lit_dots;
-      for (const auto &[t, f] : C.wm->path_dots) {
-        if (t.same(p.target)) {
-          lit_dots.push_back(f);
-        }
-      }
+      const std::vector<int> lit_dots = motion_path_lit_dots(doc, p.target, C.wm->path_dots);
       py::list dot_colors;
       for (const Color &c : motion_path_dot_colors(doc, p, lit_dots)) {
         dot_colors.append(py::make_tuple(c.r, c.g, c.b, c.a));

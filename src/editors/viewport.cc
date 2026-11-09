@@ -2235,17 +2235,11 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     /* With the tool, its selected keys (as the timeline has them) outlined. */
     std::map<int, KeyFrameSummary> picked;
     if (tool) {
-      if (Layer *layer = layer_find(*C.document, p.target.layer)) {
-        picked = layers_key_summary({layer}, motion_path_key_filter(doc, p.target));
-      }
+      picked = layers_key_summary(motion_path_key_layers(doc, p.target), motion_path_key_filter(doc, p.target));
     }
-    /* Each dot's colour (by time through its stretch, the one being worked on lit), for its selected dots too. */
-    std::vector<int> lit_dots;
-    for (const auto &[t, f] : wm.path_dots) {
-      if (t.same(p.target)) {
-        lit_dots.push_back(f);
-      }
-    }
+    /* Each dot's colour (by time through its stretch, the one being worked on lit), for its selected dots too. In a
+     * folded group the stretch is the group's: lit on every path in it, wherever it was picked. */
+    const std::vector<int> lit_dots = motion_path_lit_dots(doc, p.target, wm.path_dots);
     const std::vector<Color> dot_colors = motion_path_dot_colors(doc, p, lit_dots);
     /* A dot every `step` frames (and on every key); frames it holds still over make one dot with how many. */
     for (size_t i = 0; i < screen.size();) {

@@ -999,10 +999,9 @@ static KeyFocus key_focus(Context &C)
     const std::vector<MotionPathTarget> key_targets = motion_path_key_pick_targets(C);
     std::set<const void *> path_channels;
     for (const MotionPathTarget &kt : key_targets) {
-      if (Layer *layer = layer_find(doc, kt.layer)) {
-        const std::set<const void *> own = layers_filtered_channel_set({layer}, motion_path_key_filter(doc, kt));
-        path_channels.insert(own.begin(), own.end());
-      }
+      const std::set<const void *> own = layers_filtered_channel_set(motion_path_key_layers(doc, kt),
+                                                                     motion_path_key_filter(doc, kt));
+      path_channels.insert(own.begin(), own.end());
     }
     if (any_selected && timeline_keys_selected_outside(C, layers, path_channels)) {
       f.mode = 1;
@@ -1066,11 +1065,8 @@ class KeyFocusScope {
   KeyFocusScope(Context &C, const KeyFocus &focus) : C_(C)
   {
     for (const auto &[kt, kf] : focus.keys) {
-      Layer *layer = layer_find(*C.document, kt.layer);
-      if (!layer) {
-        continue;
-      }
-      const std::vector<bool *> flags = layers_key_selected_flags({layer}, kf, motion_path_key_filter(*C.document, kt));
+      const std::vector<bool *> flags = layers_key_selected_flags(motion_path_key_layers(*C.document, kt), kf,
+                                                                  motion_path_key_filter(*C.document, kt));
       /* Keys selected already are the user's: left alone. */
       if (!flags.empty() && std::none_of(flags.begin(), flags.end(), [](const bool *f) { return *f; })) {
         for (bool *flag : flags) {
@@ -1112,11 +1108,9 @@ class KeyFocusScope {
   /* By target and frame, not by pointer: an edit may move or remove the keys. */
   void set(const MotionPathTarget &kt, int kf, bool select)
   {
-    Layer *layer = layer_find(*C_.document, kt.layer);
-    if (!layer) {
-      return;
-    }
-    for (bool *flag : layers_key_selected_flags({layer}, kf, motion_path_key_filter(*C_.document, kt))) {
+    for (bool *flag :
+         layers_key_selected_flags(motion_path_key_layers(*C_.document, kt), kf, motion_path_key_filter(*C_.document, kt)))
+    {
       *flag = select;
     }
   }

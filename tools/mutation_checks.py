@@ -119,6 +119,22 @@ PENDING = [
      'entering an action and leaving with Key Together on changes nothing', 'key_together_sweep'),
     ('src/anim/keep_poses.cc', '  Document look = doc;\n  for (DrawingsShownAll::Action &a', '  Document &look = doc;\n  for (DrawingsShownAll::Action &a',
      'a Keep Animation tool that changes nothing keeps an edit not keyed', 'weight_keep_animation'),
+    ('src/anim/motion_path.cc', '    return key_together_layers(d, *layer);\n  }\n  return {layer};', '    return {layer};\n  }\n  return {layer};',
+     "a folded group's path finds its keys on the layers inside it (Alt click in its row)", 'key_together_path_pick'),
+    ('src/anim/motion_path.cc', '    add(motion_path_timing_owner(doc, t), f);', '    add(t, f);',
+     "a dot on a path in a folded group picks the group's stretch", 'key_together_path_pick'),
+    ('src/ops/motion_path_ops.cc', '        const MotionPathTarget owner = motion_path_timing_owner(doc, t);', '        const MotionPathTarget owner = t;',
+     "a key on a path in a folded group selects every layer's key there", 'key_together_path_pick'),
+    ('src/anim/motion_path.cc', '    if (t.same(target) || (owned && motion_path_timing_owner(doc, t).same(owner))) {', '    if (t.same(target)) {',
+     "the group's stretch is lit on every path in it", 'key_together_path_pick'),
+    ('src/anim/motion_path.cc', '  const MotionPathTarget t = motion_path_timing_owner(doc, target);\n  const void *own = nullptr;', '  const MotionPathTarget t = target;\n  const void *own = nullptr;',
+     'a timing tool on a path in a folded group retimes the whole group', 'key_together_path_pick'),
+    ('src/anim/motion_path.cc', '  const MotionPathTarget target = motion_path_timing_owner(doc, target_in);', '  const MotionPathTarget target = target_in;',
+     "a breakdown made on a path in a folded group is the group's", 'key_together_path_pick'),
+    ('src/anim/motion_path.cc', '        owned.push_back(o.same(t) ? t : o);', '        owned.push_back(t);',
+     "with Edit Layer the timing shown for a folded group is the group's", 'key_together_path_pick'),
+    ('src/ops/motion_path_ops.cc', ' || (t.drawing && key_together_group(*C.document, t.layer))) {', ') {',
+     "with Edit Layer a key picked on a path in a folded group picks the group's stretch", 'key_together_path_pick'),
 ]
 
 def build(root):
