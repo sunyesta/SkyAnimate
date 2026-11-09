@@ -250,6 +250,9 @@ template<typename T> static json keys_to_json(const Channel<T> &ch)
         key["filler_inside"] = true;
       }
     }
+    if (k.filler_edited) {
+      key["filler_edited"] = true;
+    }
     keys.push_back(std::move(key));
   }
   return keys;
@@ -1845,6 +1848,7 @@ template<typename T> static void get_key_list(const json &j, const char *name, C
     key.selected = get_bool(k, "selected", false);
     key.filler = get_bool(k, "filler", false);
     key.filler_inside = key.filler && get_bool(k, "filler_inside", false);
+    key.filler_edited = !key.filler && get_bool(k, "filler_edited", false);
     if (!r_ch.key_at(key.frame)) {
       r_ch.keys.push_back(key);
     }

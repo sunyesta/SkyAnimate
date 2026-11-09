@@ -152,6 +152,9 @@ template<typename T> struct Key {
    * doesn't, so the curve is worked out without it, as is one after its last key of its own (Channel::evaluate).
    * Turning Key Together on moves nothing. */
   bool filler_inside = false;
+  /* Was a filler, edited since (its timing, say) and so the channel's own: when Key Together is turned off it still
+   * goes if the channel plays the same without it (a timing edit on a layer that never moves shapes nothing). */
+  bool filler_edited = false;
   int filler_next = 0;
   uint32_t filler_self = 0, filler_out = 0;
   bool operator==(const Key &) const = default;

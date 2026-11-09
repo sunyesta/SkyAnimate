@@ -544,6 +544,8 @@ add_test(NAME key_together_shaped_fillers
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together_shaped_fillers.py)
 add_test(NAME key_together_deletes
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together_deletes.py)
+add_test(NAME key_together_retimed
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together_retimed.py)
 add_test(NAME key_together_sweep
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together_sweep.py)
 add_test(NAME key_together_path_pick

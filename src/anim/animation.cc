@@ -756,6 +756,7 @@ template<typename K> static void fillers_check(std::vector<K> &keys)
         (next_frame == k.filler_next && next && key_sig(keys[i + 1], false) != k.filler_out))
     {
       k.filler = false;
+      k.filler_edited = true;
     }
   }
 }
@@ -925,6 +926,31 @@ static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bo
   return settled;
 }
 
+/* Whether the channel plays the same on every frame without its key on `frame`. */
+template<typename K> static bool key_shapes_nothing(const std::vector<K> &keys, int frame)
+{
+  using T = std::decay_t<decltype(keys[0].value)>;
+  Channel<T> with, without;
+  with.keys = keys;
+  without.keys = keys;
+  std::erase_if(without.keys, [&](const auto &k) { return k.frame == frame; });
+  if (without.keys.empty()) {
+    return false;
+  }
+  for (int f = keys.front().frame; f <= keys.back().frame + 1; f++) {
+    const T a = with.evaluate(f), b = without.evaluate(f);
+    if constexpr (std::is_same_v<T, float2>) {
+      if (std::abs(a.x - b.x) > 1e-6f || std::abs(a.y - b.y) > 1e-6f) {
+        return false;
+      }
+    }
+    else if (std::abs(a - b) > 1e-6f) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /* Key Together turned off: the filler keys never edited go (a unit's keys on a frame stay together: a whole drawing's
  * stay if any of them is its own), and the rest become the channels' own. Those in actions not being edited (kept in
  * Channel::actions) go too. Returns how many went, and how many fillers stayed. */
@@ -938,16 +964,30 @@ static std::pair<int, int> keys_together_release(Visit &&visit, Changes &&change
   visit([&](auto &ch, auto & /*value*/, const void *unit) {
     fillers_check(ch.keys);
     for (const auto &k : ch.keys) {
-      fillers += k.filler ? 1 : 0;
-      if (!k.filler) {
+      fillers += k.filler || k.filler_edited ? 1 : 0;
+      if (!k.filler && !k.filler_edited) {
         own.insert({unit, k.frame});
       }
     }
     for (auto &[name, keys] : ch.actions) {
       fillers_check(keys);
       for (const auto &k : keys) {
-        fillers += k.filler ? 1 : 0;
-        if (!k.filler) {
+        fillers += k.filler || k.filler_edited ? 1 : 0;
+        if (!k.filler && !k.filler_edited) {
+          own_away.insert({unit, name, k.frame});
+        }
+      }
+    }
+    /* Edited fillers that shape something (the channel plays otherwise without them), each unit's frame kept whole:
+     * a drawing's keys on a frame stay together. */
+    for (const auto &k : ch.keys) {
+      if (k.filler_edited && !k.filler && k.frame != 0 && !key_shapes_nothing(ch.keys, k.frame)) {
+        own.insert({unit, k.frame});
+      }
+    }
+    for (auto &[name, keys] : ch.actions) {
+      for (const auto &k : keys) {
+        if (k.filler_edited && !k.filler && k.frame != 0 && !key_shapes_nothing(keys, k.frame)) {
           own_away.insert({unit, name, k.frame});
         }
       }
@@ -959,11 +999,18 @@ static std::pair<int, int> keys_together_release(Visit &&visit, Changes &&change
     for (auto it = ch.actions.begin(); it != ch.actions.end();) {
       auto &keys = it->second;
       const size_t before = keys.size();
-      std::erase_if(keys, [&](const auto &k) { return k.filler && !own_away.count({unit, it->first, k.frame}); });
+      /* An edited one on frame 0 only when nothing else is left (a channel keyed holds a key there). */
+      std::erase_if(keys, [&](const auto &k) {
+        return (k.filler || (k.filler_edited && k.frame != 0)) && !own_away.count({unit, it->first, k.frame});
+      });
+      if (keys.size() == 1 && keys[0].filler_edited && !own_away.count({unit, it->first, keys[0].frame})) {
+        keys.clear();
+      }
       removed += int(before - keys.size());
       away_changed = away_changed || keys.size() != before;
       for (auto &k : keys) {
         k.filler = false;
+        k.filler_edited = false;
       }
       it = keys.empty() ? ch.actions.erase(it) : std::next(it);
     }
@@ -975,7 +1022,7 @@ static std::pair<int, int> keys_together_release(Visit &&visit, Changes &&change
   visit([&](auto &ch, auto &value, const void *unit) {
     std::vector<int> go;
     for (const auto &k : ch.keys) {
-      if (k.filler && !own.count({unit, k.frame})) {
+      if ((k.filler || k.filler_edited) && !own.count({unit, k.frame})) {
         go.push_back(k.frame);
       }
     }
@@ -995,6 +1042,7 @@ static std::pair<int, int> keys_together_release(Visit &&visit, Changes &&change
     }
     for (auto &k : ch.keys) {
       k.filler = false;
+      k.filler_edited = false;
     }
   });
   changes(false);

@@ -108,8 +108,9 @@ group.key_together = False
 settle()
 assert frames(b, "points[1].pos") == [0, 10, 20], ("edited at 10: stays", frames(b, "points[1].pos"))
 assert frames(a, "points[1].pos") == [0, 10, 20], ("its stretch into 20 reshaped: stays", frames(a, "points[1].pos"))
-assert frames(a, "position") == [0, 10, 20], ("the stretch 10-20 reshaped: 10 and 20 stay", frames(a, "position"))
-assert frames(group, "scale") == [0, 10, 20], frames(group, "scale")
+# Retimed where nothing moves (a's position, the group's size): shapes nothing, so they go all the same.
+assert frames(a, "position") == [], ("still: the stretch 10-20 reshaped, nothing to shape", frames(a, "position"))
+assert frames(group, "scale") == [], frames(group, "scale")
 
 # --- One key deleted takes the frame from them all ------------------------------------------------------------------
 group.key_together = True

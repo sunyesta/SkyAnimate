@@ -184,6 +184,18 @@ PENDING = [
 ''', '',
      "right after opening a file, a layer moved out of a folded group lets go of the group's fillers",
      'key_together_deletes'),
+    ('src/anim/animation.cc', '''      k.filler_edited = true;
+''', '''''',
+     'opening a folded row after a timing edit leaves a layer that never moves with no keys', 'key_together_retimed'),
+    ('src/anim/animation.cc', '''  if (without.keys.empty()) {
+    return false;
+  }''', '''  if (!without.keys.empty()) {
+    return true;
+  }''',
+     'opening a folded row keeps a retimed filler that shapes a motion', 'key_together_retimed'),
+    ('src/io/oanim_file.cc', '''    key.filler_edited = !key.filler && get_bool(k, "filler_edited", false);
+''', '''''',
+     'a retimed filler is still let go when the row is opened after saving and opening', 'key_together_retimed'),
 ]
 
 def build(root):
