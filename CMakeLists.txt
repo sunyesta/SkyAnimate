@@ -538,6 +538,12 @@ add_test(NAME key_together_fold
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together_fold.py)
 add_test(NAME key_together_copy
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together_copy.py)
+add_test(NAME key_together_reopen
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together_reopen.py)
+add_test(NAME key_together_shaped_fillers
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together_shaped_fillers.py)
+add_test(NAME key_together_deletes
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together_deletes.py)
 add_test(NAME key_together_sweep
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together_sweep.py)
 add_test(NAME key_together_path_pick

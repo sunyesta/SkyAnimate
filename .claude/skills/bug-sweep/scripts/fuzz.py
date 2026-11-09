@@ -698,7 +698,8 @@ def apply_new(op):
         turning_on = op["folded"] == "1" or (not op["folded"] and not layer.key_together)
         # (on the frames keyed in it only: between keys, the keys taking the timing most have there moves things by
         # design, the Info editor saying how many)
-        frames = sorted(set(f for m in members(layer) for f in m.key_frames)) if turning_on else []
+        # (not with auto-key off: going to another frame drops an edit not keyed, which isn't the fold's doing)
+        frames = sorted(set(f for m in members(layer) for f in m.key_frames)) if turning_on and doc.auto_key else []
         before, f0 = {}, doc.frame_current
         for fr in frames:
             doc.frame_current = fr
@@ -867,7 +868,7 @@ def apply(op):
         elif w == "scale":
             s = b.get("scale", (1.0, 1.0))
             rig.bone_set(op["bone"], scale=(s[0] * v[0], s[1] * v[1]))
-        else:
+        elif "length" in b:  # a pin is one point: no length
             rig.bone_set(op["bone"], length=b["length"] * v)
         return None
     if o in ("action_set", "action_new", "action_peek"):

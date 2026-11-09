@@ -330,7 +330,7 @@ int layer_action_bone_state(Layer &layer, const std::vector<std::string> &paths)
  * taking the timing (interpolation, hold, speeds...) most keys on that frame have. A frame that lost a key since the
  * last call (in the same `action`) more than the others did is deleted from them all. With `settle`, keys already there
  * take that timing too (once, as it is turned on). Returns how many keys already there had their timing changed. */
-int drawing_key_whole(Layer &layer, bool settle, const std::string &action);
+int drawing_key_whole(Layer &layer, bool settle, const std::string &action, bool *r_keys_went = nullptr);
 
 /* Key Together (Layer::key_together) is for groups, bone layers and vector layers (a vector layer alone: its own
  * channels and drawing). In the timeline it is the layer's row folded. */
@@ -343,8 +343,8 @@ std::vector<ChannelRef> key_together_channels(Document &doc, Layer &group);
 /* The group and every layer inside it, flat. */
 std::vector<Layer *> key_together_layers(Document &doc, Layer &group);
 /* Keys the group's channels as one (drawing_key_whole's way, the keys added fillers). Returns how many keys had their
- * timing changed (with `settle`). */
-int key_together_sync(Document &doc, Layer &group, bool settle);
+ * timing changed (with `settle`). `r_keys_went`, when given, is set if a frame deleted from one was taken from all. */
+int key_together_sync(Document &doc, Layer &group, bool settle, bool *r_keys_went = nullptr);
 /* Turned off: the filler keys never edited go. Returns how many went and how many fillers stayed. */
 std::pair<int, int> key_together_release(Document &doc, Layer &group);
 /* Auto-Freeze Keys for a channel keyed outside animation_record (a switch pick): before its key on `frame` goes in,

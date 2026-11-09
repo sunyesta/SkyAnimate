@@ -164,5 +164,10 @@ crash, check every folder for files of zero bytes and broken .pdb/.obj files bef
   weighted to one bone turns rigidly with it must skip such bones (`skewed_above` in fuzz.py).
 - **Some operators push two undo steps** (a select-none and the edit), and `doc.time_together` set from Python isn't
   one: undo back to each saved step index, not one undo per op.
+- **With auto-key off, going to another frame drops an edit not keyed.** A check that visits frames before an op
+  (to record poses) then blames the op for the lost edit: skip such visits while auto-key is off.
+- **Key Together's state is per timeline and partly rebuilt on opening** (the timeline it last keyed in is saved, its
+  layers recorded as loaded): test edits right after opening a file, inside an action entered again, and on a
+  duplicate, not only mid-session on the mainline.
 - **A rig loop** (a bone's IK target riding on the chain, a constraint fed by what it moves) can make a pose depend on
   history by design: report it as a question, don't fix it as a bug.

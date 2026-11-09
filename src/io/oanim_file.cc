@@ -642,6 +642,11 @@ static json layer_to_json(const Layer &layer)
   if (layer.shear.x != 0.0f || layer.shear.y != 0.0f) {
     j["shear"] = float2_to_json(layer.shear);
   }
+  /* The action it last keyed together in: back on another timeline (the mainline, say) it fills only once something
+   * there is keyed, the same after opening the file as before saving it. */
+  if (layer.key_together && !layer.key_together_action.empty()) {
+    j["key_together_action"] = layer.key_together_action;
+  }
   if (layer.parent_bone != 0) {
     j["parent_bone"] = layer.parent_bone;
   }
@@ -2535,6 +2540,7 @@ static Layer layer_from_json(const json &j, int depth)
   layer.key_together = get_bool(j, "key_together", false);
   /* Saved on: its keys already agree, and turning it off lets its fillers go. */
   layer.key_together_settled = layer.key_together;
+  layer.key_together_action = get_string(j, "key_together_action");
   layer.edit_descendants = get_bool(j, "edit_descendants", layer.type != LayerType::Bone);
   layer.sub_bone_group = get_bool(j, "sub_bone_group", true);
   layer.link_same_named = get_bool(j, "link_same_named", true);
@@ -3292,6 +3298,15 @@ static Layer layer_from_json(const json &j, int depth)
   return layer;
 }
 
+static void layers_visit(std::vector<Layer> &layers, const std::function<void(Layer &)> &fn);
+
+/* The layer and everything inside it. */
+static void layers_visit_one(Layer &layer, const std::function<void(Layer &)> &fn)
+{
+  fn(layer);
+  layers_visit(layer.children, fn);
+}
+
 static void layers_visit(std::vector<Layer> &layers, const std::function<void(Layer &)> &fn)
 {
   for (Layer &layer : layers) {
@@ -3336,6 +3351,20 @@ static void layers_validate(Document &doc)
     }
     layer.reference_source = original;
   });
+  /* Key Together's layers, as they were when saved: one moved out right after opening lets go of the fillers it was
+   * given, as it does mid-session (one inside another keying together is handed over to it, and has none). */
+  const auto together = [&](auto &&self, std::vector<Layer> &layers, bool inside) -> void {
+    for (Layer &layer : layers) {
+      const bool owner = layer.key_together && !inside;
+      if (owner) {
+        layer.key_together_members.clear();
+        layers_visit_one(layer, [&](Layer &l) { layer.key_together_members.insert(l.id); });
+        layer.key_together_members_of = layer.id;
+      }
+      self(self, layer.children, inside || layer.key_together);
+    }
+  };
+  together(together, doc.layers, false);
   doc.next_layer_id = std::max(doc.next_layer_id, max_id + 1);
   if (!layer_find(doc, doc.active_layer)) {
     doc.active_layer = doc.layers.empty() ? 0 : doc.layers.front().id;

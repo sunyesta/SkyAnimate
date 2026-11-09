@@ -1277,9 +1277,11 @@ struct Layer {
    * action (its owner's id and name). */
   std::set<int> key_whole_frames;
   std::string key_whole_action;
-  /* The same for Key Together, kept apart: a vector layer keying together alone is both, and Key Whole Drawing keying
-   * its points on a new frame would otherwise read to Key Together as a frame its other channels had deleted. */
-  std::set<int> key_together_frames;
+  /* The same for Key Together, kept apart (a vector layer keying together alone is both, and Key Whole Drawing keying
+   * its points on a new frame would otherwise read to Key Together as a frame its other channels had deleted), and for
+   * each timeline it keyed together in (the mainline "", or an action), so a key deleted in an action entered again
+   * goes from them all. The last one is saved, so a file opens keying as it was. */
+  std::map<std::string, std::set<int>> key_together_frames;
   std::string key_together_action;
   /* Not saved, for Key Together: the layers inside it then. A layer new to it has none of its frames without them
    * having been deleted; one gone from it lets go of the fillers it was given. */

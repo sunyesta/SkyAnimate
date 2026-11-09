@@ -785,7 +785,7 @@ template<typename C> static void fillers_mark(C &ch)
  * (Key::filler). Returns how many keys already there had their timing changed. */
 template<typename Visit, typename Changes>
 static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bool settle, const std::string &action,
-                              bool fillers)
+                              bool fillers, bool *r_keys_went = nullptr)
 {
   /* Each frame keyed anywhere: how many channels have it, and the timings its keys have there (how many of each, in
    * the order first met). */
@@ -799,8 +799,12 @@ static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bo
   /* Frames from another action's channels (or none yet) say nothing about what was deleted here. */
   static const std::set<int> none;
   std::string &owner_action = fillers ? owner.key_together_action : owner.key_whole_action;
-  std::set<int> &owner_frames = fillers ? owner.key_together_frames : owner.key_whole_frames;
-  const std::set<int> &before = settle || owner_action != action ? none : owner_frames;
+  if (fillers && settle) {
+    /* Turned on: what it keyed before it was last turned off says nothing now. */
+    owner.key_together_frames.clear();
+  }
+  std::set<int> &owner_frames = fillers ? owner.key_together_frames[action] : owner.key_whole_frames;
+  const std::set<int> &before = settle || (!fillers && owner_action != action) ? none : owner_frames;
   std::set<int> deleted_set;
   visit([&](auto &ch, auto & /*value*/, const void * /*unit*/) {
     if (fillers) {
@@ -849,6 +853,9 @@ static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bo
     return 0;
   }
   const std::vector<int> deleted(deleted_set.begin(), deleted_set.end());
+  if (r_keys_went && !deleted.empty()) {
+    *r_keys_went = true;
+  }
   for (const int frame : deleted) {
     frames.erase(frame);
   }
@@ -881,12 +888,14 @@ static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bo
         continue;
       }
       /* Inside a stretch shaped on its motion path (Custom timing, control points: no other key's timing would make
-       * it), the key goes in where its dot is, the stretch keeping its way and timing (key_add_in_place), so nothing
-       * the channel does changes. */
+       * it), a key of its own (Key Whole Drawing's) goes in where its dot is, the stretch keeping its way and timing
+       * (key_add_in_place), so nothing the channel does changes. A filler doesn't split it: inside motion the channel
+       * already has, it is worked out without (Key::filler_inside), so the stretch stays whole, and letting it go
+       * leaves nothing to join. */
       using T = std::decay_t<decltype(ch.keys[0].value)>;
       if constexpr (std::is_same_v<T, float2> || std::is_same_v<T, float>) {
         const auto b = std::find_if(ch.keys.begin(), ch.keys.end(), [&](const auto &k) { return k.frame > frame; });
-        if (was_animated && b != ch.keys.begin() && b != ch.keys.end() &&
+        if (!fillers && was_animated && b != ch.keys.begin() && b != ch.keys.end() &&
             (b->interp == Interp::Custom || !b->path_controls.empty()))
         {
           if constexpr (std::is_same_v<T, float2>) {
@@ -894,10 +903,6 @@ static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bo
           }
           else {
             scalar_key_add_in_place(ch, frame);
-          }
-          if (auto *k = ch.key_at(frame)) {
-            k->filler = fillers;
-            k->filler_inside = fillers && frame < own_last;
           }
           continue;
         }
@@ -998,7 +1003,7 @@ static std::pair<int, int> keys_together_release(Visit &&visit, Changes &&change
   return {removed, std::max(0, fillers - removed)};
 }
 
-int drawing_key_whole(Layer &layer, bool settle, const std::string &action)
+int drawing_key_whole(Layer &layer, bool settle, const std::string &action, bool *r_keys_went)
 {
   if (!layer.has_drawing() || layer.is_reference()) {
     return 0;
@@ -1015,7 +1020,7 @@ int drawing_key_whole(Layer &layer, bool settle, const std::string &action)
           drawing_values_from_changes(drawing);
         }
       },
-      settle, action, false);
+      settle, action, false, r_keys_went);
 }
 
 bool key_together_allowed(const Layer &layer)
@@ -1135,7 +1140,7 @@ std::vector<ChannelRef> key_together_channels(Document &doc, Layer &group)
   return out;
 }
 
-int key_together_sync(Document &doc, Layer &group, bool settle)
+int key_together_sync(Document &doc, Layer &group, bool settle, bool *r_keys_went)
 {
   /* A layer new to the group (moved in, made or pasted inside it) misses its frames without any being deleted: its
    * channels aren't Channel::together_synced yet. */
@@ -1143,7 +1148,7 @@ int key_together_sync(Document &doc, Layer &group, bool settle)
   const int changed = keys_together_sync(
       group, [&](auto &&f) { together_channels(doc, group, f); },
       [&](bool to_changes) { together_changes(doc, group, to_changes); }, settle,
-      doc.action.empty() ? std::string() : std::to_string(doc.action_layer) + "/" + doc.action, true);
+      doc.action.empty() ? std::string() : std::to_string(doc.action_layer) + "/" + doc.action, true, r_keys_went);
   group.key_together_members.clear();
   group.key_together_members_of = group.id;
   for (const Layer *l : inside) {
@@ -1333,6 +1338,9 @@ void animation_record(Document &doc)
   /* Key Whole Drawing: a point keyed here keys every point here; turned on, the keys agree from then on (their
    * timing once). */
   std::vector<int> settled(flat.size(), 0);
+  /* A frame deleted from one channel and taken from the rest by Key Whole Drawing or Key Together: the frame shown is
+   * worked out again at the end, or it would show the keys gone until the playhead moved (and the step store it). */
+  std::vector<char> keys_went(flat.size(), 0);
   /* Which action: two bone layers' actions can share a name. */
   const std::string action_key = doc.action.empty() ? std::string() :
                                                       std::to_string(doc.action_layer) + "/" + doc.action;
@@ -1343,7 +1351,9 @@ void animation_record(Document &doc)
         layer.key_whole_settled = false;
         continue;
       }
-      settled[i] = drawing_key_whole(layer, !layer.key_whole_settled, action_key);
+      bool went = false;
+      settled[i] = drawing_key_whole(layer, !layer.key_whole_settled, action_key, &went);
+      keys_went[i] = went;
       layer.key_whole_settled = true;
     }
   });
@@ -1409,16 +1419,22 @@ void animation_record(Document &doc)
   }
   const std::string timeline = doc.action.empty() ? std::string() :
                                                     std::to_string(doc.action_layer) + "/" + doc.action;
+  bool together_went = false;
   for (Layer *group : together_on) {
-    if (group->key_together_settled && group->key_together_action != timeline) {
-      /* Another timeline than it last keyed together (an action entered): filled once something in it is keyed, so
-       * entering an action and leaving (as Keep Poses does to see each) changes nothing. */
+    if (group->key_together_settled && group->key_together_action != timeline &&
+        !group->key_together_frames.count(timeline))
+    {
+      /* Another timeline than it last keyed together (an action entered) and not one it keyed together in before:
+       * filled once something in it is keyed, so entering an action and leaving (as Keep Poses does to see each)
+       * changes nothing. */
       const std::vector<Layer *> inside = key_together_layers(doc, *group);
       if (std::none_of(inside.begin(), inside.end(), [&](const Layer *l) { return keyed_layers.count(l) > 0; })) {
         continue;
       }
     }
-    const int changed = key_together_sync(doc, *group, !group->key_together_settled);
+    bool went = false;
+    const int changed = key_together_sync(doc, *group, !group->key_together_settled, &went);
+    together_went = together_went || went;
     group->key_together_settled = true;
     if (changed > 0) {
       report(ReportType::Info, group->name + ": Key Together gave " + std::to_string(changed) +
@@ -1429,6 +1445,9 @@ void animation_record(Document &doc)
   layer_for_each_channel(doc.simulation, [&](auto &ch, auto &value) { record(ch, value, frame, auto_key, replace); });
   layer_for_each_channel(document_camera(doc),
                          [&](auto &ch, auto &value) { record(ch, value, frame, auto_key, replace); });
+  if (together_went || std::any_of(keys_went.begin(), keys_went.end(), [](char w) { return w != 0; })) {
+    animation_evaluate(doc, frame);
+  }
 }
 
 /* Every layer's channels evaluated on `frame`. Just after animation_record (`recorded`: every value is as the

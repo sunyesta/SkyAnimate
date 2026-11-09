@@ -166,6 +166,24 @@ PENDING = [
   return out;''', 'a frame change stays fast with hundreds of folded layers', 'drivers_rig'),
     ('src/data/document_layers.cc', '  layer.key_together = type == LayerType::Vector;', '  layer.key_together = false;',
      'a new vector layer starts folded in the timeline', 'timeline_tree'),
+    ('src/io/oanim_file.cc', '''  layer.key_together_action = get_string(j, "key_together_action");
+''', '',
+     'a file opens keying together as it was saved: a layer folded in an action fills its mainline only once keyed there',
+     'key_together_reopen'),
+    ('src/anim/animation.cc', 'if (!fillers && was_animated && b != ch.keys.begin()', 'if (was_animated && b != ch.keys.begin()',
+     "a folded layer's filler inside a Custom or controlled stretch moves nothing", 'key_together_shaped_fillers'),
+    ('src/anim/animation.cc', '''  if (together_went || std::any_of(keys_went.begin(), keys_went.end(), [](char w) { return w != 0; })) {
+    animation_evaluate(doc, frame);
+  }
+''', '', "a key deleted on one channel of a folded layer: the frame shown is without the others' keys at once",
+     'key_together_deletes'),
+    ('src/anim/animation.cc', '        !group->key_together_frames.count(timeline))', '        true)',
+     'in an action entered again, a key deleted on one channel of a folded layer goes from them all',
+     'key_together_deletes'),
+    ('src/io/oanim_file.cc', '''        layer.key_together_members_of = layer.id;
+''', '',
+     "right after opening a file, a layer moved out of a folded group lets go of the group's fillers",
+     'key_together_deletes'),
 ]
 
 def build(root):
