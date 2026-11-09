@@ -65,6 +65,7 @@ if not g["open"]:
 i, own = find("Layer", after="Group")
 d = next(r["depth"] for r in rows() if r["label"] == "Group")
 assert own["depth"] == d + 1 and not own["open"], own
+assert rows()[i + 1]["depth"] <= own["depth"], ("folded: nothing under it", labels())
 assert own["frames"] == [0, 4, 8], own["frames"]
 under = [lab for dep, lab in labels() if dep == d + 1]
 assert under[0] == "Layer" and "Inner" in under and "Position" not in under and "Rotation" not in under, labels()

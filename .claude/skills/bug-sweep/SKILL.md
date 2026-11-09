@@ -31,7 +31,7 @@ Bones), knobs inside and past their box, add/delete/duplicate/extrude/subdivide/
 entered, left and made; points moved, deleted, dissolved, subdivided, split, added, extruded; weights assigned,
 removed, automatic, cleaned; Parent Bone with its deform modes; new drawings in the rig; insert/delete keys; Sculpt strokes with every brush (Dyntopo 40% of the time, at Resolution
 8-400 and each Refine Method) and Simplify; curvature, width, smooth, slide, merge, mirror, symmetrize, clear handles,
-unalign and handle moves; Auto-Freeze Keys on and off (on by default: `OA_FUZZ_FREEZE=0` leaves the file's setting), folding timeline rows (Key Together), Key Whole Drawing, layer move/turn/size/opacity, and `freeze_check` (an edit between a layer's poses must leave them as they were) (`OA_FUZZ_ONLY` limits a run to a list of op names; `OA_FUZZ_SAVE_END=<path>` saves the document at the end, to write a repro from a long log without shrinking). It checks
+unalign and handle moves; Auto-Freeze Keys on and off (on by default: `OA_FUZZ_FREEZE=0` leaves the file's setting), folding timeline rows (Key Together), Key Whole Drawing, layer move/turn/size/opacity, `freeze_check` (an edit between a layer's poses must leave them as they were), and `mpath` (motion paths drawn on a frame: the shortcuts, from keys and kept copies, must match working every frame out on copies, each dot must sit where that frame's pose puts it, and drawing them changes nothing; `OA_FUZZ_MPATH_W` weights it) (`OA_FUZZ_ONLY` limits a run to a list of op names; `OA_FUZZ_SAVE_END=<path>` saves the document at the end, to write a repro from a long log without shrinking). It checks
 every op (no exception, finite numbers, a change only with an undo step, CANCELLED changes nothing, entering an action
 and leaving changes nothing) and every few ops (undo then redo exact, frames in different orders give the same pose,
 save/open exact, a point weighted wholly to one plain bone turns rigidly with it). A watchdog (`OA_FUZZ_HANG`, default
@@ -106,7 +106,11 @@ while probes keep reporting:
   caught, 0 not"): one lane is `--lanes 2`. An entry whose undone code doesn't compile at `/W4` (a variable left
   unused) reports BUILD FAILED: undo the whole change in it. Guards the operators can't reach (op_arg_float already turns nan, inf and text into the
   fallback) need no entry.
-- A later fix can move or reword code an older entry names ("found 0 times": fix the entry to the code as it is now,
+- An entry can stop being caught because later code does the same job (Auto-Freeze's holds before the key, redone by
+  `hold_reach` after it): find the path where the code is the only one doing it (a Switch key's `auto_freeze_hold`)
+  and test there. A check that the shortcut is reused counts it (`wm.motion_path_places()["offsets"]`) across the
+  changes a user makes on the way, a frame change included.
+- A later fix can move or reword code an older entry names ("found 0 times" or "found 2 times": fix the entry to the code as it is now,
   and prove it by hand again), or make its test too loose to notice: a check that something is kept "as it was"
   compares the stored values exactly (read back after storing them), since a fit lands close enough to pass a tolerance.
 - A hang's test: `faulthandler.dump_traceback_later(20, exit=True)` before the op, cancelled after. Its watchdog runs
@@ -143,6 +147,8 @@ Keep the machine's load moderate: about three heavy jobs at once (a build, a pro
 sweep with five mutation lanes, four fix builds and probes running for hours ended with the computer switching off,
 and the power cut zeroed a source file a mutation check had open (the runner now syncs its backup first; after a
 crash, check every folder for files of zero bytes and broken .pdb/.obj files before building).
+A power cut mid-run leaves each fuzz lane a "crash-or-hang" log with an empty hang dump, stopped at the same minute:
+not a bug, check the times against the shutdown before shrinking.
 `tests/test_motion_path_places.py` fails on a saturated CPU (its work never spreads over threads): rerun it quiet.
 
 ## Pitfalls (harness mistakes that look like bugs)

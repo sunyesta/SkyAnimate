@@ -1696,14 +1696,17 @@ bool animation_inputs_only(Document &doc)
       for (const CurvePoint &cp : c.points) {
         const PointDetail &dt = l.drawing.points[size_t(cp.point)].detail;
         taken_in = taken_in && (dt.level > 0 ? dt.in == dt.setup_in + cp.change_in && dt.out == dt.setup_out + cp.change_out :
-                                               cp.handle_in == handle_from_change(cp.setup_in, cp.change_in) &&
-                                                   cp.handle_out == handle_from_change(cp.setup_out, cp.change_out));
+                                               cp.handle_in == handle_from_change(cp.setup_in, cp.change_in, true) &&
+                                                   cp.handle_out == handle_from_change(cp.setup_out, cp.change_out, false));
       }
     }
     layer_for_each_channel<false>(l, plain);
     if (l.visible_keys.animated()) {
       l.visible = true;
     }
+    /* Set for the frame shown whenever one is worked out (dynamics_update). */
+    l.pose_frame = 0;
+    l.dynamics_now.clear();
     for (Bone &b : l.bones) {
       b.position = {};
       b.angle = 0.0f;
@@ -1744,6 +1747,8 @@ bool animation_inputs_only(Document &doc)
   all(all, doc.layers);
   one(doc.simulation);
   one(document_camera(doc));
+  /* The frame shown is not one: each frame is worked out on its own. */
+  doc.frame_current = 0;
   doc.evaluated_frame = -1;
   doc.action_bones_applied = false;
   return taken_in;
@@ -6693,7 +6698,7 @@ int keys_ignore_bones(Document &doc, const Document &source, const std::vector<s
             const CurvePoint &shown = curve_after.points[j];
             const float2 handle = t.apply_vector(in ? curve_before.points[j].handle_in : curve_before.points[j].handle_out);
             /* A handle's key is its turn and stretch from the setup (data/vector.hh). */
-            key->value = handle_change(in ? shown.setup_in : shown.setup_out, handle, key->value.x) -
+            key->value = handle_change(in ? shown.setup_in : shown.setup_out, handle, key->value.x, in) -
                          (in ? shown.handle_in_keys.from_action_bones : shown.handle_out_keys.from_action_bones);
             changed++;
           }

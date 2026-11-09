@@ -736,3 +736,7 @@ add_test(NAME transform_points
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_transform_points.py)
 add_test(NAME media
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_media.py)
+add_test(NAME handle_zero_setup
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_handle_zero_setup.py)
+add_test(NAME align_twice
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_align_twice.py)

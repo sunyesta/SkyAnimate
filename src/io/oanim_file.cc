@@ -2012,10 +2012,51 @@ static void migrate_drawing_keys(VectorDrawing &drawing)
           /* In frame order, so whole turns carry on from key to key. */
           float turn = 0.0f;
           for (Key<float2> &k : keys) {
-            k.value = handle_change(setup, k.value, turn);
+            k.value = handle_change(setup, k.value, turn, in);
             turn = k.value.x;
           }
         });
+      }
+    }
+  }
+}
+
+/* Before format 8 an in handle with no length in the setup turned from pointing on (angle 0), as an out handle does,
+ * so an aligned pair pulled out of nothing turned apart between keys. Now it turns from pointing back: its keys'
+ * turns measured again so each key shows the same handle (whole turns between keys as they were; keys with no
+ * length, where it starts from, stay as they are). */
+static void migrate_zero_in_handles(VectorDrawing &drawing)
+{
+  const float pi = PI;
+  const auto wrap = [pi](float a) {
+    a = std::fmod(a + pi, 2.0f * pi);
+    return (a < 0.0f ? a + 2.0f * pi : a) - pi;
+  };
+  for (Curve &curve : drawing.curves) {
+    for (CurvePoint &cp : curve.points) {
+      if (length(cp.setup_in) > 1e-9f) {
+        continue;
+      }
+      const auto remeasure = [&](std::vector<Key<float2>> &keys) {
+        float near = 0.0f, shift = 0.0f;
+        bool shifting = false;
+        for (Key<float2> &k : keys) {
+          if (k.value.y <= 0.0f) {
+            shifting = false;
+            near = k.value.x;
+            continue;
+          }
+          if (!shifting) {
+            shift = near + wrap(k.value.x - pi - near) - k.value.x;
+            shifting = true;
+          }
+          k.value.x += shift;
+          near = k.value.x;
+        }
+      };
+      remeasure(cp.handle_in_keys.keys);
+      for (auto &[name, keys] : cp.handle_in_keys.actions) {
+        remeasure(keys);
       }
     }
   }
@@ -2180,6 +2221,9 @@ static VectorDrawing drawing_from_json(const json &j)
     drawing_repair_stale_handle_keys(drawing);
     migrate_drawing_setups(drawing);
     migrate_drawing_keys(drawing);
+  }
+  else if (g_loading_version < 8) {
+    migrate_zero_in_handles(drawing);
   }
   /* Older files' Automatic and Vector handles become stored ones now, from the setup pose. */
   drawing_init_handles(drawing);

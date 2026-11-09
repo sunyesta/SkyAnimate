@@ -771,6 +771,137 @@ def apply_new(op):
     return "py-done"
 
 
+# --- Motion paths (sweep p3): the shortcuts against working everything out on copies, and the dots against the pose --
+MP_W = float(os.environ.get("OA_FUZZ_MPATH_W", "4"))
+
+
+@op("mpath", MP_W, "py")
+def _(rng):
+    if rng.random() < 0.7:
+        rig = a_rig(rng)
+        if not rig or not rig.bones:
+            return None
+        k = 1 if rng.random() < 0.8 else 2
+        t = {"rig": rig.id, "bones": rng.sample(bone_names(rig), min(k, len(rig.bones))),
+             "part": rng.choice(["BONE"] * 4 + ["HEAD", "TAIL"])}
+    else:
+        t = a_points(rng, 2)
+        if not t:
+            return None
+    return dict(t, own=rng.random() < 0.5, all=rng.random() < 0.7, at=frame(rng),
+                frames=[rng.randint(0, FRAMES) for _ in range(3)])
+
+
+def mp_grab():
+    out = []
+    for p in wm.motion_paths():
+        out.append((p["label"], p["first"], [tuple(q) for q in p["points"]],
+                    [(h["frame"], h["in"], h["out"]) for h in p["handles"]]))
+    out.append([(c["layer"], c["end"], c["index"], c["at"], c["curve"], c["in_tip"], c["out_tip"])
+                for c in wm.motion_path_controls()])
+    return out
+
+
+def mp_first_diff(a, b, eps, path=""):
+    if a is None or b is None:
+        return None if a is b else f"{path}: {a} vs {b}"
+    if isinstance(a, (tuple, list)):
+        if not isinstance(b, (tuple, list)) or len(a) != len(b):
+            return f"{path}: len {len(a)} vs {len(b) if isinstance(b, (tuple, list)) else b}"
+        for i, (x, y) in enumerate(zip(a, b)):
+            d = mp_first_diff(x, y, eps, f"{path}[{i}]")
+            if d:
+                return d
+        return None
+    if isinstance(a, str) or isinstance(b, str):
+        return None if a == b else f"{path}: {a!r} vs {b!r}"
+    if isinstance(a, bool) or isinstance(b, bool):
+        return None if a == b else f"{path}: {a} vs {b}"
+    try:
+        return None if abs(a - b) < eps else f"{path}: {a} vs {b} (off {abs(a - b):.6f})"
+    except TypeError:
+        return None if a == b else f"{path}: {a!r} vs {b!r}"
+
+
+def mp_where(op, label):
+    """Where the thing a path traces is on the frame shown, from the document (no path code): None if unknown."""
+    if "rig" in op:
+        rig = find_layer(op["rig"])
+        for name in op["bones"]:
+            b = bone(rig, name)
+            if not b:
+                continue
+            if label == name + " tip":
+                return rig.to_document(b["tail"])
+            if label == name + " head":
+                return rig.to_document(b["knob_head"] if b.get("type") == "CONTROLLER_2D" else b["head"])
+        return None
+    return None
+
+
+def apply_mpath(op):
+    if "rig" in op:
+        rig = pick_bones(op)
+        if rig is None:
+            return "skip"
+        for other in L.all():
+            other.selected = other.id == rig.id
+        L.active = rig
+    else:
+        layer = find_layer(op["layer"])
+        if layer is None or not any(i < layer.point_count for i in op["idx"]):
+            return "skip"
+        for other in L.all():
+            other.selected = other.id == layer.id
+        layer = pick_points(op)
+    keep = (doc.motion_paths, doc.path_all, doc.path_own_motion, wm.tool(), doc.frame_current)
+    check_same = doc.auto_key
+    before = snap() if check_same else None
+    try:
+        doc.motion_paths = True
+        doc.path_all = op["all"]
+        if wm.tool() != "MOTION_PATH":
+            ops.wm.tool_motion_path()
+        doc.path_own_motion = op["own"]
+        doc.frame_current = op["at"]
+        quick = mp_grab()
+        wm.motion_path_own_from_keys(False)
+        try:
+            worked = mp_grab()
+        finally:
+            wm.motion_path_own_from_keys(True)
+        d = mp_first_diff(quick, worked, 1e-4)
+        if d:
+            raise Failure(f"mpath-shortcut: on frame {op['at']} (own motion {op['own']}, all {op['all']}) the paths "
+                          f"of {[p[0] for p in quick[:-1]]} taken with shortcuts differ from working them out on copies "
+                          f"at {d}")
+        if not op["own"] and doc.path_relative == "WORLD" and doc.path_step == 1:
+            paths = [p for p in quick[:-1]]
+            for g in op["frames"]:
+                doc.frame_current = g
+                for label, first, pts, _h in paths:
+                    if not (0 <= g - first < len(pts)):
+                        continue
+                    want = mp_where(op, label)
+                    if want is None:
+                        continue
+                    off = math.hypot(pts[g - first][0] - want[0], pts[g - first][1] - want[1])
+                    if off > 1e-4:
+                        raise Failure(f"mpath-pose: path {label!r} (drawn on frame {op['at']}) has its dot on frame "
+                                      f"{g} at {tuple(pts[g - first])}, the pose there puts it at {tuple(want)} "
+                                      f"(off {off:.6f})")
+    finally:
+        doc.frame_current = keep[4]
+        if keep[3] != "MOTION_PATH":
+            getattr(ops.wm, "tool_" + keep[3].lower())()
+        doc.motion_paths, doc.path_all, doc.path_own_motion = keep[0], keep[1], keep[2]
+    if check_same:
+        d = edits(before, snap())
+        if d:
+            raise Failure(f"mpath-changed: drawing motion paths changed the document {d[:3]}")
+    return "py-done"
+
+
 ONLY = [n for n in os.environ.get("OA_FUZZ_ONLY", "").split(",") if n]   # e.g. sculpt,simplify,frame,undo,redo
 
 
@@ -826,6 +957,9 @@ def keep_bug(layer):
 
 def apply(op):
     o = op["op"]
+    if o == "mpath":
+        r = apply_mpath(op)
+        return None if r == "py-done" else r
     if o in ("sculpt", "simplify"):
         return apply_sculpt(op)
     new = apply_new(op)
@@ -880,8 +1014,8 @@ def apply(op):
             return ops.anim.action_new(name=op["name"])
         if o == "action_set":
             return ops.anim.action_set(name=op["name"])
-        if op["name"] not in actions_of(rig) or doc.action:
-            return "skip"
+        if op["name"] not in actions_of(rig) or doc.action or not doc.auto_key:
+            return "skip"   # (p3: with auto-key off, entering an action drops an unkeyed edit as a frame change does)
         before = snap()
         ops.anim.action_set(name=op["name"])
         ops.anim.action_set(name="")

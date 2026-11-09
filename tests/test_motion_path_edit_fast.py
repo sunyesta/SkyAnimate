@@ -359,6 +359,8 @@ def stick_key(at):
 
 for what, edit, kept in (("the finger's key", lambda: finger_key((2.5, -0.8)), True),
                          ("the finger's key again", lambda: finger_key((1.6, -0.2)), True),
+                         ("the finger's key, then another frame",
+                          lambda: (finger_key((1.9, -0.3)), setattr(doc, "frame_current", 27)), True),
                          ("the knob's key", lambda: stick_key((0.0, 0.04)), False),
                          ("the finger's key after", lambda: finger_key((2.2, -0.4)), True)):
     bent = face.curve_handles(0)

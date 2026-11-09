@@ -679,9 +679,11 @@ float2 point_setup_pos(const MeshPoint &point);
 float2 handle_setup(const CurvePoint &cp, bool in);
 /* Handle Angle and Length: how a handle (an offset from its point) has turned from its setup one
  * (radians, the turn nearest `near_turn`, so whole turns carry on) and how much longer it is; and
- * the handle they make. */
-float2 handle_change(float2 setup, float2 handle, float near_turn);
-float2 handle_from_change(float2 setup, float2 change);
+ * the handle they make. A setup handle with no length turns from pointing back along the curve: an in
+ * handle (`in`) from pointing back (half a turn), an out handle from pointing on, so an aligned pair pulled
+ * out of it turns together between keys. */
+float2 handle_change(float2 setup, float2 handle, float near_turn, bool in);
+float2 handle_from_change(float2 setup, float2 change, bool in);
 /* The points' Transforms and the handles' Angle and Length from the points and handles as they
  * are (only what moved since: a round trip isn't exact to the last bit, and a value differing from
  * its last recorded one is an edit), and the points and handles back from them. A point or handle

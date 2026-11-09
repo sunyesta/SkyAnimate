@@ -87,7 +87,7 @@ assert oanim.ops.wm.save_as_mainfile() == {'CANCELLED'}, "without a window there
 
 with zipfile.ZipFile(walk) as archive:
     stored = json.loads(archive.read("document.json"))
-assert stored["format"] == "OpenAnimate" and stored["version"] == 7
+assert stored["format"] == "OpenAnimate" and stored["version"] == 8
 group = stored["document"]["layers"][0]
 assert group["type"] == "GROUP"
 mask = group["children"][0]

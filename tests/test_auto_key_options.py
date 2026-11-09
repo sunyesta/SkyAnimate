@@ -149,4 +149,32 @@ oanim.ops.wm.read_homefile(confirmed="1")
 assert oanim.data.document.auto_freeze_keys, "a new file has it on"
 
 shutil.rmtree(os.path.dirname(path), ignore_errors=True)
+
+# A switch keyed between its poses: the poses either side keep the child they showed (and without Auto-Freeze, no).
+for freeze in (True, False):
+    oanim.ops.wm.read_homefile(confirmed="1")
+    doc = oanim.data.document
+    layers = oanim.data.layers
+    doc.auto_key = True
+    doc.auto_freeze_keys = freeze
+    assert oanim.ops.layer.new_switch() == {'FINISHED'}
+    sw = layers.active
+    for name in ("A", "B"):
+        layers.active = sw
+        oanim.ops.layer.new()
+        layers.active.name = name
+        layers.active.add_curve([(0.0, 0.0), (1.0, 0.0)])
+        assert oanim.ops.layer.move_to_group(group=str(sw.id)) == {'FINISHED'}
+    layers.active = sw
+    for f, x in ((10, 1.0), (30, 2.0)):
+        doc.frame_current = f
+        sw.location_x = x
+    doc.frame_current = 20
+    assert oanim.ops.layer.switch_set(layer=sw.name, child="B") == {'FINISHED'}
+    shown = {}
+    for f in (10, 20, 30):
+        doc.frame_current = f
+        shown[f] = sw.switch_active
+    assert shown == ({10: "A", 20: "B", 30: "A"} if freeze else {10: "A", 20: "B", 30: "B"}), (freeze, shown)
+
 print("auto key options: ok")

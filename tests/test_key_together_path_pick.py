@@ -169,6 +169,11 @@ for name, edit, want in (
         timed = [[round(progress(l, f), 4) for f in (12, 15, 18)] for l in (a, b)]
         assert timed[0] == timed[1], (name, "timed alike", timed)
 
+# --- A breakdown made on A's path (as Shift-dragging a dot does) is the group's: a breakdown on every layer --------------
+doc, a, b, g = scene()
+assert ops.anim.motion_path_breakdown(frame="15", layer=str(a.id), factor="0.3") == {'FINISHED'}
+assert [key(l, 15)["type"] for l in (a, b)] == ["BREAKDOWN", "BREAKDOWN"], [key(l, 15) for l in (a, b)]
+
 # --- Without the tool, Alt click in the group's row selects the stretch's end key on every layer -------------------------
 doc, a, b, g = scene()
 assert ops.wm.tool_select() == {'FINISHED'}

@@ -382,6 +382,7 @@ void vector_operators_register()
                         }
                         if (rekeyed) {
                           animation_evaluate(*C.document, C.document->frame_current);
+                          changed++;
                         }
                       }
                       return changed > 0 ? OpStatus::Finished : OpStatus::Cancelled;

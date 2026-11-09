@@ -9552,7 +9552,7 @@ static void handle_row(Context &C, const HandleRow &row, const char *suffix)
   float2 &handle = row.in ? cp.handle_in : cp.handle_out;
   const bool posed = C.document->frame_current != 0;
   const float2 setup = handle_setup(cp, row.in);
-  float2 value = posed ? handle_change(setup, handle, (row.in ? cp.change_in : cp.change_out).x) :
+  float2 value = posed ? handle_change(setup, handle, (row.in ? cp.change_in : cp.change_out).x, row.in) :
                          float2(std::atan2(handle.y, handle.x), length(handle));
   const std::string label = std::string(row.in ? "Handle In" : "Handle Out") + suffix;
   ImGui::PushID(label.c_str());
@@ -9590,7 +9590,7 @@ static void handle_row(Context &C, const HandleRow &row, const char *suffix)
   ImGui::PopID();
   if (edited) {
     const float2 before = handle;
-    handle = posed ? handle_from_change(setup, value) : float2(std::cos(value.x), std::sin(value.x)) * value.y;
+    handle = posed ? handle_from_change(setup, value, row.in) : float2(std::cos(value.x), std::sin(value.x)) * value.y;
     if (cp.aligned && length(before) > 1e-9f && length(handle) > 1e-9f) {
       /* Its partner stays in line: it turns by as much. */
       float2 &other = row.in ? cp.handle_out : cp.handle_in;

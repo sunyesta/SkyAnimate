@@ -116,7 +116,7 @@ int keep_poses(Document &doc, const SetupSnapshot &before)
             continue;
           }
           changed += each_posed_key(in ? cp.handle_in_keys : cp.handle_out_keys, action_bone_actions, [&](float2 &v) {
-            v = handle_change(now, handle_from_change(was, v), v.x);
+            v = handle_change(now, handle_from_change(was, v, in), v.x, in);
           });
         }
       }

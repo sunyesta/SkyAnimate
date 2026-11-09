@@ -192,7 +192,7 @@ static void own_handles_with(VectorDrawing &drawing, Curve &curve, int i, const 
     if (!ch.animated()) {
       float2 &setup = pre ? cp.setup_in : cp.setup_out;
       setup = pre ? setup_in : setup_out;
-      (pre ? cp.change_in : cp.change_out) = handle_change(setup, pre ? in : out, 0.0f);
+      (pre ? cp.change_in : cp.change_out) = handle_change(setup, pre ? in : out, 0.0f, pre);
       ch.last = {};
       ch.has_last = true;
     }
@@ -399,10 +399,10 @@ bool curve_point_align_keys(CurvePoint &cp, AlignFollow follow)
     }
   }
   else {
-    /* A setup handle with no length points nowhere: its keys' turns are measured from angle 0, the out's as well as the
-     * in's (handle_from_change), so the same turn would fold the two onto each other. It takes a length too small to
-     * see, in line with the other (or the in along angle 0, as its turns were measured), its keys measured again from
-     * it below so each frame shows the handle it did. */
+    /* A setup handle with no length points nowhere: its keys' turns are measured from pointing back (an in handle) or
+     * on (an out handle, handle_from_change). It takes a length too small to see, in line with the other (or along
+     * those, as its turns were measured), its keys measured again from it below so each frame shows the handle it
+     * did. */
     const float tiny = 1e-5f;
     if (li > 1e-9f) {
       new_out = -si / li * tiny;
@@ -411,8 +411,8 @@ bool curve_point_align_keys(CurvePoint &cp, AlignFollow follow)
       new_in = -so / lo * tiny;
     }
     else {
-      new_in = float2(tiny, 0.0f);
-      new_out = float2(-tiny, 0.0f);
+      new_in = float2(-tiny, 0.0f);
+      new_out = float2(tiny, 0.0f);
     }
   }
   std::set<std::string> names;
@@ -444,7 +444,7 @@ bool curve_point_align_keys(CurvePoint &cp, AlignFollow follow)
         float near_turn = 0.0f;
         for (Key<float2> &k : keys) {
           /* Frame 0 is the setup itself: no change from it. */
-          k.value = k.frame == 0 ? float2() : handle_change(now, handle_from_change(was, k.value), near_turn);
+          k.value = k.frame == 0 ? float2() : handle_change(now, handle_from_change(was, k.value, in), near_turn, in);
           near_turn = k.value.x;
         }
       };
@@ -3009,6 +3009,17 @@ bool curve_point_selected(const VectorDrawing &drawing, const CurvePoint &cp)
   return drawing.points[cp.point].selected || cp.select_in || cp.select_out;
 }
 
+/* Aligned already with its handles in line (to float error, as turning both halfway leaves them): nothing to turn,
+ * so nothing to key. */
+static bool handles_in_line(const VectorDrawing &drawing, const CurvePoint &cp)
+{
+  if (!cp.aligned || drawing.points[size_t(cp.point)].detail.level > 0) {
+    return false;
+  }
+  const float li = length(cp.handle_in), lo = length(cp.handle_out);
+  return li <= 1e-9f || lo <= 1e-9f || length(cp.handle_in / li + cp.handle_out / lo) < 1e-4f;
+}
+
 int drawing_align_selected_handles(VectorDrawing &drawing, bool align,
                                    std::vector<std::tuple<int, int, AlignFollow>> *r_aligned)
 {
@@ -3024,6 +3035,13 @@ int drawing_align_selected_handles(VectorDrawing &drawing, bool align,
         /* One handle picked: that one turns into line (the handle you pick is the one you are aligning). The point
          * picked (or both handles): both turn, halfway each. */
         const bool point = drawing.points[cp.point].selected || (cp.select_in && cp.select_out);
+        if (handles_in_line(drawing, cp)) {
+          /* Its keys are still made to agree with the line (curve_point_align_keys). */
+          if (r_aligned) {
+            r_aligned->emplace_back(c, i, point ? AlignFollow::Both : cp.select_out ? AlignFollow::Out : AlignFollow::In);
+          }
+          continue;
+        }
         if (point) {
           curve_point_align_both(drawing, curve, i);
         }
@@ -3262,21 +3280,27 @@ static float wrap_turn(float a)
   return a - 2.0f * PI * std::floor((a + PI) / (2.0f * PI));
 }
 
-float2 handle_change(float2 setup, float2 handle, float near_turn)
+/* The angle a handle's turn is measured from: its setup's, or with no length, pointing back for an in handle. */
+static float handle_setup_angle(const float2 setup, const float setup_length, const bool in)
+{
+  return setup_length > 1e-9f ? std::atan2(setup.y, setup.x) : in ? PI : 0.0f;
+}
+
+float2 handle_change(float2 setup, float2 handle, float near_turn, bool in)
 {
   const float setup_length = length(setup), handle_length = length(handle);
-  const float setup_angle = setup_length > 1e-9f ? std::atan2(setup.y, setup.x) : 0.0f;
+  const float setup_angle = handle_setup_angle(setup, setup_length, in);
   const float handle_angle = handle_length > 1e-9f ? std::atan2(handle.y, handle.x) : setup_angle + near_turn;
   return {near_turn + wrap_turn(handle_angle - setup_angle - near_turn), handle_length - setup_length};
 }
 
-float2 handle_from_change(float2 setup, float2 change)
+float2 handle_from_change(float2 setup, float2 change, bool in)
 {
   if (change == float2()) {
     return setup;
   }
   const float setup_length = length(setup);
-  const float angle = (setup_length > 1e-9f ? std::atan2(setup.y, setup.x) : 0.0f) + change.x;
+  const float angle = handle_setup_angle(setup, setup_length, in) + change.x;
   const float l = std::max(0.0f, setup_length + change.y);
   return {std::cos(angle) * l, std::sin(angle) * l};
 }
@@ -3332,8 +3356,8 @@ void drawing_changes_from_values(VectorDrawing &drawing)
           setup = handle;
           change = {};
         }
-        else if (handle != handle_from_change(setup, change)) {
-          change = handle_change(setup, handle, change.x);
+        else if (handle != handle_from_change(setup, change, in)) {
+          change = handle_change(setup, handle, change.x, in);
         }
       }
     }
@@ -3356,8 +3380,8 @@ void drawing_values_from_changes(VectorDrawing &drawing)
         dt.out = dt.setup_out + cp.change_out;
         continue;
       }
-      cp.handle_in = handle_from_change(cp.setup_in, cp.change_in);
-      cp.handle_out = handle_from_change(cp.setup_out, cp.change_out);
+      cp.handle_in = handle_from_change(cp.setup_in, cp.change_in, true);
+      cp.handle_out = handle_from_change(cp.setup_out, cp.change_out, false);
     }
   }
   /* Detail placed from its offsets, on the curve as it now is. */
@@ -3450,7 +3474,7 @@ int drawing_clear_selected_pose(VectorDrawing &drawing, bool positions, bool han
       for (const bool in : {true, false}) {
         float2 &handle = in ? cp.handle_in : cp.handle_out;
         /* A handle's action bone part is a change of its Angle and Length. */
-        const float2 rest = handle_from_change(handle_setup(cp, in), (in ? cp.handle_in_keys : cp.handle_out_keys).from_action_bones);
+        const float2 rest = handle_from_change(handle_setup(cp, in), (in ? cp.handle_in_keys : cp.handle_out_keys).from_action_bones, in);
         if (cp.handles_set && (point || (in ? cp.select_in : cp.select_out)) && handle != rest) {
           handle = rest;
           changed++;

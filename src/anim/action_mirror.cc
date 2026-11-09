@@ -206,8 +206,8 @@ void key_on_line(Link &link, const LineSpot &spot, const std::string &from, cons
   const auto control = [&](int frame, float2 r_ctrl[4]) {
     const float2 a = point_setup_pos(pa) + sample(pa.pos_keys, from, float2(), frame);
     const float2 b = point_setup_pos(pb) + sample(pb.pos_keys, from, float2(), frame);
-    const float2 ha = handle_from_change(spot.source_a.setup(), sample(spot.source_a.keys(), from, float2(), frame));
-    const float2 hb = handle_from_change(spot.source_b.setup(), sample(spot.source_b.keys(), from, float2(), frame));
+    const float2 ha = handle_from_change(spot.source_a.setup(), sample(spot.source_a.keys(), from, float2(), frame), !spot.source_a.out);
+    const float2 hb = handle_from_change(spot.source_b.setup(), sample(spot.source_b.keys(), from, float2(), frame), !spot.source_b.out);
     r_ctrl[0] = link.to.apply(a);
     r_ctrl[1] = link.to.apply(a + ha);
     r_ctrl[2] = link.to.apply(b + hb);
@@ -270,10 +270,10 @@ void key_on_line(Link &link, const LineSpot &spot, const std::string &from, cons
   for (const int f : frames) {
     const Split s = split_at(f);
     add(pos, f, s.pos - at_rest.pos);
-    last_in = handle_change(at_rest.in, s.in, last_in.x);
-    last_out = handle_change(at_rest.out, s.out, last_out.x);
-    last_a = handle_change(at_rest.a, s.a, last_a.x);
-    last_b = handle_change(at_rest.b, s.b, last_b.x);
+    last_in = handle_change(at_rest.in, s.in, last_in.x, !spot.before.out);
+    last_out = handle_change(at_rest.out, s.out, last_out.x, !spot.after.out);
+    last_a = handle_change(at_rest.a, s.a, last_a.x, !spot.a.out);
+    last_b = handle_change(at_rest.b, s.b, last_b.x, !spot.b.out);
     add(in, f, last_in);
     add(out, f, last_out);
     add(a, f, last_a);
@@ -393,8 +393,8 @@ void mirror_drawing_keys(Link &link, const std::string &from, const std::string 
             k.value = float2();
             continue;
           }
-          const float2 shown = handle_from_change(from_handle.setup(), k.value) * scale;
-          k.value = handle_change(mine[m].setup(), link.to.apply_vector(shown), near_turn);
+          const float2 shown = handle_from_change(from_handle.setup(), k.value, !from_handle.out) * scale;
+          k.value = handle_change(mine[m].setup(), link.to.apply_vector(shown), near_turn, !mine[m].out);
           near_turn = k.value.x;
         }
         mine[m].keys().actions[to] = std::move(keys);

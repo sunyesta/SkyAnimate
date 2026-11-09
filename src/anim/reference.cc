@@ -723,9 +723,9 @@ static void add_handle_offset(CurvePoint &cp, bool in, const ReferencePoint &o)
   std::vector<std::pair<int, float2>> values;
   float turn = 0.0f;
   for (const int f : frames) {
-    const float2 shown = handle_from_change(setup, ch.animated() ? ch.evaluate(f) : change) +
+    const float2 shown = handle_from_change(setup, ch.animated() ? ch.evaluate(f) : change, in) +
                          (o.offset_keys.animated() ? o.offset_keys.evaluate(f) : o.offset);
-    const float2 c = handle_change(new_setup, shown, turn);
+    const float2 c = handle_change(new_setup, shown, turn, in);
     turn = c.x;
     values.push_back({f, c});
   }
@@ -734,7 +734,7 @@ static void add_handle_offset(CurvePoint &cp, bool in, const ReferencePoint &o)
   }
   setup = new_setup;
   handle += o.offset;
-  change = handle_change(setup, handle, change.x);
+  change = handle_change(setup, handle, change.x, in);
   ch.last = change;
   ch.has_last = true;
 }

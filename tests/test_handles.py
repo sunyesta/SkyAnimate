@@ -111,8 +111,8 @@ layer.move_handle(curve, 1, "IN", free_in)
 layer.move_handle(curve, 1, "OUT", free_out)
 assert oanim.ops.mesh.handles_align() == {'FINISHED'}
 
-# Aligned: moving one handle turns the other, keeping its length.
-assert oanim.ops.mesh.handles_align() == {'FINISHED'}
+# Aligned: moving one handle turns the other, keeping its length. (Aligned and in line already: nothing to do.)
+assert oanim.ops.mesh.handles_align() == {'CANCELLED'}
 _, old_in, _ = layer.curve_handles(curve)[1]
 layer.move_handle(curve, 1, "OUT", (1.5, 1.0))
 kind, n_in, n_out = layer.curve_handles(curve)[1]

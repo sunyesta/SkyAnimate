@@ -135,4 +135,42 @@ for f in (5, 25, 5):
     driven = same_ways("driven, frame %d" % f)
 assert not close(driven, undriven), "the driver moves its path"
 
+# --- Two points' paths, one bending the other (a cage point and a point its Mesh Deform bends): the kept copies are put
+# back after each path's places and after its handles, so drawn again they come out the same ------------------------
+ops.anim.driver_remove(layer=str(ball.id), path="position", component="1")
+doc.frame_current = 0
+ops.layer.new()
+bent = layers.active
+bent.add_curve([(-0.55, -0.3), (-0.2, 0.35), (0.25, -0.15), (0.6, 0.3)])
+bent.key_whole_drawing = False
+ops.layer.new()
+cage = layers.active
+assert cage.add_primitive("BOX", [(-1, -1), (1, 1)])
+cage.key_whole_drawing = False
+layers.active = bent
+assert ops.object.modifier_add(type="MESH_DEFORM") == {'FINISHED'}
+bent.modifier_set(len(bent.modifiers) - 1, curve_method="SMOOTH", cage_method="MEAN_VALUE")
+bent.modifier_set(len(bent.modifiers) - 1, layer=cage.name, shape=cage.shapes[0][0])
+doc.auto_key = True
+for f, s in ((10, 0.0), (30, 1.0)):
+    doc.frame_current = f
+    bent.set_point(1, (-0.2 + 0.3 * s, 0.3 + 0.2 * s))
+    p = cage.points[0]
+    cage.set_point(0, (p[0] + 0.3 + 0.2 * s, p[1] - 0.2 + 0.4 * s))
+doc.frame_current = 0
+doc.auto_key = False
+for other in layers.all():
+    other.selected = other.id in (bent.id, cage.id)
+layers.active = bent
+bent.select_points([1])
+cage.select_points([1, 2, 3], select=False)
+cage.select_points([0])
+labels = sorted(p["label"] for p in wm.motion_paths())
+assert labels == sorted([bent.name + " point 1", cage.name + " point 0"]), labels
+for f in (5, 20, 25):
+    doc.frame_current = f
+    worked = same_ways("a bent point and its cage's, frame %d" % f)
+    for again in range(2):
+        assert close(grab(True), worked), ("drawn again from the kept copies", f, again)
+
 print("Motion path from keys tests passed")
