@@ -570,6 +570,8 @@ add_test(NAME timeline_chain
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_chain.py)
 add_test(NAME timeline_clear
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_clear.py)
+add_test(NAME motion_path_copy_paste
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_copy_paste.py)
 add_test(NAME motion_path_setup_handle
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_setup_handle.py)
 add_test(NAME motion_path_own_keys

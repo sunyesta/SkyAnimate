@@ -399,7 +399,7 @@ class _Layer:
 
     @property
     def bones(self):
-        """A bone layer's bones: dicts with name, parent, position, angle (radians), setup_position
+        """A bone layer's bones: dicts with name, id, parent, position, angle (radians), setup_position
         and setup_angle (the setup pose, frame 0: their keys hold the change from it), length,
         scale, strength, selected, select_head, select_tail, connected, shape, pin_size, shape_layer,
         color_set, colors (its regular, selected and active shades), active, head and tail (where it runs now, in the bone

@@ -3185,6 +3185,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["depth"] = b.depth;
       d["strength"] = b.strength;
       d["selected"] = b.selected;
+      d["id"] = b.id;
       d["select_head"] = bone_head_selected(layer, b);
       d["select_tail"] = bone_tail_selected(layer, b);
       d["connected"] = b.connected;

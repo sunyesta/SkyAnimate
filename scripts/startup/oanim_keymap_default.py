@@ -206,6 +206,9 @@ KEYMAP = (
     ("Motion Path", "anim.motion_path_select_linked_pick", "L", {}),
     ("Motion Path", "anim.motion_path_deselect_linked_pick", "L", {"shift": True}),
     ("Motion Path", "anim.motion_path_deselect_all", "A", {"alt": True}),
+    # Over a path (their poll needs one; off a path the viewport's own Ctrl C and Ctrl V).
+    ("Motion Path", "anim.motion_path_copy", "C", {"ctrl": True}),
+    ("Motion Path", "anim.motion_path_paste", "V", {"ctrl": True}),
     ("Motion Path", "anim.motion_path_handles_reset", "X", {}),
     ("Motion Path", "anim.motion_path_handles_reset", "DEL", {}),
     ("Motion Path", "anim.motion_path_keys_delete", "X", {}),

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <climits>
 #include <cmath>
 #include <functional>
 #include <map>
@@ -10,6 +11,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <type_traits>
 
 #include "anim/animation.hh"
 #include "anim/controller.hh"
@@ -5945,6 +5947,334 @@ SculptDab motion_path_sculpt_dab_make(PathBrush brush, const PathBrushSettings &
   d.falloff = settings.falloff;
   d.surface_sensitivity = settings.sensitivity;
   return d;
+}
+
+/* --- Copy Path and Paste Path ------------------------------------------------------------------------------------ */
+
+namespace {
+
+/* One of a copied path's channels: its keys as changes from where it was on the first copied frame. */
+struct CopiedPathChannel {
+  /* Its name after the target's own part ("position", "angle", "scale"): a point's "pos" and a layer's "rotation"
+   * named as a bone's, so a path pastes across kinds of target. */
+  std::string name;
+  bool vector = false;
+  std::vector<Key<float>> scalar;
+  std::vector<Key<float2>> vec;
+};
+
+struct CopiedPath {
+  bool valid = false;
+  std::string label;
+  int first = 0, last = 0;
+  std::vector<CopiedPathChannel> channels;
+};
+
+CopiedPath g_copied_path;
+
+}  // namespace
+
+static std::string path_channel_name(const std::string &name)
+{
+  if (name == "pos") {
+    return "position";
+  }
+  if (name == "rotation") {
+    return "angle";
+  }
+  return name;
+}
+
+/* The channels `target`'s own keys are on (motion_path_key_filter's), each with its name. None for a drawing's. */
+static std::vector<std::pair<std::string, ChannelRef>> path_own_channels(Document &doc, const MotionPathTarget &target)
+{
+  std::vector<std::pair<std::string, ChannelRef>> out;
+  Layer *layer = target.drawing ? nullptr : layer_find(doc, target.layer);
+  if (!layer) {
+    return out;
+  }
+  const KeyFilter filter = motion_path_key_filter(doc, target);
+  for (const ChannelRef &ref : layer_filtered_channels(*layer, filter)) {
+    if (ref.path.rfind(filter.path, 0) != 0) {
+      continue;
+    }
+    const std::string name = ref.path.substr(filter.path.size());
+    /* Only its own: not a constraint's setting or a linked dial's. */
+    if (name.empty() || name.find_first_of("[.") != std::string::npos) {
+      continue;
+    }
+    out.push_back({path_channel_name(name), ref});
+  }
+  return out;
+}
+
+/* A bone's moves are kept along its rest axes (bone_transform_from_position): turned by this into its parent's
+ * space, which a point's and a layer's moves are in already, so a move copied from one kind of target, or a bone
+ * resting another way, pastes going the same way on screen, and flips left to right there. */
+static float path_axes_angle(const Document &doc, const MotionPathTarget &target, const std::string &name)
+{
+  const Layer *layer = target.bone && name == "position" ? layer_find(doc, target.layer) : nullptr;
+  const int i = layer ? bone_index(*layer, target.bone) : -1;
+  return i >= 0 ? layer->bones[size_t(i)].setup_angle : 0.0f;
+}
+
+template<typename T> static T path_axes(const T &v, float angle)
+{
+  if constexpr (std::is_same_v<T, float2>) {
+    return angle != 0.0f ? rotate(v, angle) : v;
+  }
+  else {
+    return v;
+  }
+}
+
+static float path_flip(float v, const std::string &name, bool flip)
+{
+  return flip && name == "angle" ? -v : v;
+}
+
+static float2 path_flip(float2 v, const std::string & /*name*/, bool flip)
+{
+  return flip ? float2{-v.x, v.y} : v;
+}
+
+template<typename T>
+static void copy_path_keys(const Channel<T> &ch, int first, int last, float axes, std::vector<Key<T>> &out)
+{
+  const T base = ch.evaluate(first);
+  for (const Key<T> &key : ch.keys) {
+    if (key.frame < first || key.frame > last) {
+      continue;
+    }
+    Key<T> k = key;
+    k.value = path_axes(T(k.value - base), axes);
+    for (T &c : k.path_controls) {
+      c = path_axes(T(c - base), axes);
+    }
+    if constexpr (std::is_same_v<T, float2>) {
+      k.path_in = path_axes(k.path_in, axes);
+      k.path_out = path_axes(k.path_out, axes);
+      for (PathControlHandles &h : k.path_control_handles) {
+        h.in = path_axes(h.in, axes);
+        h.out = path_axes(h.out, axes);
+      }
+    }
+    k.selected = k.filler = k.filler_inside = k.filler_edited = false;
+    out.push_back(k);
+  }
+}
+
+bool motion_path_copy(const Document &cdoc, const MotionPathTarget &target, std::string *r_why)
+{
+  Document &doc = const_cast<Document &>(cdoc);
+  const auto channels = path_own_channels(doc, target);
+  int keyed_last = 0, picked_first = INT_MAX, picked_last = INT_MIN;
+  for (const auto &[name, ref] : channels) {
+    const auto look = [&](const auto &ch) {
+      for (const auto &k : ch.keys) {
+        keyed_last = std::max(keyed_last, k.frame);
+        if (k.selected) {
+          picked_first = std::min(picked_first, k.frame);
+          picked_last = std::max(picked_last, k.frame);
+        }
+      }
+    };
+    ref.scalar ? look(*ref.scalar) : look(*ref.vector);
+  }
+  if (keyed_last <= 0) {
+    if (r_why) {
+      *r_why = target.drawing ? "A drawing's timing has no path to copy" : "The path has no keys to copy";
+    }
+    return false;
+  }
+  CopiedPath copied;
+  copied.valid = true;
+  copied.label = motion_path_label(doc, target);
+  /* Two or more keys picked: from the first to the last of them; else all of it. */
+  const bool span = picked_first < picked_last;
+  copied.first = span ? picked_first : 0;
+  copied.last = span ? picked_last : keyed_last;
+  for (const auto &[name, ref] : channels) {
+    if (ref.scalar ? ref.scalar->keys.empty() : ref.vector->keys.empty()) {
+      continue;
+    }
+    CopiedPathChannel c;
+    c.name = name;
+    c.vector = ref.vector != nullptr;
+    const float axes = path_axes_angle(doc, target, name);
+    if (ref.vector) {
+      copy_path_keys(*ref.vector, copied.first, copied.last, axes, c.vec);
+    }
+    else {
+      copy_path_keys(*ref.scalar, copied.first, copied.last, axes, c.scalar);
+    }
+    copied.channels.push_back(std::move(c));
+  }
+  g_copied_path = std::move(copied);
+  return true;
+}
+
+std::string motion_path_copied_label()
+{
+  return g_copied_path.valid ? g_copied_path.label : std::string();
+}
+
+/* The copied channel pasted onto target channel `name` (one of the same kind), or null. */
+static const CopiedPathChannel *copied_channel_for(const std::string &name, const ChannelRef &ref)
+{
+  for (const CopiedPathChannel &c : g_copied_path.channels) {
+    if (c.name == name && c.vector == (ref.vector != nullptr)) {
+      return &c;
+    }
+  }
+  return nullptr;
+}
+
+bool motion_path_paste_allowed(const Document &cdoc, const MotionPathTarget &target, PathPaste how, std::string *r_why)
+{
+  Document &doc = const_cast<Document &>(cdoc);
+  const auto why = [&](const std::string &text) {
+    if (r_why) {
+      *r_why = text;
+    }
+    return false;
+  };
+  if (!g_copied_path.valid) {
+    return why("Copy a path first (right-click a path > Copy Path)");
+  }
+  if (target.drawing) {
+    return why("A drawing's timing has no path to paste onto");
+  }
+  if (how == PathPaste::Timing && !motion_path_timing_owner(doc, target).same(target)) {
+    return why(motion_path_label(doc, target) + " is timed as one with " +
+               motion_path_label(doc, motion_path_timing_owner(doc, target)) + ": retime that instead");
+  }
+  for (const auto &[name, ref] : path_own_channels(doc, target)) {
+    if (copied_channel_for(name, ref)) {
+      return true;
+    }
+  }
+  return why(motion_path_label(doc, target) + " has nothing that moves as " + g_copied_path.label + " does");
+}
+
+template<typename T>
+static int paste_path_keys(Channel<T> &ch, T &value, const std::vector<Key<T>> &copied, const std::string &name,
+                           float axes, PathPaste how, bool flip)
+{
+  const int first = g_copied_path.first, last = g_copied_path.last;
+  /* Where the target is on the first copied frame: what the copied changes go from. */
+  const T base = ch.keys.empty() ? value : ch.evaluate(first);
+  /* A change, flipped in the parent's space, along the target's own axes. */
+  const auto turned = [&](const T &change) { return path_axes(path_flip(change, name, flip), -axes); };
+  const auto placed = [&](const T &change) { return T(base + turned(change)); };
+  const auto setup = [&]() {
+    if (ch.keys.empty()) {
+      Key<T> k;
+      k.value = value;
+      ch.keys.push_back(k);
+    }
+  };
+  const auto sorted = [&]() {
+    std::sort(ch.keys.begin(), ch.keys.end(), [](const Key<T> &a, const Key<T> &b) { return a.frame < b.frame; });
+  };
+  int set = 0;
+  switch (how) {
+    case PathPaste::Whole: {
+      setup();
+      std::erase_if(ch.keys, [&](const Key<T> &k) { return k.frame != 0 && k.frame >= first && k.frame <= last; });
+      for (Key<T> k : copied) {
+        /* Frame 0 is the target's own setup. */
+        if (k.frame == 0) {
+          continue;
+        }
+        k.value = placed(k.value);
+        for (T &c : k.path_controls) {
+          c = placed(c);
+        }
+        if constexpr (std::is_same_v<T, float2>) {
+          k.path_in = turned(k.path_in);
+          k.path_out = turned(k.path_out);
+          for (PathControlHandles &h : k.path_control_handles) {
+            h.in = turned(h.in);
+            h.out = turned(h.out);
+          }
+        }
+        ch.keys.push_back(k);
+        set++;
+      }
+      sorted();
+      break;
+    }
+    case PathPaste::Shape: {
+      Channel<T> changes;
+      changes.keys = copied;
+      for (Key<T> &k : ch.keys) {
+        if (k.frame > 0 && k.frame >= first && k.frame <= last) {
+          k.value = placed(changes.evaluate(k.frame));
+          set++;
+        }
+      }
+      break;
+    }
+    case PathPaste::Timing: {
+      /* Keyed in place first (each where it is now), then timed. */
+      std::vector<Key<T>> added;
+      for (const Key<T> &c : copied) {
+        if (c.frame > 0 && !ch.key_at(c.frame)) {
+          Key<T> k;
+          k.frame = c.frame;
+          k.value = ch.keys.empty() ? value : ch.evaluate(c.frame);
+          added.push_back(k);
+        }
+      }
+      setup();
+      ch.keys.insert(ch.keys.end(), added.begin(), added.end());
+      sorted();
+      for (const Key<T> &c : copied) {
+        Key<T> *k = c.frame > 0 ? ch.key_at(c.frame) : nullptr;
+        if (!k) {
+          continue;
+        }
+        k->interp = c.interp;
+        k->type = c.type;
+        k->hold = c.hold;
+        k->interval = c.interval;
+        k->ease = c.ease;
+        k->overshoot = c.overshoot;
+        k->elastic_amplitude = c.elastic_amplitude;
+        k->elastic_period = c.elastic_period;
+        k->noise_amplitude = c.noise_amplitude;
+        k->noise_frequency = c.noise_frequency;
+        k->cycle_back = c.cycle_back;
+        k->cycle_absolute = c.cycle_absolute;
+        k->cycle_frame = c.cycle_frame;
+        k->bezier = c.bezier;
+        k->timing = c.timing;
+        k->filler = false;
+        set++;
+      }
+      break;
+    }
+  }
+  return set;
+}
+
+int motion_path_paste(Document &doc, const MotionPathTarget &target, PathPaste how, bool flipped)
+{
+  if (!motion_path_paste_allowed(doc, target, how)) {
+    return 0;
+  }
+  int set = 0;
+  for (const auto &[name, ref] : path_own_channels(doc, target)) {
+    const CopiedPathChannel *c = copied_channel_for(name, ref);
+    if (!c) {
+      continue;
+    }
+    const float axes = path_axes_angle(doc, target, name);
+    set += ref.vector ? paste_path_keys(*ref.vector, *ref.vector_value, c->vec, name, axes, how, flipped) :
+                        paste_path_keys(*ref.scalar, *ref.scalar_value, c->scalar, name, axes, how, flipped);
+  }
+  return set;
 }
 
 }  // namespace oanim

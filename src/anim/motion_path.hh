@@ -507,6 +507,32 @@ bool motion_path_control_set(Document &doc, const MotionPathTarget &target, int 
  * plays, not a Key Whole Drawing point's (it keys every point on its frames). Why not in `r_why`. */
 bool motion_path_key_to_control_allowed(const Document &doc, const MotionPathTarget &target, int frame,
                                         std::string *r_why = nullptr);
+/* Copy Path and Paste Path (the Motion Path tool's right-click menu; Ctrl C and Ctrl V over a path). Copy Path keeps
+ * a path's own keys (a bone's turns, moves and sizes, a point's or a layer's): with two or more of its keys picked
+ * those from the first to the last of them, else all of it. Each is kept as its change from where the path was on the
+ * first copied frame, so pasted it moves the target the same way from where it is: its own setup and start kept. */
+enum class PathPaste {
+  /* The keys, their frames and timing, path handles and control points: the copied keys' frames replaced. */
+  Whole,
+  /* Only the line it travels: the target's keys there get the copied path's places on their frames, their own
+   * frames and timing kept. */
+  Shape,
+  /* Only the timing: the target keyed in place on the copied keys' frames, which take their timing (interpolation,
+   * holds, eases, timing curves), its line kept. */
+  Timing,
+};
+/* Keeps `target`'s path to paste. False, with why in `r_why`, when it has no keys to copy. */
+bool motion_path_copy(const Document &doc, const MotionPathTarget &target, std::string *r_why = nullptr);
+/* Whether a path is copied, and whose ("" when none). */
+std::string motion_path_copied_label();
+/* Whether the copied path can be pasted onto `target` so (why not in `r_why`): it needs a channel of the same kind
+ * (a move onto a move, a turn onto a turn), and Timing a target timed on its own (not a Key Whole Drawing point's or
+ * a Key Together group's, timed as one). */
+bool motion_path_paste_allowed(const Document &doc, const MotionPathTarget &target, PathPaste how,
+                               std::string *r_why = nullptr);
+/* Pastes the copied path onto `target` (`flipped`: mirrored left to right, as Blender's Paste Flipped: moves across
+ * and turns go the other way). Returns how many keys it set. */
+int motion_path_paste(Document &doc, const MotionPathTarget &target, PathPaste how, bool flipped);
 /* Convert to Control Point: that key taken out, a control point where it was (with the handles it had), so the path
  * keeps its shape and every dot stays on its frame: the stretch joining its neighbours made Custom, timed as they
  * went (holds and steps on 2s kept in its timing). Only its position key: a turn or size keyed there stays. */

@@ -5017,7 +5017,52 @@ static struct {
   OpArgs args;
   /* On a control point: Convert to Key's arguments. */
   OpArgs control;
+  /* On any part of a path: the path, for Copy Path and the pastes. */
+  bool on_path = false;
+  MotionPathTarget path;
 } g_path_stretch_menu;
+
+/* Copy Path and the pastes, for the path clicked on (else the first with keys or dots picked). Each paste is greyed
+ * where it cannot go onto that path, saying why. */
+static void path_copy_items(Context &C, const MotionPathTarget &target)
+{
+  const Document &doc = *C.document;
+  ImGui::TextDisabled("Path");
+  ImGui::Separator();
+  const OpArgs args = motion_path_target_args(doc, target);
+  menu_operator(C, "Copy Path", "anim.motion_path_copy", args);
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+    ImGui::SetTooltip("Keep this path to paste onto another: from the first to the last key picked on it, else all of "
+                      "it (Ctrl C over a path)");
+  }
+  const std::string copied = motion_path_copied_label();
+  const auto item = [&](const char *label, PathPaste how, bool flipped, const char *what, const char *shortcut) {
+    std::string why;
+    const bool allowed = motion_path_paste_allowed(doc, target, how, &why);
+    if (ui_menu_item(label, nullptr, false, allowed)) {
+      OpArgs a = args;
+      a["how"] = how == PathPaste::Shape ? "SHAPE" : how == PathPaste::Timing ? "TIMING" : "WHOLE";
+      if (flipped) {
+        a["flipped"] = "1";
+      }
+      operator_call(C, "anim.motion_path_paste", a);
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_AllowWhenDisabled)) {
+      const std::string tip = allowed ? std::string(what) + ", from where it is: copied from " + copied +
+                                            (shortcut ? std::string(" (") + shortcut + ")" : std::string()) :
+                                        why;
+      ImGui::SetTooltip("%s", tip.c_str());
+    }
+  };
+  item("Paste Path", PathPaste::Whole, false, "The copied keys, their frames and timing, moving this path the same way",
+       "Ctrl V over a path");
+  item("Paste Shape Only", PathPaste::Shape, false,
+       "The copied line on this path's own keys, keeping its frames and timing", nullptr);
+  item("Paste Timing Only", PathPaste::Timing, false,
+       "The copied timing: this path keyed in place on the copied frames, keeping its line", nullptr);
+  item("Paste Flipped", PathPaste::Whole, true, "The copied path mirrored left to right, its turns the other way",
+       nullptr);
+}
 
 /* A path dot's or control point's stretch: Reset Stretch, Reset Shape, Reset Timing. True when it drew them. */
 static bool path_stretch_items(Context &C)
@@ -5070,6 +5115,10 @@ static void motion_path_menus(Context &C, bool hovered)
   static decltype(g_path_stretch_menu) pressed;
   if (edit && hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
     pressed.valid = false;
+    pressed.on_path = wm.path_under;
+    if (wm.path_under) {
+      pressed.path = wm.path_under_target;
+    }
     if (wm.path_under) {
       const Document &doc = *C.document;
       const MotionPathTarget &t = wm.path_under_target;
@@ -5094,10 +5143,11 @@ static void motion_path_menus(Context &C, bool hovered)
   {
     g_path_stretch_menu = pressed;
     pressed.valid = false;
+    pressed.on_path = false;
     if (!wm.path_handle_picks.empty()) {
       ImGui::OpenPopup("##path_handles");
     }
-    else if (g_path_stretch_menu.valid || !path_edit_selection(C).empty()) {
+    else if (g_path_stretch_menu.valid || g_path_stretch_menu.on_path || !path_edit_selection(C).empty()) {
       ImGui::OpenPopup("##path_menu");
     }
   }
@@ -5177,6 +5227,12 @@ static void motion_path_menus(Context &C, bool hovered)
       args["frame"] = std::to_string(picked.front().second);
       args["go"] = "1";
       menu_operator(C, "Go to Frame", "anim.motion_path_select", args);
+    }
+    if (g_path_stretch_menu.on_path || !picked.empty()) {
+      if (g_path_stretch_menu.valid || !picked.empty()) {
+        ImGui::Separator();
+      }
+      path_copy_items(C, g_path_stretch_menu.on_path ? g_path_stretch_menu.path : picked.front().first);
     }
     ui_menu_end();
   }

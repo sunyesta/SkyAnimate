@@ -159,6 +159,27 @@ namespace {
 
 /* The targets an operator works on: layer=id (with bone=name, and head=1 for its head's path rather than its tip's,
  * or point=id) for one, else those traced now. */
+/* Copy Path's and Paste Path's path: layer=, bone=, point=, else the one under the mouse (Ctrl C and Ctrl V over a
+ * path). Their poll needs one or the other, so off a path the keys go on to the viewport's own. */
+bool op_targets(Context &C, std::vector<MotionPathTarget> &r_targets);
+
+static bool op_path_target(Context &C, std::vector<MotionPathTarget> &r_targets)
+{
+  if (op_has_arg(C, "layer")) {
+    return op_targets(C, r_targets);
+  }
+  r_targets.clear();
+  if (C.wm && C.wm->path_under) {
+    r_targets.push_back(C.wm->path_under_target);
+  }
+  return !r_targets.empty();
+}
+
+static bool op_path_target_poll(Context &C)
+{
+  return C.document && (op_has_arg(C, "layer") || (C.wm && C.wm->path_under));
+}
+
 bool op_targets(Context &C, std::vector<MotionPathTarget> &r_targets)
 {
   Document &doc = *C.document;
@@ -2621,6 +2642,81 @@ void motion_path_operators_register()
       C.wm->path_dots.clear();
       layers_select_keys(motion_path_key_layers(doc, targets.front()), frame, frame, true,
                          motion_path_key_filter(doc, targets.front()));
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_copy";
+    ot.name = "Copy Path";
+    ot.description = "Keep a path to paste onto another (layer=, bone=, point=, else the one under the mouse): with "
+                     "two or more of its keys picked from the first to the last of them, else all of it";
+    ot.flag = OPTYPE_REGISTER;
+    ot.poll = op_path_target_poll;
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      std::vector<MotionPathTarget> targets;
+      if (!op_path_target(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      animation_sync(doc);
+      std::string why;
+      if (!motion_path_copy(doc, targets.front(), &why)) {
+        report(ReportType::Warning, why);
+        return OpStatus::Cancelled;
+      }
+      report(ReportType::Info, "Copied the path of " + motion_path_copied_label());
+      return OpStatus::Finished;
+    };
+    operators().add(std::move(ot));
+  }
+  {
+    OperatorType ot;
+    ot.idname = "anim.motion_path_paste";
+    ot.name = "Paste Path";
+    ot.description = "Paste the copied path onto layer=, bone=, point=, else the one under the mouse (and every path "
+                     "traced, when it is one of them): it moves each the same way from where it is. how=WHOLE (the "
+                     "keys, their frames and timing), SHAPE (only the line, each keeping its frames and timing) or "
+                     "TIMING (only the timing, each keeping its line); flipped=1 mirrors it left to right";
+    ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+    ot.poll = op_path_target_poll;
+    ot.exec = [](Context &C) {
+      Document &doc = *C.document;
+      const std::string how_text = op_arg(C, "how", "WHOLE");
+      PathPaste how = PathPaste::Whole;
+      if (how_text == "SHAPE") {
+        how = PathPaste::Shape;
+      }
+      else if (how_text == "TIMING") {
+        how = PathPaste::Timing;
+      }
+      else if (how_text != "WHOLE") {
+        report(ReportType::Error, "how is WHOLE, SHAPE or TIMING");
+        return OpStatus::Cancelled;
+      }
+      std::vector<MotionPathTarget> targets;
+      if (!op_path_target(C, targets)) {
+        return OpStatus::Cancelled;
+      }
+      /* A path clicked among those traced: all of them, as Blender pastes onto everything picked. */
+      const std::vector<MotionPathTarget> traced = motion_path_targets(C);
+      if (std::any_of(traced.begin(), traced.end(), [&](const MotionPathTarget &t) { return t.same(targets[0]); })) {
+        targets = traced;
+      }
+      animation_sync(doc);
+      int set = 0;
+      std::string why;
+      for (const MotionPathTarget &t : targets) {
+        if (motion_path_paste_allowed(doc, t, how, &why)) {
+          set += motion_path_paste(doc, t, how, op_arg_bool(C, "flipped"));
+        }
+      }
+      if (set == 0) {
+        report(ReportType::Warning, why.empty() ? std::string("Nothing to paste onto") : why);
+        return OpStatus::Cancelled;
+      }
+      animation_evaluate(doc, doc.frame_current);
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
