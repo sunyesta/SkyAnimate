@@ -1750,6 +1750,7 @@ static uint64_t action_bone_inputs(const Document &doc)
 
 void animation_sync(Document &doc)
 {
+  OANIM_PROFILE("animation_sync");
   if (doc.evaluated_frame == doc.frame_current) {
     /* Same frame, but bones may have turned: action bone actions and dynamics follow at once (and a
      * setting whose keys just went shows its value). Not when nothing they are worked out from has
@@ -3496,6 +3497,7 @@ static bool has_action_bone_actions(const Document &doc)
 
 void animation_refresh_action_bones(Document &doc)
 {
+  OANIM_PROFILE("animation_refresh_action_bones");
   if (!doc.action_bones_applied && !has_action_bone_actions(doc)) {
     return;
   }

@@ -235,6 +235,17 @@ PENDING = [
      "a drawing keyed whole fits its timing once for all its channels", 'motion_path_edit_fast'),
     ('src/anim/motion_path.cc', '    if (ch && base) {', '    if (false) {',
      "handles and control points start from the channel given, not the document's", 'motion_path_edit_fast'),
+    ('src/anim/motion_path.cc', 'if (!g_own_from_keys || t.drawing) {', 'if (!g_own_from_keys || t.bone || t.drawing) {',
+     "a bone's own values come from its keys, with no copy worked out", 'motion_path_edit_fast'),
+    ('src/anim/motion_path.cc', '!b.angle_keys.actions.empty() ||', 'false ||',
+     "a bone an action turns is worked out on copies", 'motion_path_edit_fast'),
+    ('src/anim/motion_path.cc', 'if (frame == 0 && bone_is_controller(b) && !ch.animated()) {', 'if (false) {',
+     "a knob with no keys is at rest on frame 0", 'motion_path_edit_fast'),
+    ('src/anim/motion_path.cc', 'at(b.scale_keys, b.scale)', 'b.scale',
+     "a bone's size comes from its keys", 'motion_path_edit_fast'),
+    ('src/anim/motion_path.cc', 'const Channel<float2> &ch = position ? *position : b.position_keys;',
+     'const Channel<float2> &ch = b.position_keys;',
+     "a bone's handles and control points take its keys changed", 'motion_path_edit_fast'),
 ]
 
 def build(root):

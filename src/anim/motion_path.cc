@@ -1323,13 +1323,13 @@ void own_values_set(Document &doc, const MotionPathTarget &t, const OwnValues &v
 }
 
 /* `t`'s own values on `frame` as evaluating the document then makes them, from its keys alone, with no copy of it worked
- * out: a layer's or a point's whose values nothing else moves (no action bone actions play into them, no driver is on
- * its layer, it isn't a reference, no bones have dynamics). `position`: keys to take for its position instead of its
+ * out: a layer's, a point's or a bone's whose values nothing else moves (no action bone actions play into them, no
+ * driver is on its layer, it isn't a reference, no bones have dynamics). `position`: keys to take for its position instead of its
  * own (a copy of them changed). False where they can't be had so, and `doc` must be worked out. */
 bool own_values_from_keys(const Document &doc, const MotionPathTarget &t, const int frame, OwnValues &r,
                           const Channel<float2> *position)
 {
-  if (!g_own_from_keys || t.bone || t.drawing) {
+  if (!g_own_from_keys || t.drawing) {
     return false;
   }
   const Layer *layer = layer_find(doc, t.layer);
@@ -1349,6 +1349,32 @@ bool own_values_from_keys(const Document &doc, const MotionPathTarget &t, const 
   const auto at = [&](const auto &ch, const auto &value) {
     return ch.animated() ? ch.evaluate(frame) : value - ch.from_action_bones;
   };
+  if (t.bone) {
+    const int i = bone_index(*layer, t.bone);
+    if (i < 0) {
+      return false;
+    }
+    const Bone &b = layer->bones[size_t(i)];
+    const Channel<float2> &ch = position ? *position : b.position_keys;
+    /* (A controller's dial among them: its knob plays its action, which turns it.) */
+    if (!b.position_keys.actions.empty() || !ch.actions.empty() || !b.angle_keys.actions.empty() ||
+        !b.scale_keys.actions.empty())
+    {
+      return false;
+    }
+    /* Its values as evaluate sets them from its Transform and Angle (bone_values_from_changes). An edit not taken into
+     * those yet (by the time paths are worked out it always has been) is left to working the frames out. */
+    if (b.position != bone_position_from_transform(b, b.transform) || b.angle != b.setup_angle + b.turn) {
+      return false;
+    }
+    float2 at_position = bone_position_from_transform(b, at(ch, b.transform));
+    /* Frame 0 is the rig at rest: a knob with no keys back on its rest point (controllers_rest). */
+    if (frame == 0 && bone_is_controller(b) && !ch.animated()) {
+      at_position = b.setup_position;
+    }
+    r = {at_position, at(b.scale_keys, b.scale), b.setup_angle + at(b.angle_keys, b.turn)};
+    return true;
+  }
   if (t.point) {
     const int i = point_index(*layer, t.point);
     if (i < 0 || std::any_of(layer->drawing.points.begin(), layer->drawing.points.end(),
@@ -3486,6 +3512,7 @@ bool motion_path_timing_curve(const Document &doc, const MotionPathTarget &targe
 
 bool motion_path_timing_curve_set(Document &doc, const MotionPathTarget &target, int frame, const TimingCurve &curve)
 {
+  OANIM_PROFILE("motion_path_timing_curve_set");
   if (!curve.points.empty() && !timing_valid(curve)) {
     return false;
   }
