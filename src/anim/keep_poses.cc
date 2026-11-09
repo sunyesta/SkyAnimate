@@ -424,14 +424,14 @@ DrawingsShownAll drawings_shown_capture_all(Document &doc, const std::vector<uin
       }
     }
   }
-  /* Looking changes nothing: back in the action being edited, whoever's it is, its frame 0 keys as they were. */
+  /* Looking changes nothing: done on a copy, so an edit not keyed (auto-key off: it shows till the frame changes) stays
+   * and no action entered is touched. */
   animation_record(doc);
-  const EditedAction was = edited_action_save(doc);
+  Document look = doc;
   for (DrawingsShownAll::Action &a : out.actions) {
-    use_action(doc, a.owner, a.name);
-    a.shown = drawings_shown_capture(doc, layers);
+    use_action(look, a.owner, a.name);
+    a.shown = drawings_shown_capture(look, layers);
   }
-  edited_action_restore(doc, was);
   return out;
 }
 
@@ -483,18 +483,18 @@ BonesShownAll bones_shown_capture_all(Document &doc, uint64_t armature, const st
   }
   std::vector<std::string> names{""};
   names.insert(names.end(), rig->actions.begin(), rig->actions.end());
+  /* On a copy, as drawings_shown_capture_all: looking changes nothing. */
   animation_record(doc);
-  const EditedAction was = edited_action_save(doc);
-  const int was_frame = doc.frame_current;
+  Document look = doc;
   for (const std::string &name : names) {
-    use_action(doc, armature, name);
+    use_action(look, armature, name);
     BonesShownAll::Action a;
     a.name = name;
-    const Layer *now = layer_find(doc, armature);
+    const Layer *now = layer_find(look, armature);
     for (const int f : bones_keyed_frames(*now, bones)) {
-      doc.frame_current = f;
-      animation_sync(doc);
-      const std::vector<BonePose> poses = armature_pose(*layer_find(doc, armature), false);
+      look.frame_current = f;
+      animation_sync(look);
+      const std::vector<BonePose> poses = armature_pose(*layer_find(look, armature), false);
       BonesShownAll::Frame frame;
       frame.frame = f;
       for (const uint64_t id : bones) {
@@ -505,9 +505,6 @@ BonesShownAll bones_shown_capture_all(Document &doc, uint64_t armature, const st
     }
     out.actions.push_back(std::move(a));
   }
-  edited_action_restore(doc, was);
-  doc.frame_current = was_frame;
-  animation_sync(doc);
   return out;
 }
 

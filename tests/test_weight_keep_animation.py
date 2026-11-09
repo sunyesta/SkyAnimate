@@ -87,4 +87,28 @@ assert same(shown())
 assert ops.weight.automatic(keep_animation="1") == {'FINISHED'}
 assert same(shown())
 
+# A tool that then changes nothing leaves an edit not keyed yet (auto-key off: it shows till the frame changes) as it
+# is: its look through every action is on a copy.
+doc.auto_key = False
+layers.active = rig
+ops.armature.select_none()
+ops.armature.bone_add(name="spare", head_x="5", head_y="5", tail_x="6", tail_y="5", parent="")
+doc.frame_current = 10
+
+
+def arm_angle():
+    return next(b for b in rig.bones if b["name"] == "arm")["angle"]
+
+
+ops.armature.select_none()
+rig.select_bone("arm")
+assert ops.armature.rotate(angle="30") == {'FINISHED'}
+turned = arm_angle()
+layers.active = art
+art.select_points(range(art.point_count))
+rig.select_bone("spare")
+assert ops.weight.remove(keep_animation="1") == {'CANCELLED'}, "nothing weighted to spare"
+assert abs(arm_angle() - turned) < 1e-5, ("the turn not keyed stays", turned, arm_angle())
+doc.auto_key = True
+
 print("weight_keep_animation: ok")

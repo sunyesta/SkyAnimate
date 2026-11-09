@@ -1051,8 +1051,22 @@ static std::vector<Layer *> together_layers(Document &doc, Layer &group)
 /* Calls f(channel, value, unit) for each channel a Key Together group keys as one: each layer's turn, move, size and
  * opacity, its bones', and its drawing's shape (a whole drawing's channels one unit). */
 /* The channels of one layer that Key Together keys (see together_channels). */
-template<typename F> static void layer_together_channels(Layer &l, std::set<const void *> &seen, F &&f)
+template<typename F>
+static void layer_together_channels(Layer &l, std::set<const void *> &seen, bool mainline, F &&f)
 {
+  /* A linked dial's turn is its knob's on the mainline (controllers_fold_dials moves any key it gets onto the knob):
+   * keyed together it would lose its fillers each time, which would read as those frames deleted from them all. */
+  if (mainline && l.is_bone_layer()) {
+    for (const Bone &knob : l.bones) {
+      if (bone_is_controller(knob)) {
+        for (int side = 0; side < CONTROLLER_SIDES; side++) {
+          if (Bone *dial = controller_side_dial(l, knob, side)) {
+            seen.insert(&dial->angle_keys);
+          }
+        }
+      }
+    }
+  }
   KeyFilter filter;
   filter.kinds = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM | KEY_OPACITY | KEY_BONE_ANGLE | KEY_BONE_TRANSFORM;
   for (const ChannelRef &ref : layer_filtered_channels(l, filter)) {
@@ -1075,7 +1089,7 @@ template<typename F> static void together_channels(Document &doc, Layer &group, 
 {
   std::set<const void *> seen;
   for (Layer *l : together_layers(doc, group)) {
-    layer_together_channels(*l, seen, f);
+    layer_together_channels(*l, seen, !controller_in_action(doc, *l), f);
   }
 }
 
@@ -1157,7 +1171,7 @@ static std::pair<int, int> key_together_leavers_release(Document &doc, Layer &gr
       [&](auto &&f) {
         std::set<const void *> seen;
         for (Layer *l : left) {
-          layer_together_channels(*l, seen, f);
+          layer_together_channels(*l, seen, !controller_in_action(doc, *l), f);
         }
       },
       [&](bool to_changes) { layers_changes(left, to_changes); });
@@ -1280,6 +1294,8 @@ void animation_record(Document &doc)
   const bool freezing = auto_key && doc.auto_freeze_keys && !replace && frame != 0;
   /* A media or text layer with Don't Auto Key on is changed but never auto-keyed. Each layer's channels on their
    * own. */
+  /* Which layers this keyed (Key Together fills an action's timeline once something in it is keyed). */
+  std::vector<char> keyed_here(flat.size(), 0);
   parallel_for(flat.size(), 16, [&](size_t begin, size_t end) {
     for (size_t i = begin; i < end; i++) {
       Layer &layer = *flat[i];
@@ -1290,7 +1306,7 @@ void animation_record(Document &doc)
       std::vector<int> poses;
       bool poses_known = false;
       layer_for_each_channel(layer, [&](auto &ch, auto &value) {
-        record_with(ch, value, frame, keys, replace, [&]() -> const std::vector<int> * {
+        const bool keyed = record_with(ch, value, frame, keys, replace, [&]() -> const std::vector<int> * {
           if (!freezing) {
             return nullptr;
           }
@@ -1300,6 +1316,7 @@ void animation_record(Document &doc)
           }
           return &poses;
         });
+        keyed_here[i] = keyed_here[i] || keyed;
       });
     }
   });
@@ -1374,7 +1391,23 @@ void animation_record(Document &doc)
                                    (kept > 0 ? ", kept " + std::to_string(kept) + " you edited" : std::string()));
     }
   }
+  std::set<const Layer *> keyed_layers;
+  for (size_t i = 0; i < flat.size(); i++) {
+    if (keyed_here[i]) {
+      keyed_layers.insert(flat[i]);
+    }
+  }
+  const std::string timeline = doc.action.empty() ? std::string() :
+                                                    std::to_string(doc.action_layer) + "/" + doc.action;
   for (Layer *group : together_on) {
+    if (group->key_together_settled && group->key_whole_action != timeline) {
+      /* Another timeline than it last keyed together (an action entered): filled once something in it is keyed, so
+       * entering an action and leaving (as Keep Poses does to see each) changes nothing. */
+      const std::vector<Layer *> inside = together_layers(doc, *group);
+      if (std::none_of(inside.begin(), inside.end(), [&](const Layer *l) { return keyed_layers.count(l) > 0; })) {
+        continue;
+      }
+    }
     const int changed = key_together_sync(doc, *group, !group->key_together_settled);
     group->key_together_settled = true;
     if (changed > 0) {

@@ -601,6 +601,175 @@ def apply_more(op):
     }[o]()
 
 
+# --- Auto-Freeze Keys, Key Together by folding a timeline row, Key Whole Drawing (the bone-types branch) ---------------
+TOGETHER_TYPES = ("GROUP", "BONE", "VECTOR")
+
+
+@op("auto_freeze", 2, "py")
+def _(rng):
+    return {"on": rng.random() < 0.85}
+
+
+@op("fold_together", 7)
+def _(rng):
+    ls = [l for l in L.all() if l.type in TOGETHER_TYPES]
+    if not ls:
+        return None
+    l = rng.choice(ls)
+    x = rng.random()
+    return {"layer": l.id, "folded": "" if x < 0.15 else ("1" if x < 0.6 else "0")}
+
+
+@op("key_whole", 3, "py")
+def _(rng):
+    ds = [l for l in L.all() if l.type == "VECTOR" and editable(l)]
+    return ds and {"layer": rng.choice(ds).id, "on": rng.random() < 0.6}
+
+
+LAYER_CHANNELS = {"location_x": 0.08, "location_y": 0.08, "rotation": 25.0, "scale_x": 0.25, "opacity": 0.3}
+
+
+@op("layer_tf", 7, "py")
+def _(rng):
+    ls = [l for l in L.all() if l.type in TOGETHER_TYPES]
+    if not ls:
+        return None
+    what = rng.choice(list(LAYER_CHANNELS))
+    return {"layer": rng.choice(ls).id, "what": what, "d": rng.gauss(0, LAYER_CHANNELS[what])}
+
+
+@op("freeze_check", 10, "py")
+def _(rng):
+    """With Auto-Freeze Keys on (Add & Replace, not frame 0, no action entered): an edit on frame f between the
+    layer's poses a and b leaves what a and b show exactly as they were."""
+    if not (doc.auto_key and doc.auto_freeze_keys) or doc.auto_key_mode == "REPLACE" or doc.action:
+        return None
+    kind = rng.choice(["bone", "bone", "layer", "point"])
+    f = rng.randint(1, FRAMES)
+    if kind == "bone":
+        rig = a_rig(rng)
+        if not rig or not rig.bones:
+            return None
+        return {"kind": kind, "f": f, "layer": rig.id, "bone": rng.choice(bone_names(rig)),
+                "d": rng.uniform(-0.8, 0.8)}
+    if kind == "point":
+        p = a_points(rng, 1)
+        return p and {"kind": kind, "f": f, "layer": p["layer"], "i": p["idx"][0],
+                      "d": [rng.gauss(0, 0.05), rng.gauss(0, 0.05)]}
+    ls = [l for l in L.all() if l.type in TOGETHER_TYPES]
+    if not ls:
+        return None
+    what = rng.choice(list(LAYER_CHANNELS))
+    return {"kind": kind, "f": f, "layer": rng.choice(ls).id, "what": what, "d": rng.gauss(0, LAYER_CHANNELS[what])}
+
+
+def members(layer):
+    """The layer and every layer inside it."""
+    out = []
+    for l in L.all():
+        up = l
+        while up is not None and up.id != layer.id:
+            up = up.parent
+        if up is not None:
+            out.append(l)
+    return out
+
+
+def full_pose():
+    out = pose()
+    for l in L.all():
+        out[(l.id, "tf")] = (l.location_x, l.location_y, l.rotation, l.scale_x, l.scale_y, l.opacity)
+    return out
+
+
+def apply_new(op):
+    """The ops above; None when `op` isn't one of them."""
+    o = op["op"]
+    if o == "auto_freeze":
+        doc.auto_freeze_keys = op["on"]
+        return "py-done"
+    if o == "fold_together":
+        layer = find_layer(op["layer"])
+        if layer is None:
+            return "skip"
+        kw = {"layer": str(op["layer"])}
+        if op["folded"]:
+            kw["folded"] = op["folded"]
+        turning_on = op["folded"] == "1" or (not op["folded"] and not layer.key_together)
+        # (on the frames keyed in it only: between keys, the keys taking the timing most have there moves things by
+        # design, the Info editor saying how many)
+        frames = sorted(set(f for m in members(layer) for f in m.key_frames)) if turning_on else []
+        before, f0 = {}, doc.frame_current
+        for fr in frames:
+            doc.frame_current = fr
+            before[fr] = full_pose()
+        doc.frame_current = f0
+        r = ops.anim.timeline_fold_together(**kw)
+        if turning_on and r == {'FINISHED'} and os.environ.get("OA_FUZZ_FOLD_POSE", "1") == "1":
+            for fr in frames:
+                doc.frame_current = fr
+                w, k = pose_diff(before[fr], full_pose())
+                if w > 1e-4:
+                    raise Failure(f"fold-moves: folding {layer.name!r}'s row (Key Together on) changed frame {fr} "
+                                  f"by {w:.5f} at {k}")
+            doc.frame_current = f0
+        return r
+    if o == "key_whole":
+        layer = find_layer(op["layer"])
+        if layer is None:
+            return "skip"
+        layer.key_whole_drawing = op["on"]
+        return "py-done"
+    if o == "layer_tf":
+        layer = find_layer(op["layer"])
+        if layer is None:
+            return "skip"
+        setattr(layer, op["what"], getattr(layer, op["what"]) + op["d"])
+        return "py-done"
+    if o != "freeze_check":
+        return None
+    if not (doc.auto_key and doc.auto_freeze_keys) or doc.auto_key_mode == "REPLACE" or doc.action:
+        return "skip"
+    layer = find_layer(op["layer"])
+    if layer is None:
+        return "skip"
+    f = op["f"]
+    doc.frame_current = f
+    poses = layer.key_frames
+    a = max([p for p in poses if p < f], default=None)
+    b = min([p for p in poses if p > f], default=None)
+    if op["kind"] == "bone":
+        b0 = bone(layer, op["bone"])
+        if not b0:
+            return "skip"
+    if op["kind"] == "point" and op["i"] >= layer.point_count:
+        return "skip"
+    held = [x for x in (a, b) if x is not None]
+    seen = {}
+    for fr in held:
+        doc.frame_current = fr
+        seen[fr] = full_pose()
+    doc.frame_current = f
+    if op["kind"] == "bone":
+        layer.bone_set(op["bone"], angle=bone(layer, op["bone"])["angle"] + op["d"])
+        what = f"turning bone {op['bone']!r} of {layer.name!r}"
+    elif op["kind"] == "point":
+        x, y = layer.points[op["i"]][:2]
+        layer.set_point(op["i"], (x + op["d"][0], y + op["d"][1]))
+        what = f"moving point {op['i']} of {layer.name!r}"
+    else:
+        setattr(layer, op["what"], getattr(layer, op["what"]) + op["d"])
+        what = f"changing {op['what']} of {layer.name!r}"
+    for fr in held:
+        doc.frame_current = fr
+        w, k = pose_diff(seen[fr], full_pose())
+        if w > 1e-4:
+            raise Failure(f"freeze-hold: with Auto-Freeze Keys, {what} on frame {f} (poses {a} and {b} either side, "
+                          f"layer poses {poses[:10]}) changed frame {fr} by {w:.5f} at {k}")
+    doc.frame_current = f
+    return "py-done"
+
+
 ONLY = [n for n in os.environ.get("OA_FUZZ_ONLY", "").split(",") if n]   # e.g. sculpt,simplify,frame,undo,redo
 
 
@@ -658,6 +827,9 @@ def apply(op):
     o = op["op"]
     if o in ("sculpt", "simplify"):
         return apply_sculpt(op)
+    new = apply_new(op)
+    if new is not None:
+        return None if new == "py-done" else new
     more = apply_more(op)
     if more is not None:
         return None if more == "py-done" else more
@@ -921,6 +1093,9 @@ def check_follow(rng):
 
 def main():
     load()
+    if os.environ.get("OA_FUZZ_FREEZE", "1") == "1":
+        doc.auto_freeze_keys = True   # (the file opens with it off; on most of the time from here)
+        harness.rebase()
     if REPLAY:
         plan = json.load(open(REPLAY, encoding="utf-8"))["ops"]
         rng = None
@@ -972,6 +1147,8 @@ def main():
             faulthandler.cancel_dump_traceback_later()
             os.remove(fail_path)
         print(f"fuzz seed {SEED}: {len(log)} ops clean", flush=True)
+        if os.environ.get("OA_FUZZ_SAVE_END"):
+            ops.wm.save_copy(filepath=os.environ["OA_FUZZ_SAVE_END"])
     except Failure as f:
         faulthandler.cancel_dump_traceback_later()
         write_fail(str(f))

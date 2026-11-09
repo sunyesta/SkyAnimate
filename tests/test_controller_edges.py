@@ -105,6 +105,26 @@ assert not r.keys('bones["turn_r"].angle') and not r.keys('bones["turn_l"].angle
 assert not r.keys('bones["joy"].angle') and not r.keys('bones["joy"].scale'), "a controller has nothing to turn or scale"
 assert not any(f == 10 for f, _ in r.keys('bones["head"].angle')), "only the channel edited: no other bone keyed"
 
+# --- Key Together on a rig with a controller: the knob's keys stay (a linked dial gets no fillers to lose) -----------
+r = Rig()
+r.standard()
+r.doc.auto_freeze_keys = False
+r.knob_keyed(10, 45.0)
+r.doc.frame_current = 14
+r.rig.bone_set("head", angle=r.bone("head")["angle"] + 0.3)
+r.doc.frame_current = 15
+r.mainline()
+frames_before = r.rig.key_frames
+knob_before = [r.keys('bones["joy"].position')]
+assert ops.anim.timeline_fold_together(layer=str(r.rig.id), folded="1") == {'FINISHED'}
+r.settle()
+r.doc.frame_current = 5
+r.doc.frame_current = 0
+assert r.rig.key_frames == frames_before, ("folding deletes no keys", frames_before, r.rig.key_frames)
+r.doc.frame_current = 10
+assert close(r.bone("joy")["knob"], (45.0, 0.0)), ("the knob holds on 10", r.bone("joy")["knob"])
+assert not r.keys('bones["turn_r"].angle') and not r.keys('bones["turn_l"].angle'), "a linked dial is the knob's"
+
 # --- Apply Pose as Rest Pose leaves the box where it rests ------------------------------------------------------------
 r = Rig()
 r.standard()

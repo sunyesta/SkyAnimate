@@ -31,7 +31,7 @@ Bones), knobs inside and past their box, add/delete/duplicate/extrude/subdivide/
 entered, left and made; points moved, deleted, dissolved, subdivided, split, added, extruded; weights assigned,
 removed, automatic, cleaned; Parent Bone with its deform modes; new drawings in the rig; insert/delete keys; Sculpt strokes with every brush (Dyntopo 40% of the time, at Resolution
 8-400 and each Refine Method) and Simplify; curvature, width, smooth, slide, merge, mirror, symmetrize, clear handles,
-unalign and handle moves (`OA_FUZZ_ONLY` limits a run to a list of op names). It checks
+unalign and handle moves; Auto-Freeze Keys on and off (on by default: `OA_FUZZ_FREEZE=0` leaves the file's setting), folding timeline rows (Key Together), Key Whole Drawing, layer move/turn/size/opacity, and `freeze_check` (an edit between a layer's poses must leave them as they were) (`OA_FUZZ_ONLY` limits a run to a list of op names; `OA_FUZZ_SAVE_END=<path>` saves the document at the end, to write a repro from a long log without shrinking). It checks
 every op (no exception, finite numbers, a change only with an undo step, CANCELLED changes nothing, entering an action
 and leaving changes nothing) and every few ops (undo then redo exact, frames in different orders give the same pose,
 save/open exact, a point weighted wholly to one plain bone turns rigidly with it). A watchdog (`OA_FUZZ_HANG`, default

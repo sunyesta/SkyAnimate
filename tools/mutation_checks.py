@@ -113,6 +113,12 @@ PENDING = [
      "Key Together alone: a Smooth edit doesn't bend the curve past its fillers' poses", 'key_together_sweep'),
     ('src/anim/animation.cc', '  const std::vector<Layer *> layers = together_picks_widen(doc, layers_picked);', '  const std::vector<Layer *> layers = layers_picked;',
      'a key moved alone in a Key Together group takes its frame on every layer along', 'key_together_sweep'),
+    ('src/anim/animation.cc', '            seen.insert(&dial->angle_keys);', '            (void)dial;',
+     "Key Together leaves a controller's linked dials alone (folding a rig deletes no keys)", 'controller_edges'),
+    ('src/anim/animation.cc', '      if (std::none_of(inside.begin(), inside.end(), [&](const Layer *l) { return keyed_layers.count(l) > 0; })) {', '      if (false) {',
+     'entering an action and leaving with Key Together on changes nothing', 'key_together_sweep'),
+    ('src/anim/keep_poses.cc', '  Document look = doc;\n  for (DrawingsShownAll::Action &a', '  Document &look = doc;\n  for (DrawingsShownAll::Action &a',
+     'a Keep Animation tool that changes nothing keeps an edit not keyed', 'weight_keep_animation'),
 ]
 
 def build(root):

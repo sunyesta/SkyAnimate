@@ -383,5 +383,44 @@ assert ops.anim.keys_offset(frames="2") == {'FINISHED'}
 assert keys(a, "position") == [0, 14, 20] and keys(b, "position") == [0, 12, 20], \
     ("off: only A's", keys(a, "position"), keys(b, "position"))
 
+# --- Key Together: entering an action and leaving changes nothing (its fillers come once something there is keyed) ---
+doc = fresh()
+ops.layer.new_bone()
+rig = layers.active
+rig.name = "ActRig"
+ops.armature.bone_add(name="a", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
+ops.armature.bone_add(name="b", head_x="0", head_y="1", tail_x="1", tail_y="1", parent="")
+assert ops.anim.action_new(name="act") == {'FINISHED'} and doc.action == "act"
+turn(10, "a", 0.4)
+turn(20, "b", 0.5)
+doc.action = ""
+doc.frame_current = 0
+assert ops.anim.timeline_fold_together(layer=str(rig.id), folded="1") == {'FINISHED'}
+settle(doc)
+
+
+def saved():
+    path = os.path.join(TMP, "look.oanim")
+    ops.wm.save_copy(filepath=path)
+    import json
+    import zipfile
+    with zipfile.ZipFile(path) as z:
+        d = json.loads(z.read("document.json"))["document"]
+    for k in ("frame_current", "ui_open", "ui_panel_order", "viewport_view", "texts", "name", "action", "action_layer"):
+        d.pop(k, None)
+    return d
+
+
+before = saved()
+doc.action = "act"
+doc.frame_current = 5
+doc.frame_current = 0
+doc.action = ""
+assert saved() == before, "entering the action and leaving changed nothing"
+# Keyed there, it keys together: b gets a filler on 10.
+doc.action = "act"
+turn(30, "a", 0.8)
+assert 10 in keys(rig, 'bones["b"].angle', filler=True), keys(rig, 'bones["b"].angle')
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("key together sweep: ok")
