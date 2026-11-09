@@ -2878,9 +2878,9 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
       rows.back().media = l->id;
       rows.back().media_part = 1;
     }
-    /* The layer's own channels (not its bones', not its points'). */
+    /* The layer's own channels (not its bones', not its points'; a switch's keys are on its open row). */
     property_rows(l, KeyFilter{KEY_LAYER | KEY_SIMULATION, false}, depth, false, false,
-                  [](const std::string &path) { return path.rfind("bones[", 0) != 0; });
+                  [](const std::string &path) { return path.rfind("bones[", 0) != 0 && path != "switch"; });
     const KeyFilter points{KEY_POINTS, false};
     if ((show_all && l->has_drawing() && !l->drawing.points.empty()) || keyed({l}, points)) {
       /* Keyed as a whole drawing: all its points, whichever are selected; red while some of them are (as a
@@ -2946,7 +2946,15 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
                              bool pick) -> bool {
     const std::string fold = "layer:" + std::to_string(l.id);
     if (!key_together_allowed(l)) {
-      return add(l.name, under, layer_keys, depth, fold, fold_default, red, l.id, pick);
+      const bool open = add(l.name, under, layer_keys, depth, fold, fold_default, red, l.id, pick);
+      /* A switch open: only its own switch keys (which child shows), as an open group's row has none of what it holds,
+       * those showing in their own rows. Folded, everything inside it. */
+      if (open && l.is_switch()) {
+        ChannelRow &row = rows.back();
+        row.layers = {&l};
+        row.filter = now(KeyFilter{KEY_VISIBILITY, false, "switch", false});
+      }
+      return open;
     }
     add(l.name, under, layer_keys, depth, fold, fold_default, red || (l.key_together && pick), l.id, false);
     ChannelRow &row = rows.back();

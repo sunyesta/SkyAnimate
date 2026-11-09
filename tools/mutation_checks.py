@@ -135,6 +135,8 @@ PENDING = [
      "with Edit Layer the timing shown for a folded group is the group's", 'key_together_path_pick'),
     ('src/ops/motion_path_ops.cc', ' || (t.drawing && key_together_group(*C.document, t.layer))) {', ') {',
      "with Edit Layer a key picked on a path in a folded group picks the group's stretch", 'key_together_path_pick'),
+    ('src/editors/timeline.cc', '      if (open && l.is_switch()) {', '      if (false) {',
+     "an open switch's row shows only its own switch keys", 'timeline_switch_row'),
 ]
 
 def build(root):

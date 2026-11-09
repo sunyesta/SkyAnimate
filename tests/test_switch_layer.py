@@ -196,8 +196,11 @@ assert oanim.ops.layer.switch_set(layer=sw.name, child="C") == {'CANCELLED'}
 
 # --- With one of its drawings active, the timeline still shows the switch's keys ----------------------
 layers.active = children["A"]
-names = [r[1] for r in oanim.wm.timeline_rows()]
-assert "Switch" in names, names
+at = [r["label"] for r in oanim.wm.timeline_row_details(True)].index(sw.name)
+assert oanim.wm.timeline_row_fold(at, True)
+shown = {r["label"]: r for r in oanim.wm.timeline_row_details(True)}
+assert shown[sw.name]["open"], list(shown)
+assert shown[sw.name]["frames"] == [k["frame"] for k in sw.keyframes("switch")], (shown[sw.name], "its own row")
 
 # === Stage 2: picking =================================================================================
 assert oanim.ops.wm.read_homefile(confirmed="1") == {'FINISHED'}
