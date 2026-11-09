@@ -70,6 +70,7 @@ assert ops.anim.motion_path_brush_set(brush="EDIT", proportional="0") == {'FINIS
 # A straight, even line: (0, 0) on 10, (1, 0) on 20, (2, 0) on 30, 0.1 a frame.
 ops.layer.new()
 line = layers.active
+line.key_together = False  # unfolded: its own paths' timing
 line.add_curve([(0.0, 0.0), (0.1, 0.0)])
 doc.frame_current = 0
 line.location_x, line.location_y = -5.0, -5.0

@@ -51,6 +51,7 @@ doc.auto_freeze_keys = False
 # --- New vector layers key the whole drawing ------------------------------------------------------------------------
 ops.layer.new()
 line = layers.active
+line.key_together = False  # unfolded: keyed by its group, or channel by channel
 assert line.key_whole_drawing, "on for new vector layers"
 doc.frame_current = 0
 line.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
@@ -113,6 +114,7 @@ assert frames(line, "points[0].pos") == [0, 10] and frames(line, "points[5].pos"
 # --- Off: each point keyed on its own (as files from before it open) ------------------------------------------------
 ops.layer.new()
 loose = layers.active
+loose.key_together = False  # unfolded: keyed by its group, or channel by channel
 loose.key_whole_drawing = False
 doc.frame_current = 0
 loose.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
@@ -181,6 +183,7 @@ assert ops.anim.motion_path_stretch_shape(shape="EVEN", frame="5", layer=str(loo
 # Nothing picked on: the graph shows the first row that has timing, not merely the first row.
 ops.layer.new()
 two = layers.active
+two.key_together = False  # unfolded: keyed by its group, or channel by channel
 two.key_whole_drawing = False
 doc.frame_current = 0
 two.add_curve([(0.0, 0.0), (1.0, 0.0)])
@@ -234,6 +237,7 @@ doc.auto_key = True
 doc.auto_freeze_keys = False
 ops.layer.new()
 cut_line = layers.active
+cut_line.key_together = False  # unfolded: keyed by its group, or channel by channel
 cut_line.add_curve([(-0.5, 0.0), (-0.25, 0.0), (0.0, 0.0), (0.25, 0.0), (0.5, 0.0)])
 doc.frame_current = 10
 cut_line.set_point(4, (0.5, 0.2))
@@ -254,6 +258,7 @@ rig_a = layers.active
 ops.armature.bone_add(name="ba", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
 ops.layer.new()
 inside = layers.active
+inside.key_together = False  # unfolded: keyed by its group, or channel by channel
 assert ops.layer.move_to_group(group=str(rig_a.id)) == {'FINISHED'}
 inside.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
 doc.frame_current = 10
@@ -280,6 +285,7 @@ assert frames(inside, "points[0].pos") == [0, 10], ("the mainline's frame 10 kep
 # --- A timing edit relative to the timing there (a slide) leaves every point on the same share of the way -----------
 ops.layer.new()
 even = layers.active
+even.key_together = False  # unfolded: keyed by its group, or channel by channel
 even.add_curve([(0.0, 0.0), (1.0, 0.0)])
 doc.frame_current = 10
 even.set_point(1, (1.0, 1.0))

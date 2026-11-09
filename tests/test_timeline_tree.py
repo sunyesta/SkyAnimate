@@ -32,9 +32,11 @@ def row(name, as_shown=False):
 
 # A group holding two drawings, and a drawing above it on its own.
 first = layers.active
+first.key_together = False  # open: its own rows show
 first.name = "first"
 ops.layer.new()
 top = layers.active
+top.key_together = False  # open: its own rows show
 top.name = "top"
 layers.active = first
 first.add_curve([(0.0, 0.0), (1.0, 0.0)])
@@ -43,6 +45,7 @@ group = layers.active
 group.name = "group"
 ops.layer.new()
 second = layers.active
+second.key_together = False  # open: its own rows show
 second.name = "second"
 second.add_curve([(0.0, 1.0), (1.0, 1.0)])
 assert ops.layer.move_to_group(group=str(group.id)) == {'FINISHED'}
@@ -97,7 +100,7 @@ layers.active = second
 tree = names()
 assert (0, "group") in tree and (1, "second") in tree and row("group")["dim"], tree
 
-# Folds: a layer's row is folded exactly while it keys together (Key Together), so every layer starts open; the
+# Folds: a layer's row is folded exactly while it keys together (Key Together), so these layers start open; the
 # project's kept folds don't reach it. Folding is an undo step.
 ops.mesh.select_none()
 layers.active = group
@@ -153,5 +156,18 @@ cam = oanim.data.camera
 assert ops.anim.keyframe_toggle(layer=str(cam.id), paths="rotation") == {'FINISHED'}
 tree = names()
 assert (0, "Camera") in tree and tree.index((0, "Camera")) > [n for d, n in tree].index("rig"), tree
+
+# --- New layers: a drawing starts folded (keying together, as its properties are usually animated as one); a group and
+# a bone layer start open. Files from before open as they were saved.
+assert ops.wm.read_homefile(confirmed="1") == {'FINISHED'}
+assert oanim.data.layers.active.key_together, "the start-up drawing starts folded"
+ops.layer.new()
+drawing = oanim.data.layers.active
+drawing.add_curve([(0.0, 0.0), (1.0, 0.0)])
+assert drawing.key_together and not row(drawing.name, True)["open"], rows(True)
+ops.layer.group()
+assert not oanim.data.layers.active.key_together, "a new group starts open"
+ops.layer.new_bone()
+assert not oanim.data.layers.active.key_together, "a new bone layer starts open"
 
 print("timeline tree: ok")

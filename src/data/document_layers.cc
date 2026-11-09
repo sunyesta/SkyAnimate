@@ -613,6 +613,9 @@ Layer &document_add_layer(Document &doc, LayerType type, const std::string &name
   layer.id = doc.next_layer_id++;
   layer.type = type;
   layer.edit_descendants = type != LayerType::Bone;
+  /* A vector layer starts folded in the timeline (Key Together on): its properties and drawing are usually animated
+   * together. Groups and bone layers start open. */
+  layer.key_together = type == LayerType::Vector;
   layer.name = name.empty() ? document_layer_unique_name(doc, type == LayerType::Bone     ? "Bones"
                                                               : type == LayerType::Group  ? "Group"
                                                               : type == LayerType::Switch ? "Switch"

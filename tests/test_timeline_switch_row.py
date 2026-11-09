@@ -17,6 +17,7 @@ made = {}
 for name in ("Closed", "Open"):
     ops.layer.new()
     l = layers.active
+    l.key_together = False  # open: its own rows show
     l.name = name
     l.add_curve([(-0.5, 0.0), (0.5, 0.0)])
     made[name] = l

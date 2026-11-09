@@ -1273,13 +1273,20 @@ struct Layer {
   bool key_together = false;
   /* Not saved: its keys have been made to agree since it was turned on. */
   bool key_together_settled = false;
-  /* Not saved, for Key Whole Drawing on a drawing and Key Together on a group alike: the frames keyed when its keys
-   * were last made to agree, and in which action (its owner's id and name). */
+  /* Not saved, for Key Whole Drawing on a drawing: the frames keyed when its keys were last made to agree, and in which
+   * action (its owner's id and name). */
   std::set<int> key_whole_frames;
   std::string key_whole_action;
+  /* The same for Key Together, kept apart: a vector layer keying together alone is both, and Key Whole Drawing keying
+   * its points on a new frame would otherwise read to Key Together as a frame its other channels had deleted. */
+  std::set<int> key_together_frames;
+  std::string key_together_action;
   /* Not saved, for Key Together: the layers inside it then. A layer new to it has none of its frames without them
    * having been deleted; one gone from it lets go of the fillers it was given. */
   std::set<uint64_t> key_together_members;
+  /* The layer whose members those are. A copy (Duplicate, paste, Symmetrize) keeps its source's list under a new id:
+   * those layers never left it, and letting them go would take the source's fillers. */
+  uint64_t key_together_members_of = 0;
   /* A group (or bone group) picked or active: every drawing inside it, however deep, is edited along
    * with it, as if each were picked too. On for groups, off for bone groups (whose drawings come
    * with their bone collections instead). */

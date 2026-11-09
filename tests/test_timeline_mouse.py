@@ -18,6 +18,7 @@ doc.frame_current = 0
 doc.auto_key = True
 
 art = layers.active
+art.key_together = False  # open: its own rows show
 art.name = "art"
 art.add_curve([(0.0, 0.0), (1.0, 0.0)])
 for f, x in ((10, 0.5), (20, 1.0)):

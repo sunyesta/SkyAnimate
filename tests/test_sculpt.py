@@ -25,6 +25,7 @@ def path(*pts):
 
 layer = oanim.data.layers.active
 layer.key_whole_drawing = False  # keyed point by point here
+layer.key_together = False  # unfolded: keyed channel by channel
 
 
 def fresh_line():
@@ -435,6 +436,7 @@ doc.frame_current = 0
 oanim.ops.layer.new()
 sym = oanim.data.layers.active
 sym.key_whole_drawing = False  # keyed point by point here
+sym.key_together = False  # unfolded: keyed channel by channel
 sym.add_curve([(-2.0, 0.0), (-1.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
 oanim.ops.mesh.select_none()
 oanim.ops.sculpt.stroke(brush="GRAB", path=path((2.0, 0.0), (2.0, 0.5)), radius=0.3, strength=1.0,
@@ -470,6 +472,7 @@ oanim.ops.mesh.select_none()
 oanim.ops.layer.new()
 head = oanim.data.layers.active
 head.key_whole_drawing = False  # keyed point by point here
+head.key_together = False  # unfolded: keyed channel by channel
 head.add_curve([(0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)], closed=True)
 oanim.ops.mesh.select_all()
 oanim.ops.sculpt.stroke(brush="GRAB", path=path((0.15, 1.0), (0.35, 1.25)), radius=0.3, strength=1.0,
@@ -491,6 +494,7 @@ import math
 oanim.ops.layer.new()
 ring = oanim.data.layers.active
 ring.key_whole_drawing = False  # keyed point by point here
+ring.key_together = False  # unfolded: keyed channel by channel
 ring.add_curve([(math.sin(2 * math.pi * k / 12), math.cos(2 * math.pi * k / 12)) for k in range(12)], closed=True)
 oanim.ops.mesh.select_all()
 
@@ -536,11 +540,13 @@ doc.frame_current = 0
 oanim.ops.layer.new()
 left = oanim.data.layers.active
 left.key_whole_drawing = False  # keyed point by point here
+left.key_together = False  # unfolded: keyed channel by channel
 left.name = "Blob_L"
 left.add_curve([(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)])
 oanim.ops.layer.new()
 right = oanim.data.layers.active
 right.key_whole_drawing = False  # keyed point by point here
+right.key_together = False  # unfolded: keyed channel by channel
 right.name = "Blob_R"
 right.add_curve([(-1.0, 0.0), (-2.0, 0.0), (-3.0, 0.0)])
 oanim.data.layers.active = left

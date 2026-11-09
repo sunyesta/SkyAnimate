@@ -798,7 +798,9 @@ static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bo
   size_t keyed_count = 0, channels = 0;
   /* Frames from another action's channels (or none yet) say nothing about what was deleted here. */
   static const std::set<int> none;
-  const std::set<int> &before = settle || owner.key_whole_action != action ? none : owner.key_whole_frames;
+  std::string &owner_action = fillers ? owner.key_together_action : owner.key_whole_action;
+  std::set<int> &owner_frames = fillers ? owner.key_together_frames : owner.key_whole_frames;
+  const std::set<int> &before = settle || owner_action != action ? none : owner_frames;
   std::set<int> deleted_set;
   visit([&](auto &ch, auto & /*value*/, const void * /*unit*/) {
     if (fillers) {
@@ -829,14 +831,14 @@ static int keys_together_sync(Layer &owner, Visit &&visit, Changes &&changes, bo
     }
   });
   const auto remember = [&] {
-    owner.key_whole_action = action;
-    owner.key_whole_frames.clear();
+    owner_action = action;
+    owner_frames.clear();
     visit([&](auto &ch, auto & /*value*/, const void * /*unit*/) {
       if (fillers) {
         fillers_mark(ch);
       }
       for (const auto &k : ch.keys) {
-        owner.key_whole_frames.insert(k.frame);
+        owner_frames.insert(k.frame);
       }
       (fillers ? ch.together_synced : ch.synced) = true;
     });
@@ -1035,15 +1037,19 @@ Layer *key_together_group(Document &doc, uint64_t layer_id)
 
 std::vector<Layer *> key_together_layers(Document &doc, Layer &group)
 {
+  /* The group and everything inside it, in the document's order. Only its own subtree is walked: every vector layer
+   * keys together on its own, and searching the whole document for each made a frame change in a big one slow. */
   std::vector<Layer *> out;
-  for (const Layer *l : document_layers_flat(doc)) {
-    for (Layer *a = layer_find(doc, l->id); a; a = layer_parent(doc, a->id)) {
-      if (a == &group) {
-        out.push_back(layer_find(doc, l->id));
-        break;
-      }
-    }
+  if (layer_find(doc, group.id) != &group) {
+    return out;
   }
+  const auto walk = [&](auto &&self, Layer &l) -> void {
+    out.push_back(&l);
+    for (Layer &child : l.children) {
+      self(self, child);
+    }
+  };
+  walk(walk, group);
   return out;
 }
 
@@ -1139,6 +1145,7 @@ int key_together_sync(Document &doc, Layer &group, bool settle)
       [&](bool to_changes) { together_changes(doc, group, to_changes); }, settle,
       doc.action.empty() ? std::string() : std::to_string(doc.action_layer) + "/" + doc.action, true);
   group.key_together_members.clear();
+  group.key_together_members_of = group.id;
   for (const Layer *l : inside) {
     group.key_together_members.insert(l->id);
   }
@@ -1149,6 +1156,10 @@ int key_together_sync(Document &doc, Layer &group, bool settle)
  * given and never edited go, as when the group is turned off; their own keys stay. */
 static std::pair<int, int> key_together_leavers_release(Document &doc, Layer &group)
 {
+  if (group.key_together_members_of != group.id) {
+    group.key_together_members.clear();
+    return {0, 0};
+  }
   const std::vector<Layer *> inside = key_together_layers(doc, group);
   std::vector<uint64_t> gone;
   std::vector<Layer *> left;
@@ -1399,7 +1410,7 @@ void animation_record(Document &doc)
   const std::string timeline = doc.action.empty() ? std::string() :
                                                     std::to_string(doc.action_layer) + "/" + doc.action;
   for (Layer *group : together_on) {
-    if (group->key_together_settled && group->key_whole_action != timeline) {
+    if (group->key_together_settled && group->key_together_action != timeline) {
       /* Another timeline than it last keyed together (an action entered): filled once something in it is keyed, so
        * entering an action and leaving (as Keep Poses does to see each) changes nothing. */
       const std::vector<Layer *> inside = key_together_layers(doc, *group);

@@ -17,15 +17,18 @@ doc.frame_current = 0
 oanim.ops.layer.new_bone()
 rig = layers.active
 rig.key_whole_drawing = False  # keyed point by point here
+rig.key_together = False  # unfolded: keyed channel by channel
 oanim.ops.armature.bone_add(name="arm", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
 oanim.ops.layer.new()
 art = layers.active
 art.key_whole_drawing = False  # keyed point by point here
+art.key_together = False  # unfolded: keyed channel by channel
 art.add_curve([(0.0, 1.0), (1.0, 1.0), (2.0, 1.0)])
 oanim.ops.layer.move_to_group(group=str(rig.id))
 oanim.ops.layer.new()
 lips = layers.active
 lips.key_whole_drawing = False  # keyed point by point here
+lips.key_together = False  # unfolded: keyed channel by channel
 lips.name = "lips"
 lips.add_curve([(0.0, 2.0), (1.0, 2.0)])
 oanim.ops.layer.move_to_group(group=str(rig.id))
@@ -33,6 +36,7 @@ lips.edit_with_bones = True
 oanim.ops.layer.new()
 other = layers.active
 other.key_whole_drawing = False  # keyed point by point here
+other.key_together = False  # unfolded: keyed channel by channel
 other.name = "other"
 other.add_curve([(5.0, 0.0), (6.0, 0.0)])
 

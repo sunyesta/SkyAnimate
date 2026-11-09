@@ -140,6 +140,7 @@ doc.auto_key = True
 doc.frame_current = 0
 line = layers.active
 line.key_whole_drawing = False
+line.key_together = False  # unfolded: keyed channel by channel
 line.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
 doc.frame_current = 10
 oanim.ops.mesh.select_none()

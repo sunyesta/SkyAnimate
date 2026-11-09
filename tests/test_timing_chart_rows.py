@@ -19,6 +19,7 @@ def mover(name, y):
     lay.name = name
     lay.add_curve([(0.0, 0.0), (0.1, 0.0)])
     lay.key_whole_drawing = False
+    lay.key_together = False  # unfolded: keyed channel by channel
     for f, x in ((10, 0.0), (20, 1.0), (30, 2.0)):
         assert ops.anim.motion_path_move(frame=str(f), x=str(x), y=str(y), layer=str(lay.id)) == {'FINISHED'}
     return lay

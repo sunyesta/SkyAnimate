@@ -18,6 +18,7 @@ doc.auto_freeze_keys = False
 def vec(name):
     ops.layer.new()
     layer = layers.active
+    layer.key_together = False  # open: its own rows show
     layer.name = name
     layer.add_curve([(-0.5, 0.0), (0.5, 0.0)])
     return layer

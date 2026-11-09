@@ -145,6 +145,27 @@ PENDING = [
     return KEY_SWITCH;
   }''', '',
      "a switch's keys stay out of its Layer row", 'timeline_layer_props_row'),
+    ('src/anim/animation.cc', 'std::set<int> &owner_frames = fillers ? owner.key_together_frames : owner.key_whole_frames;',
+     'std::set<int> &owner_frames = owner.key_whole_frames;',
+     'a folded drawing keeps its Key Together frames apart from Key Whole Drawing\'s, so a point edit on a new frame '
+     'stays', 'mirror'),
+    ('src/anim/animation.cc', '''  if (group.key_together_members_of != group.id) {
+    group.key_together_members.clear();
+    return {0, 0};
+  }
+''', '', 'a duplicated folded layer or group leaves its source\'s fillers alone', 'key_together_copy'),
+    ('src/anim/animation.cc', '''  walk(walk, group);
+  return out;''', '''  for (const Layer *l : document_layers_flat(doc)) {
+    for (Layer *a = layer_find(doc, l->id); a; a = layer_parent(doc, a->id)) {
+      if (a == &group) {
+        out.push_back(layer_find(doc, l->id));
+        break;
+      }
+    }
+  }
+  return out;''', 'a frame change stays fast with hundreds of folded layers', 'drivers_rig'),
+    ('src/data/document_layers.cc', '  layer.key_together = type == LayerType::Vector;', '  layer.key_together = false;',
+     'a new vector layer starts folded in the timeline', 'timeline_tree'),
 ]
 
 def build(root):

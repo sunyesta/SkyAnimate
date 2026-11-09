@@ -53,6 +53,7 @@ def line_layer(keys, interp):
     """A layer moving along x through `keys` ({frame: x}), every key `interp`."""
     ops.layer.new()
     lay = layers.active
+    lay.key_together = False  # unfolded: its own paths' timing
     lay.add_curve([(0.0, 0.0), (0.1, 0.0)])
     doc.frame_current = 0
     lay.location_x, lay.location_y = -5.0, -5.0
@@ -163,6 +164,7 @@ assert key(alt, "position", 50)["type"] == "KEYFRAME", "Paste Interpolation: the
 doc.auto_key = True
 ops.layer.new()
 whole = layers.active
+whole.key_together = False  # unfolded: its own paths' timing
 assert whole.key_whole_drawing
 only(whole)
 doc.frame_current = 0
@@ -186,9 +188,11 @@ for p in ["points[0].pos", "points[1].pos", "points[0].radius"]:
 # --- Key Together: the group's keys on a frame stay together ---------------------------------------------------------
 ops.layer.new()
 ta = layers.active
+ta.key_together = False  # unfolded: its own paths' timing
 ta.add_curve([(0.0, 0.0), (1.0, 0.0)])
 ops.layer.new()
 tb = layers.active
+tb.key_together = False  # unfolded: its own paths' timing
 tb.add_curve([(0.0, 3.0), (1.0, 3.0)])
 for l in layers:
     l.selected = l.id in (ta.id, tb.id)

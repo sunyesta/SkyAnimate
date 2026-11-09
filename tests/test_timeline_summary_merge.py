@@ -15,6 +15,7 @@ wm = oanim.wm
 doc.auto_key = True
 ops.layer.new()
 ball = layers.active
+ball.key_together = False  # open: its own rows show
 ball.name = "Ball 1"
 ball.add_curve([(0.0, 0.0), (0.5, 0.0)])
 doc.frame_current = 10
@@ -48,6 +49,7 @@ assert wm.timeline_row_fold(1, True) and not ball.key_together
 # A second layer shown: the Summary over both.
 ops.layer.new()
 other = layers.active
+other.key_together = False  # open: its own rows show
 for l in layers:
     l.selected = True
 other.add_curve([(0.0, 1.0), (0.5, 1.0)])

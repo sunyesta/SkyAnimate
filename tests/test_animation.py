@@ -14,6 +14,7 @@ oanim.data.document.auto_freeze_keys = False  # keyed channel by channel here, n
 doc = oanim.data.document
 layer = oanim.data.layers.active
 layer.key_whole_drawing = False  # keyed point by point here
+layer.key_together = False  # unfolded: keyed channel by channel
 assert doc.auto_key, "auto-keying starts on"
 assert doc.frame_current == 0, "a new document opens on the setup frame"
 
@@ -153,6 +154,7 @@ doc.frame_current = 0
 oanim.ops.layer.new()
 held = oanim.data.layers.active
 held.key_whole_drawing = False  # keyed point by point here
+held.key_together = False  # unfolded: keyed channel by channel
 for f, x in ((0, 0.0), (38, 1.0), (84, 0.0), (116, 0.0)):
     doc.frame_current = f
     held.location_x = x
@@ -220,6 +222,7 @@ doc.frame_current = 0
 oanim.ops.layer.new()
 other = oanim.data.layers.active
 other.key_whole_drawing = False  # keyed point by point here
+other.key_together = False  # unfolded: keyed channel by channel
 doc.frame_current = 10
 other.location_x = 2.0
 doc.frame_current = 0
@@ -246,6 +249,7 @@ layer.select = False
 oanim.ops.layer.new()
 rows = oanim.data.layers.active
 rows.key_whole_drawing = False  # keyed point by point here
+rows.key_together = False  # unfolded: keyed channel by channel
 rows.add_curve([(0.0, 0.0), (1.0, 0.0)])
 oanim.ops.mesh.select_none()
 doc.frame_current = 12
@@ -271,6 +275,7 @@ doc.frame_current = 0
 oanim.ops.layer.new()
 lamp = oanim.data.layers.active
 lamp.key_whole_drawing = False  # keyed point by point here
+lamp.key_together = False  # unfolded: keyed channel by channel
 doc.frame_current = 15
 assert oanim.ops.anim.keyframe_toggle(layer=str(lamp.id), paths="rotation") == {'FINISHED'}
 assert [k["frame"] for k in lamp.keyframes("rotation")] == [0, 15], "the first key also keys the setup"
@@ -322,6 +327,7 @@ assert oanim.ops.wm.save_as_mainfile(filepath=path) == {'FINISHED'}
 assert oanim.ops.wm.open_mainfile(filepath=path, confirmed="1") == {'FINISHED'}
 layer = oanim.data.layers.active
 layer.key_whole_drawing = False  # keyed point by point here
+layer.key_together = False  # unfolded: keyed channel by channel
 for p, keys in saved.items():
     assert layer.keyframes(p) == keys, (p, layer.keyframes(p), keys)
 doc = oanim.data.document
@@ -332,6 +338,7 @@ assert abs(layer.points[1][1] - 0.5) < 1e-5, "opened files show their animation"
 oanim.ops.layer.new()
 spin = oanim.data.layers.active
 spin.key_whole_drawing = False  # keyed point by point here
+spin.key_together = False  # unfolded: keyed channel by channel
 doc.frame_current = 24
 spin.rotation = 720.0
 doc.frame_current = 0

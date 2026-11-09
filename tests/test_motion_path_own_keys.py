@@ -39,6 +39,7 @@ ops.armature.bone_add(name="hand", head_x="1", head_y="2", tail_x="2", tail_y="2
 ops.layer.new()
 face = layers.active
 face.key_whole_drawing = False
+face.key_together = False  # unfolded: keyed channel by channel
 face.add_curve([(0.0, 0.0), (1.0, 0.0)])
 ops.layer.move_to_group(group=str(rig.id))
 

@@ -22,6 +22,7 @@ ball = layers.active
 ball.name = "Ball"
 ball.add_curve([(0.0, 0.0), (0.5, 0.0)])
 ball.key_whole_drawing = False
+ball.key_together = False  # unfolded: keyed channel by channel
 for f, x in ((10, 0.0), (20, 1.0)):
     assert ops.anim.motion_path_move(frame=str(f), x=str(x), y="0", layer=str(ball.id)) == {'FINISHED'}
 assert ops.wm.tool_motion_path() == {'FINISHED'}

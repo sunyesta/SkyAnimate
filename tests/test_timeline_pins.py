@@ -25,6 +25,7 @@ def names():
 
 # A drawing with its opacity keyed, and a bone layer with a keyed bone.
 art = layers.active
+art.key_together = False  # open: its own rows show
 doc.frame_current = 10
 art.opacity = 0.5
 doc.frame_current = 11

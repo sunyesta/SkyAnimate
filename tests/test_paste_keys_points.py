@@ -14,6 +14,7 @@ doc.timeline_only_selected = False
 ops.layer.new()
 lay = layers.active
 lay.key_whole_drawing = False
+lay.key_together = False  # unfolded: keyed channel by channel
 lay.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
 
 

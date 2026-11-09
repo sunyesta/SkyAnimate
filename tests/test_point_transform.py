@@ -38,6 +38,7 @@ def sub(a, b):
 
 layer = layers.active
 layer.key_whole_drawing = False  # keyed point by point here
+layer.key_together = False  # unfolded: keyed channel by channel
 layer.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
 oanim.ops.mesh.select_none()
 

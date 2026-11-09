@@ -36,6 +36,7 @@ def mover(keys):
     """A new layer, its origin moved to keys {frame: (x, y)} through the path."""
     ops.layer.new()
     layer = layers.active
+    layer.key_together = False  # unfolded: its own paths' timing
     layer.add_curve([(0.0, 0.0), (0.1, 0.0)])
     doc.frame_current = 0
     layer.location_x, layer.location_y = -5.0, -5.0
@@ -242,6 +243,7 @@ rig = layers.active
 assert ops.armature.bone_add(name="eye", head_x="0", head_y="0", tail_x="0.1", tail_y="0") == {'FINISHED'}
 ops.layer.new()
 pupil = layers.active
+pupil.key_together = False  # unfolded: its own paths' timing
 ops.layer.move_to_group(group=str(rig.id))
 pupil.add_curve([(0.0, 0.0), (0.2, 0.0)])
 assert ops.layer.parent_bone_set(bone="eye") == {'FINISHED'}

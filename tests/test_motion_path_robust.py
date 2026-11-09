@@ -75,6 +75,7 @@ def mover(keys, interp=None):
     """A new layer, its origin moved to keys {frame: (x, y)} through the path (each key's interp set after it)."""
     ops.layer.new()
     layer = layers.active
+    layer.key_together = False  # unfolded: its own paths' timing
     layer.add_curve([(0.0, 0.0), (0.1, 0.0)])
     doc.frame_current = 0
     layer.location_x, layer.location_y = -5.0, -5.0
@@ -90,6 +91,7 @@ def line_layer(keys, interp="LINEAR"):
     """A new layer, its origin keyed along the x axis, {frame: x}, every key `interp`."""
     ops.layer.new()
     layer = layers.active
+    layer.key_together = False  # unfolded: its own paths' timing
     layer.add_curve([(0.0, 0.0), (0.1, 0.0)])
     doc.frame_current = 0
     layer.location_x, layer.location_y = -5.0, -5.0
@@ -180,6 +182,7 @@ start(timing=True)
 doc.auto_key = True
 ops.layer.new()
 line = layers.active
+line.key_together = False  # unfolded: its own paths' timing
 assert line.key_whole_drawing
 only(line)
 doc.frame_current = 0
@@ -506,6 +509,7 @@ assert close(ends[0], ends[1]), ("strength past 1 is 1", ends)
 def drawing_layer():
     ops.layer.new()
     face = layers.active
+    face.key_together = False  # unfolded: its own paths' timing
     assert face.key_whole_drawing
     face.add_curve([(0.0, 0.0), (1.0, 0.0)])
     doc.auto_key = True
@@ -521,6 +525,7 @@ def drawing_layer():
 def other_layer():
     ops.layer.new()
     other = layers.active
+    other.key_together = False  # unfolded: its own paths' timing
     only(other)
     return other
 
@@ -586,6 +591,7 @@ start()
 doc.path_own_motion = False  # (Own Motion holds the group as shown: Relative To is what's tried here)
 ops.layer.new()
 ball = layers.active
+ball.key_together = False  # unfolded: its own paths' timing
 ball.add_curve([(0.0, 0.0), (0.1, 0.0)])
 group = in_group(ball)
 doc.auto_key = True
@@ -621,7 +627,9 @@ start()
 doc.path_own_motion = False  # (it holds the group as on the frame shown instead: Relative To is what's tried here)
 ops.layer.new()
 art = layers.active
+art.key_together = False  # unfolded: its own paths' timing
 art.key_whole_drawing = False
+art.key_together = False  # unfolded: keyed channel by channel
 art.add_curve([(0.0, 0.0), (0.1, 0.0)])
 group = in_group(art)
 doc.auto_key = True

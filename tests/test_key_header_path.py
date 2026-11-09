@@ -15,6 +15,7 @@ layers = oanim.data.layers
 doc.auto_key = True
 ops.layer.new()
 ball = layers.active
+ball.key_together = False  # open: its own rows show
 ball.add_curve([(0.0, 0.0), (0.5, 0.0)])
 for frame, x in ((10, 1.0), (20, 2.0), (30, 3.0)):
     doc.frame_current = frame

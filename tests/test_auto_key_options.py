@@ -20,6 +20,7 @@ doc.frame_current = 0
 oanim.ops.layer.new_bone()
 rig = oanim.data.layers.active
 rig.key_whole_drawing = False  # keyed point by point here
+rig.key_together = False  # unfolded: keyed channel by channel
 oanim.ops.armature.bone_add(name="a", head_x="0", head_y="0", tail_x="1", tail_y="0", parent="")
 oanim.ops.armature.bone_add(name="b", head_x="0", head_y="1", tail_x="1", tail_y="1", parent="")
 oanim.ops.armature.bone_add(name="c", head_x="0", head_y="2", tail_x="1", tail_y="2", parent="")
@@ -92,6 +93,7 @@ doc.auto_key_mode = "ADD_REPLACE"
 oanim.ops.layer.new()
 drawing = oanim.data.layers.active
 drawing.key_whole_drawing = False  # keyed point by point here
+drawing.key_together = False  # unfolded: keyed channel by channel
 drawing.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
 oanim.ops.mesh.select_none()
 

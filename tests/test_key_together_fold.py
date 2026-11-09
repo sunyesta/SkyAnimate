@@ -63,6 +63,7 @@ def point_frames(layer):
 # A drawing moved on 10 and reshaped on 20 (keyed as a whole drawing).
 ops.layer.new()
 ball = layers.active
+ball.key_together = False  # open: its own rows show
 ball.name = "Ball"
 ball.add_curve([(0.0, 0.0), (1.0, 0.0)])
 assert ball.key_whole_drawing and not ball.key_together
@@ -127,6 +128,7 @@ assert rows()[1]["open"]
 # A group: folded with Key Together, open without; a layer inside folded too while the group is open.
 ops.layer.new()
 other = layers.active
+other.key_together = False  # open: its own rows show
 other.name = "Other"
 other.add_curve([(0.0, 2.0), (1.0, 2.0)])
 doc.frame_current = 5
@@ -162,6 +164,7 @@ group.key_together = False
 settle()
 ops.layer.new()
 hop = layers.active
+hop.key_together = False  # open: its own rows show
 hop.name = "Hop"
 hop.add_curve([(0.0, -2.0), (1.0, -2.0)])
 doc.frame_current = 30

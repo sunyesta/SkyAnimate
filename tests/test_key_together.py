@@ -38,9 +38,11 @@ def settle():
 
 ops.layer.new()
 a = layers.active
+a.key_together = False  # unfolded: keyed by its group, or channel by channel
 a.add_curve([(0.0, 0.0), (1.0, 0.0)])
 ops.layer.new()
 b = layers.active
+b.key_together = False  # unfolded: keyed by its group, or channel by channel
 b.add_curve([(0.0, 3.0), (1.0, 3.0)])
 for l in layers:
     l.selected = l.id in (a.id, b.id)
@@ -159,6 +161,7 @@ finally:
 def new_vec(points):
     ops.layer.new()
     l = layers.active
+    l.key_together = False  # unfolded: keyed by its group, or channel by channel
     l.add_curve(points)
     return l
 

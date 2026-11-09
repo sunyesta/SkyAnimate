@@ -35,10 +35,12 @@ def fold_key(name):
 
 # A group "head" holding the drawing "brow_L" (keyed as a whole), and a bone layer "rig" with two bones.
 brow = layers.active
+brow.key_together = False  # open: its own rows show
 brow.name = "brow_L"
 brow.add_curve([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)])
 ops.layer.group()
 head = layers.active
+head.key_together = False  # open: its own rows show
 head.name = "head"
 ops.layer.new_bone()
 rig = layers.active

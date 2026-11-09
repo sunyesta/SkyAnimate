@@ -27,6 +27,7 @@ def frames(layer, path):
 ops.layer.new()
 art = layers.active
 art.key_whole_drawing = False
+art.key_together = False  # unfolded: keyed channel by channel
 doc.frame_current = 0
 art.add_curve([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
 doc.frame_current = 10
@@ -98,6 +99,7 @@ for path in paths:
 ops.layer.new()
 inner = layers.active
 inner.key_whole_drawing = False
+inner.key_together = False  # unfolded: keyed channel by channel
 inner.add_curve([(0.0, 0.0), (1.0, 0.0)])
 assert ops.layer.group() == {'FINISHED'}
 group = layers.active
@@ -116,6 +118,7 @@ assert 20 not in frames(group, "position")
 ops.layer.new()
 odd = layers.active
 odd.key_whole_drawing = False
+odd.key_together = False  # unfolded: keyed channel by channel
 odd.add_curve([(0.0, 0.0), (1.0, 0.0)])
 doc.frame_current = 10
 odd.location_x = 1.0
