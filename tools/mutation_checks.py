@@ -49,6 +49,8 @@ PENDING = [
      "a bone copying a bone that copies makes up only for the turn its target's keys change by", 'apply_rest_copy'),
     ('src/ops/rig_ops.cc', 'rotate(was_position + copied.position - b.setup_position', 'rotate(was_position - b.setup_position',
      "a Copy Position bone with no keys is held where its target's rest moved", 'apply_rest_copy'),
+    ('src/anim/motion_path.cc', '    if (p.frame <= 0) {\n      ch.keys.resize(1);', '    if (true) {\n      ch.keys.resize(1);',
+     "a value placed on a path keeps the setup actions add their change from", 'motion_path_control_actions'),
 ]
 
 def build(root):

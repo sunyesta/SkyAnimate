@@ -2582,7 +2582,10 @@ template<typename T> int scale_stretches(Channel<T> &ch, int pivot, float factor
 /* How `t` shows on `frame` as the value of its position channel there changes (as key_jacobian, for a frame with or
  * without a key): the channel is held at `value` on a copy and nudged. Without `r_cx` and `r_cy` only where it shows
  * (a third of the work: on a rig each is a whole frame worked out). */
-/* `t`'s position channel held on one key (value_jacobian's), as a place's copies start from; false without one. */
+/* `t`'s position channel held (value_jacobian's), as a place's copies start from: its setup on frame 0 kept, as it is,
+ * and a key to hold the value on a place's frame. (Action bone actions add their change from the setup: held on one key
+ * moved there, the setup would move with the value, and a bone a head turn moves would be placed as if its actions
+ * pulled it back.) False without keys. */
 static bool held_copy(const Document &doc, const MotionPathTarget &t, Channel<float2> &r_held)
 {
   const Channel<float2> *ch = handle_channel(const_cast<Document &>(doc), t);
@@ -2590,25 +2593,30 @@ static bool held_copy(const Document &doc, const MotionPathTarget &t, Channel<fl
     return false;
   }
   r_held = *ch;
-  Key<float2> held = ch->keys.front();
-  held.interp = Interp::Linear;
-  held.timing = {};
-  held.path_handles = PathHandles::Auto;
-  r_held.keys = {held};
+  Key<float2> setup, held;
+  setup.interp = held.interp = Interp::Linear;
+  setup.value = ch->evaluate(0);
+  r_held.keys = {setup, held};
   return true;
 }
 
-/* `doc`'s places (held_places) with `t`'s channel `held` (held_copy's), its one key on each place's frame with its
- * value. */
+/* `doc`'s places (held_places) with `t`'s channel `held` (held_copy's), on each place's frame its key there with its
+ * value (on frame 0 the setup itself). */
 static void held_copy_places(const Document &doc, const Channel<float2> &held, const MotionPathTarget &t,
                              std::vector<HeldPlace> &places)
 {
   held_places(doc, t, places, [&](Channel<float2> &ch, const HeldPlace &p) {
-    if (ch.keys.size() != 1) {
+    if (ch.keys.size() != 2) {
       return false;
     }
-    ch.keys[0].frame = p.frame;
-    ch.keys[0].value = p.value;
+    if (p.frame <= 0) {
+      ch.keys.resize(1);
+      ch.keys[0].frame = p.frame;
+      ch.keys[0].value = p.value;
+      return true;
+    }
+    ch.keys[1].frame = p.frame;
+    ch.keys[1].value = p.value;
     return true;
   }, PLACES_HELD_KEY, &doc, &held);
 }
