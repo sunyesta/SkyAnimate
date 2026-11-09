@@ -73,6 +73,11 @@ PENDING = [
      "a drawing keyed whole shows its picked points' paths", 'timeline_chain'),
     ('src/editors/timeline.cc', '    else {\n      row.filter.kinds = 0;\n    }', '    else {\n    }',
      "an open folder (Bones, a bone, Points) is a heading with no keys of its own", 'timeline_tree'),
+    ('src/anim/animation.cc', '      owner_for_each_channel(*owner, clear);\n    }\n    return count;',
+     '      owner_for_each_channel(*owner, clear);\n    }',
+     "Clear Timeline in an action leaves the mainline alone", 'timeline_clear'),
+    ('src/anim/animation.cc', '  layer_for_each_channel(document_camera(doc), clear);\n  return count;', '  return count;',
+     "Clear Timeline on the mainline clears the camera's keys too", 'timeline_clear'),
 ]
 
 def build(root):

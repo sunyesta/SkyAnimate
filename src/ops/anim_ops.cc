@@ -1542,6 +1542,22 @@ void anim_operators_register()
                       animation_evaluate(*C.document, C.document->frame_current);
                       return OpStatus::Finished;
                     });
+  anim_operator_add("anim.timeline_clear", "Clear Timeline",
+                    "Delete every key of the timeline being edited (the mainline, or the action being edited), "
+                    "whatever is selected or shown; frame 0's setup pose stays",
+                    OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
+                      Document &doc = *C.document;
+                      animation_record(doc);
+                      const int went = timeline_clear(doc);
+                      if (went == 0) {
+                        report(ReportType::Info, timeline_edited_name(doc) + " has no keys to clear");
+                        return OpStatus::Cancelled;
+                      }
+                      animation_evaluate(doc, doc.frame_current);
+                      report(ReportType::Info, "Cleared " + std::to_string(went) + (went == 1 ? " key" : " keys") +
+                                                   " from " + timeline_edited_name(doc));
+                      return OpStatus::Finished;
+                    });
   anim_operator_add("anim.keys_delete", "Delete Keys", "Delete the selected keys (frame-0 setup keys stay)",
                     OPTYPE_REGISTER | OPTYPE_UNDO, [](Context &C) {
                       animation_record(*C.document);

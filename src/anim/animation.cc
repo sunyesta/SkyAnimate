@@ -6506,6 +6506,38 @@ int time_together_timing_follow(Document &doc, const TimingSnapshot &before)
   return followed;
 }
 
+int timeline_clear(Document &doc, bool count_only)
+{
+  int count = 0;
+  const auto clear = [&](auto &ch, auto &value) {
+    const size_t before = ch.keys.size();
+    if (count_only) {
+      count += int(std::count_if(ch.keys.begin(), ch.keys.end(), [](const auto &k) { return k.frame != 0; }));
+      return;
+    }
+    std::erase_if(ch.keys, [](const auto &key) { return key.frame != 0; });
+    count += int(before - ch.keys.size());
+    if (ch.keys.size() != before) {
+      drop_lone_setup_key(ch, value);
+    }
+  };
+  if (!doc.action.empty()) {
+    if (Layer *owner = layer_find(doc, doc.action_layer)) {
+      owner_for_each_channel(*owner, clear);
+    }
+    return count;
+  }
+  layers_for_each_channel(doc.layers, clear);
+  layer_for_each_channel(doc.simulation, clear);
+  layer_for_each_channel(document_camera(doc), clear);
+  return count;
+}
+
+std::string timeline_edited_name(const Document &doc)
+{
+  return doc.action.empty() ? std::string("Mainline") : doc.action;
+}
+
 int layers_delete_selected_keys(const std::vector<Layer *> &layers)
 {
   int removed = 0;

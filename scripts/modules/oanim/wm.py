@@ -758,6 +758,12 @@ def timeline_row_chain(row):
     return _oanim.timeline_row_chain(int(row))
 
 
+def timeline_clear_question():
+    """What Clear Timeline (the timeline's right-click menu off any key) asks before it deletes: "Delete all N keys on
+    Mainline?", or on the action being edited."""
+    return _oanim.timeline_clear_question()
+
+
 def timeline_row_details(as_shown=False):
     """The timeline's rows as dicts: depth, name, red, pinned, changed, layer (a layer's own row: its id,
     else 0), fold (a folding row's key: set_ui_open("Timeline/" + fold, open) folds it), open, summary, label (as

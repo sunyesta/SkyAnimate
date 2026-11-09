@@ -545,6 +545,13 @@ struct TimeTogetherEdit {
 };
 /* Deletes the selected keys, except frame 0's. Returns how many went. */
 int layers_delete_selected_keys(const std::vector<Layer *> &layers);
+/* Clear Timeline: every key of the timeline being edited goes but frame 0's, the setup pose, so all of it shows the
+ * setup again. On the mainline that is every layer's, the camera's and the Simulation's; in an action, only that
+ * action's (its bone layer and what is inside it), the mainline and the other actions left alone. With `count_only`
+ * nothing changes. Returns how many keys (or would) go. */
+int timeline_clear(Document &doc, bool count_only = false);
+/* What the timeline being edited is called: "Mainline", or the action's name. */
+std::string timeline_edited_name(const Document &doc);
 /* Copies the selected keys `offset` frames later (never below 1); the copies become the
  * selection and replace keys where they land (Blender's Duplicate, then moving the copies). */
 void layers_duplicate_selected_keys(const std::vector<Layer *> &layers, int offset);

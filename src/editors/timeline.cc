@@ -3100,6 +3100,57 @@ static std::vector<ChannelRow> rows_headed(std::vector<ChannelRow> rows)
   return rows;
 }
 
+/* Right-click on the timeline off any key: its menu, Clear Timeline (every key of the timeline being edited,
+ * whatever is picked or shown), asking first with how many keys go, as Blender asks before deleting. */
+static struct {
+  int keys = 0;
+  std::string line;
+  bool ask = false;
+} g_space_menu;
+
+static void timeline_space_menu_open(Document &doc)
+{
+  g_space_menu.keys = timeline_clear(doc, true);
+  g_space_menu.line = timeline_edited_name(doc);
+  g_space_menu.ask = false;
+  ImGui::OpenPopup("##timeline_space");
+}
+
+std::string timeline_clear_question(Document &doc)
+{
+  const int keys = timeline_clear(doc, true);
+  return "Delete " + std::string(keys == 1 ? "the 1 key" : "all " + std::to_string(keys) + " keys") + " on " +
+         timeline_edited_name(doc) + "?";
+}
+
+static void timeline_space_menus(Context &C)
+{
+  if (ui_menu_begin("##timeline_space")) {
+    if (ui_menu_item("Clear Timeline", nullptr, false, g_space_menu.keys > 0)) {
+      g_space_menu.ask = true;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip(g_space_menu.keys > 0 ?
+                            "Delete every key of %s, whatever is picked or shown; frame 0's setup pose stays" :
+                            "%s has no keys",
+                        g_space_menu.line.c_str());
+    }
+    ui_menu_end();
+  }
+  if (g_space_menu.ask && !ImGui::IsPopupOpen("##timeline_space")) {
+    g_space_menu.ask = false;
+    ImGui::OpenPopup("##timeline_clear_confirm");
+  }
+  if (ui_menu_begin("##timeline_clear_confirm")) {
+    ImGui::TextUnformatted(timeline_clear_question(*C.document).c_str());
+    ImGui::Separator();
+    if (ui_menu_item("Clear Timeline")) {
+      operator_call(C, "anim.timeline_clear");
+    }
+    ui_menu_end();
+  }
+}
+
 /* A chained row's chain clicked: its Key Together or Key Whole Drawing turned off (an undo step, as it changes keys),
  * the arrow back in its place. */
 static bool row_chain_release(Context &C, const ChannelRow &row)
@@ -3833,6 +3884,9 @@ static void timeline_body(Area &area, Context &C)
     else if (const int hit = key_under(io.MousePos, &r); hit >= 0) {
       keyed_open(r, hit);
     }
+    else {
+      timeline_space_menu_open(doc);
+    }
   }
   else if (!names_resizing && ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
     if (over_names) {
@@ -4108,6 +4162,7 @@ static void timeline_body(Area &area, Context &C)
     }
   }
   timeline_media_menu(C);
+  timeline_space_menus(C);
   if (ui_menu_begin("##reference_channel")) {
     if (ui_menu_item("Reset Channel to Original")) {
       operator_call(C, "layer.reference_sync", {{"layer", std::to_string(g_sync_layer)}, {"path", g_sync_path}});
