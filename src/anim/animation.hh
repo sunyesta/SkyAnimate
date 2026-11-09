@@ -396,9 +396,10 @@ enum KeyKind : uint32_t {
   KEY_SIMULATION = 1 << 7,     /* the document's gravity and wind (Document::simulation) */
   KEY_CONSTRAINTS = 1 << 8,    /* a bone's constraints' settings (influence, dynamics) */
   KEY_DRAW_ORDER = 1 << 9,     /* "draw_order" */
+  KEY_SWITCH = 1 << 10,        /* "switch": the child a switch shows (on its own row, not with the layer's properties) */
   KEY_LAYER = KEY_LAYER_ANGLE | KEY_LAYER_TRANSFORM | KEY_OPACITY | KEY_VISIBILITY | KEY_DRAW_ORDER,
   KEY_BONES = KEY_BONE_ANGLE | KEY_BONE_TRANSFORM | KEY_CONSTRAINTS,
-  KEY_ALL = KEY_LAYER | KEY_BONES | KEY_POINTS | KEY_SIMULATION,
+  KEY_ALL = KEY_LAYER | KEY_BONES | KEY_POINTS | KEY_SIMULATION | KEY_SWITCH,
 };
 struct KeyFilter {
   uint32_t kinds = KEY_ALL;

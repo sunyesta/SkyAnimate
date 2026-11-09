@@ -37,7 +37,18 @@ def picked(path):
     return [k["frame"] for k in art.keyframes(path) if k["selected"]]
 
 
+def open_layer_rows():
+    """Opens every folded Layer row (a layer's own properties), so its property rows show."""
+    while True:
+        rs = wm.timeline_row_details(True)
+        i = next((i for i, r in enumerate(rs) if r["name"] == "Layer" and not r["open"]), None)
+        if i is None:
+            return
+        assert wm.timeline_row_fold(i, True)
+
+
 def row(name):
+    open_layer_rows()
     return next(i for i, r in enumerate(wm.timeline_row_details(True)) if r["name"] == name)
 
 

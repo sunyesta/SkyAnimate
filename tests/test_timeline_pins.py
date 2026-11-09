@@ -51,10 +51,10 @@ tops = [name for depth, name in tree if depth == 0]
 assert tops == ["Summary", rig.name], ("the Summary, then the rig: its own row", tops)
 assert art.name not in [name for depth, name in tree], "only the picked layer"
 mine = section(tree, rig.name)
-for row in [(1, "Position"), (1, "Rotation"), (1, "Scale"), (1, "Bones"), (2, "arm"), (3, "Angle"),
+for row in [(1, "Layer"), (2, "Position"), (2, "Rotation"), (2, "Scale"), (1, "Bones"), (2, "arm"), (3, "Angle"),
             (3, "Transform"), (3, "Scale")]:
     assert row in mine, (row, mine)
-assert mine.index((1, "Rotation")) < mine.index((1, "Bones")) < mine.index((2, "arm")) < mine.index((3, "Angle")),     "the layer's own channels, then its bones, each bone's rows under it"
+assert mine.index((2, "Rotation")) < mine.index((1, "Bones")) < mine.index((2, "arm")) < mine.index((3, "Angle")),     "the layer's own channels (under Layer), then its bones, each bone's rows under it"
 
 # Constraints' keyed settings get their own rows under their bone, by constraint and setting.
 rig.select_bone("arm")
@@ -70,7 +70,7 @@ art.selected = True
 tops = [name for depth, name in names() if depth == 0]
 order = [l.name for l in layers]
 assert tops == ["Summary"] + [n for n in order if n in (art.name, rig.name)], (tops, order)
-assert (1, "Opacity") in section(names(), art.name), section(names(), art.name)
+assert (2, "Opacity") in section(names(), art.name), section(names(), art.name)
 art.selected = False
 
 # --- Pinning: the drawing's opacity, while the bone layer is the one picked -----------------------

@@ -5206,8 +5206,11 @@ KeyKind channel_kind(const std::string &path)
   if (path == "opacity") {
     return KEY_OPACITY;
   }
-  if (path == "visible" || path == "switch") {
+  if (path == "visible") {
     return KEY_VISIBILITY;
+  }
+  if (path == "switch") {
+    return KEY_SWITCH;
   }
   if (path == "draw_order") {
     return KEY_DRAW_ORDER;

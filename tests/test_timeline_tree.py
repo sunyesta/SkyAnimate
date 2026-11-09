@@ -69,7 +69,7 @@ order = [l.name for l in group.children]
 at = tree.index((0, "group"))
 inside = [name for depth, name in tree[at + 1:] if depth == 1 and name in ("first", "second")]
 assert inside == order, (inside, order, tree)
-assert (2, "Position") in tree and (2, "Drawing") in tree, tree
+assert (2, "Layer") in tree and (3, "Position") in tree and (2, "Drawing") in tree, tree
 assert tree.index((1, "second")) < tree.index((2, "Drawing")), "a layer's rows under it"
 assert "top" not in [name for depth, name in tree], "only what's picked"
 assert row("group")["frames"] == [], "open (not keying together): no keys of its own"
@@ -89,7 +89,7 @@ tops = [name for depth, name in tree if depth == 0]
 expected = [l.name for l in layers if l.name in ("top", "group")]
 assert tops == ["Summary"] + expected, (tops, expected)
 assert row("Summary")["frames"] == [0, 10, 20, 30], row("Summary")
-assert (1, "Opacity") in tree
+assert (1, "Layer") in tree and (2, "Opacity") in tree
 top.selected = False
 
 # Picking the drawing alone: the group it is in is listed dimmed, for where it is.
@@ -102,12 +102,12 @@ assert (0, "group") in tree and (1, "second") in tree and row("group")["dim"], t
 ops.mesh.select_none()
 layers.active = group
 assert row("group", True)["open"] and row("first", True)["open"], "open while not keying together"
-assert names(True).count((2, "Position")) == 2
+assert names(True).count((2, "Layer")) == 2
 wm.set_ui_open("Timeline/" + row("first")["fold"], False)
 assert row("first", True)["open"], "the kept fold doesn't decide it"
 at = [r["name"] for r in rows(True)].index("first")
 assert wm.timeline_row_fold(at, False) and first.key_together
-assert not row("first", True)["open"] and names(True).count((2, "Position")) == 1, "a folded layer hides its rows"
+assert not row("first", True)["open"] and names(True).count((2, "Layer")) == 1, "a folded layer hides its rows"
 assert ops.ed.undo() == {'FINISHED'}
 layers.active = group
 assert not first.key_together and row("first", True)["open"], "undo opens it again"

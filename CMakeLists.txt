@@ -542,6 +542,8 @@ add_test(NAME key_together_path_pick
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_key_together_path_pick.py)
 add_test(NAME timeline_switch_row
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_switch_row.py)
+add_test(NAME timeline_layer_props_row
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_timeline_layer_props_row.py)
 add_test(NAME motion_path_key_to_control
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_key_to_control.py)
 add_test(NAME motion_path_sculpt

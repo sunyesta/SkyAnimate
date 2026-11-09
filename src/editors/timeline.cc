@@ -2878,9 +2878,21 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
       rows.back().media = l->id;
       rows.back().media_part = 1;
     }
-    /* The layer's own channels (not its bones', not its points'; a switch's keys are on its open row). */
-    property_rows(l, KeyFilter{KEY_LAYER | KEY_SIMULATION, false}, depth, false, false,
-                  [](const std::string &path) { return path.rfind("bones[", 0) != 0 && path != "switch"; });
+    /* The layer's own channels (not its bones', not its points'; a switch's keys are on its open row), in a row of
+     * their own, folded by default, so they stand apart from the layers inside it as its Points and Bones do. Shown
+     * only with some listed under it. */
+    {
+      const KeyFilter own{KEY_LAYER | KEY_SIMULATION, false};
+      const size_t at = rows.size();
+      const bool open = add("Layer", {l}, own, depth, "props:" + id, false, false, 0);
+      property_rows(l, own, depth + 1, false, false, [](const std::string &path) { return path.rfind("bones[", 0) != 0; });
+      if (rows.size() == at + 1) {
+        rows.pop_back();
+      }
+      else if (!open) {
+        rows.resize(at + 1);
+      }
+    }
     const KeyFilter points{KEY_POINTS, false};
     if ((show_all && l->has_drawing() && !l->drawing.points.empty()) || keyed({l}, points)) {
       /* Keyed as a whole drawing: all its points, whichever are selected; red while some of them are (as a
@@ -2952,7 +2964,7 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
       if (open && l.is_switch()) {
         ChannelRow &row = rows.back();
         row.layers = {&l};
-        row.filter = now(KeyFilter{KEY_VISIBILITY, false, "switch", false});
+        row.filter = now(KeyFilter{KEY_SWITCH, false, "switch", false});
       }
       return open;
     }

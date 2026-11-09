@@ -36,7 +36,19 @@ def settle():
     doc.frame_current = doc.frame_current - 1
 
 
+def open_layer_rows():
+    """Opens every folded Layer row (a layer's own properties), so its property rows show."""
+    while True:
+        rs = wm.timeline_row_details(True)
+        i = next((i for i, r in enumerate(rs) if r["name"] == "Layer" and not r["open"]), None)
+        if i is None:
+            return
+        assert wm.timeline_row_fold(i, True)
+
+
 def rows(as_shown=True):
+    if as_shown:
+        open_layer_rows()
     return wm.timeline_row_details(as_shown)
 
 

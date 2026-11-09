@@ -137,6 +137,14 @@ PENDING = [
      "with Edit Layer a key picked on a path in a folded group picks the group's stretch", 'key_together_path_pick'),
     ('src/editors/timeline.cc', '      if (open && l.is_switch()) {', '      if (false) {',
      "an open switch's row shows only its own switch keys", 'timeline_switch_row'),
+    ('src/editors/timeline.cc', '''      else if (!open) {
+        rows.resize(at + 1);
+      }''', '',
+     "a layer's properties are under its folded Layer row", 'timeline_layer_props_row'),
+    ('src/anim/animation.cc', '''  if (path == "switch") {
+    return KEY_SWITCH;
+  }''', '',
+     "a switch's keys stay out of its Layer row", 'timeline_layer_props_row'),
 ]
 
 def build(root):

@@ -59,7 +59,7 @@ assert r["open"]
 assert r["frames"] == [0, 3, 9], r["frames"]
 labels = [x["label"] for x in rows()]
 assert "Switch" not in labels, ("the switch's keys are on its own row", labels)
-assert [x["frames"] for x in rows() if x["label"] == "Position"] == [[0, 6, 12]], rows()
+assert [x["frames"] for x in rows() if x["label"] == "Layer"] == [[0, 6, 12]], rows()
 
 # --- Folded: everything inside it ----------------------------------------------------------------------------------------
 assert wm.timeline_row_fold(i, False)

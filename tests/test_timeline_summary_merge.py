@@ -34,8 +34,8 @@ def summary():
 assert top() == [(0, "Summary", True, 0), (0, "Ball 1", False, ball.id)], top()
 assert 10 in summary()["frames"] and summary()["fold"] == "", ("every key, no fold arrow", summary())
 assert wm.timeline_row_details()[1]["frames"] == [], "the layer open: no keys of its own"
-assert any(r["depth"] == 1 and r["name"] == "Position" for r in wm.timeline_row_details()), \
-    "its channels right under it"
+assert any(r["depth"] == 2 and r["name"] == "Position" for r in wm.timeline_row_details()), \
+    "its channels under it, in its Layer row"
 assert not wm.timeline_row_fold(0, False), "the Summary doesn't fold"
 
 # Folded (Key Together on): still two rows, the layer's with its keys.
