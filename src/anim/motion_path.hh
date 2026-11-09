@@ -399,6 +399,7 @@ struct MotionPathOnFrame {
   /* The document as shown, for Own Motion (Document::path_own_motion). */
   std::unique_ptr<Document> held;
   const Document *outer = nullptr;
+  Document *outer_own = nullptr;
   MotionPathOnFrame(Document &doc, int frame);
   ~MotionPathOnFrame();
   MotionPathOnFrame(const MotionPathOnFrame &) = delete;
@@ -476,11 +477,17 @@ struct MotionPathPlaces {
   int threads = 0;
   /* Frames of the paths worked out on copies by motion_paths_make (none when kept ones were reused). */
   uint64_t frames = 0;
+  /* Whole copies of the document made to work places out on or to edit a path on another frame. */
+  uint64_t copies = 0;
+  /* Timing curves fitted to speeds (timing_fits_made). */
+  uint64_t fits = 0;
 };
 MotionPathPlaces motion_path_places();
 void motion_path_places_clear();
-/* Whether Own Motion takes a point's or a layer's own values on each frame from its keys where nothing else moves them,
- * with no copy of the document worked out (on unless a test compares it with working them out). */
+/* Whether motion paths take their shortcuts (on unless a test compares them with working everything out on copies):
+ * Own Motion takes a point's or a layer's own values on each frame from its keys where nothing else moves them, with no
+ * copy of the document worked out; a layer's origin is placed with no copy (layer_world_transform_with); a point is
+ * placed by itself, not with every point of its layer (layer_point_shown). */
 void motion_path_own_from_keys(bool on);
 /* Every control point of `target`'s path (position keys only). With `tips`: only those it says yes to have their
  * handles' tips worked out (each takes two more places on copies of the document); the others' tips are their point. */

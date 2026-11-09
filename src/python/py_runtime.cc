@@ -805,6 +805,8 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     d["places"] = c.places;
     d["threads"] = c.threads;
     d["frames"] = c.frames;
+    d["copies"] = c.copies;
+    d["fits"] = c.fits;
     return d;
   });
   m.def("motion_path_places_clear", []() { motion_path_places_clear(); });

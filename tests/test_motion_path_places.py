@@ -1,7 +1,8 @@
 """What editing a path costs. Where its control points and handles are is found by working whole frames of the document
 out on copies (places): a control point is two places (where it is, and the path on its dot's frame), its handles'
 tips two more. Moving a control point works out where the control points are, not their tips; G on picked control
-points the same; moving one's handle the tips of that one alone. The places are shared out over the CPU's cores.
+points the same; moving one's handle the tips of that one alone. A layer's origin is placed with no copy of the
+document; worked out on copies, the places are shared out over the CPU's cores.
 
 Run with:  OpenAnimate --background --python tests/test_motion_path_places.py
 """
@@ -40,13 +41,25 @@ controls = [c for c in wm.motion_path_controls() if c["end"] == 30]
 n = len(controls)
 assert n == 4, controls
 
-# --- All of them with their tips: four places each, shared out over the cores -----------------------------------
+# --- All of them with their tips: four places each, a layer's origin with no copy of the document ----------------
 wm.motion_path_places_clear()
-wm.motion_path_controls()
+shortcut = wm.motion_path_controls()
 used = wm.motion_path_places()
 assert used["places"] == 4 * n, used
+assert used["copies"] == 0, ("a layer's origin placed with no copy", used)
+
+# --- Worked out on copies: the same, shared out over the cores ---------------------------------------------------
+wm.motion_path_own_from_keys(False)
+wm.motion_path_places_clear()
+worked = wm.motion_path_controls()
+used = wm.motion_path_places()
+wm.motion_path_own_from_keys(True)
+assert used["places"] == 4 * n and used["copies"] > 0, used
 if (os.cpu_count() or 1) >= 4:
     assert used["threads"] >= 2, ("side by side", used)
+for a, b in zip(shortcut, worked):
+    for key in ("at", "curve", "in_tip", "out_tip"):
+        assert all(abs(p - q) < 1e-5 for p, q in zip(a[key], b[key])), (key, a, b)
 
 # --- Moving one: where they are, not their tips (the one moved worked out once more as it goes there) -------------
 c = controls[1]

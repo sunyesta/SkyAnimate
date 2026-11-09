@@ -370,8 +370,9 @@ def motion_path_controls(kept=False):
 def motion_path_places():
     """{"places": how many places of a target its paths' handles and control points were worked out at since
     motion_path_places_clear (each a whole frame of the document, on a copy), "threads": the most threads one batch of
-    them was shared over, "frames": frames of the paths worked out on copies}. For tests of what editing a path
-    costs."""
+    them was shared over, "frames": frames of the paths worked out on copies, "copies": whole copies of the document
+    made to work places out on or to edit a path on another frame, "fits": timing curves fitted to speeds}. For tests of
+    what editing a path costs."""
     return _oanim.motion_path_places()
 
 
@@ -380,8 +381,10 @@ def motion_path_places_clear():
 
 
 def motion_path_own_from_keys(on=True):
-    """Whether Own Motion takes a point's or a layer's own values on each frame from its keys where nothing else moves
-    them, with no copy of the document worked out (on unless a test compares it with working them out)."""
+    """Whether motion paths take their shortcuts (on unless a test compares them with working everything out on
+    copies): Own Motion takes a point's or a layer's own values on each frame from its keys where nothing else moves
+    them, with no copy of the document worked out; a layer's origin is placed with no copy; a point is placed by
+    itself, not with every point of its layer."""
     _oanim.motion_path_own_from_keys(bool(on))
 
 

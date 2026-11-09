@@ -460,6 +460,11 @@ void mask_card_start_from_steps(LayerMask &card)
 
 Transform2D Layer::local_transform() const
 {
+  return layer_local_transform(position, rotation, shear, scale);
+}
+
+Transform2D layer_local_transform(const float2 position, const float rotation, const float2 shear, const float2 scale)
+{
   Transform2D t = Transform2D::translate(position) * Transform2D::rotate(rotation * PI / 180.0f);
   if (shear.x != 0.0f || shear.y != 0.0f) {
     const float sx = std::clamp(shear.x, -89.0f, 89.0f) * PI / 180.0f;

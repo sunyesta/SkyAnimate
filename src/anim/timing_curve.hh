@@ -58,6 +58,8 @@ int timing_decimate(TimingCurve &curve, int n, float ratio);
 /* timing_fit of per-frame speeds (any scale, signed: only how they compare counts). Speeds that add up to nothing go
  * evenly. */
 TimingCurve timing_from_speeds(const std::vector<float> &speeds);
+/* How many speeds timing_from_speeds has fitted a curve to (not kept from the last), for tests. */
+uint64_t timing_fits_made();
 /* A curve as a file or a script may give it: at least two points, all finite, going left to right from (0, 0) to
  * (1, 1). */
 bool timing_valid(const TimingCurve &curve);

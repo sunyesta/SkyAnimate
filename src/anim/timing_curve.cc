@@ -1,6 +1,7 @@
 #include "anim/timing_curve.hh"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -490,8 +491,40 @@ int timing_decimate(TimingCurve &curve, int n, float ratio)
   return gone;
 }
 
+static TimingCurve timing_from_speeds_fit(const std::vector<float> &speeds);
 TimingCurve timing_from_speeds(const std::vector<float> &speeds)
 {
+  /* The last few speeds fitted, kept: a drawing keyed whole, or a folded group, gives every one of its channels the same
+   * speeds in turn (hundreds of them; an edit fits each twice, as it was and as changed), and fitting is the costly
+   * part. */
+  struct Fitted {
+    std::vector<float> speeds;
+    TimingCurve curve;
+  };
+  constexpr size_t KEPT = 4;
+  thread_local std::vector<Fitted> kept;
+  for (const Fitted &f : kept) {
+    if (f.speeds == speeds) {
+      return f.curve;
+    }
+  }
+  if (kept.size() == KEPT) {
+    kept.erase(kept.begin());
+  }
+  kept.push_back({speeds, timing_from_speeds_fit(speeds)});
+  return kept.back().curve;
+}
+
+static std::atomic<uint64_t> g_fits{0};
+
+uint64_t timing_fits_made()
+{
+  return g_fits.load();
+}
+
+static TimingCurve timing_from_speeds_fit(const std::vector<float> &speeds)
+{
+  g_fits++;
   const int n = int(speeds.size());
   float total = 0.0f;
   for (const float s : speeds) {

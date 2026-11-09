@@ -287,16 +287,17 @@ static bool layers_hold(const std::vector<Layer> &list, uint64_t id)
   return false;
 }
 
+/* `own_local`: the layer's own transform instead of its values' (layer_world_transform_with). */
 static bool world_transform_in(const std::vector<Layer> &list, const Transform2D &parent, const Layer *armature,
                                const Transform2D &armature_world, bool setup_frame, uint64_t id,
-                               Transform2D *r_transform, bool bound = false)
+                               Transform2D *r_transform, bool bound = false, const Transform2D *own_local = nullptr)
 {
   for (const Layer &layer : list) {
     /* Only the way down to the layer: the bones' pose is costly to work out. */
     if (layer.id != id && !layers_hold(layer.children, id)) {
       continue;
     }
-    Transform2D transform = parent * layer.local_transform();
+    Transform2D transform = parent * (own_local && layer.id == id ? *own_local : layer.local_transform());
     /* `bound`: a group above already follows a bone, and its bone overrides this layer's. */
     const bool binds = armature && !bound && layer.followed_bone() != 0;
     if (binds) {
@@ -312,7 +313,7 @@ static bool world_transform_in(const std::vector<Layer> &list, const Transform2D
     }
     const bool bones = layer.is_bone_layer();
     if (world_transform_in(layer.children, transform, bones ? &layer : armature, bones ? transform : armature_world,
-                           setup_frame, id, r_transform, !bones && (bound || (binds && layer.is_group()))))
+                           setup_frame, id, r_transform, !bones && (bound || (binds && layer.is_group())), own_local))
     {
       return true;
     }
@@ -321,7 +322,8 @@ static bool world_transform_in(const std::vector<Layer> &list, const Transform2D
 }
 
 /* world_transform_in by the index: down the layer's own groups, as found from it upward. */
-static bool world_transform_indexed(const LayerIndex &index, bool setup_frame, uint64_t id, Transform2D *r_transform)
+static bool world_transform_indexed(const LayerIndex &index, bool setup_frame, uint64_t id, Transform2D *r_transform,
+                                    const Transform2D *own_local = nullptr)
 {
   std::vector<const Layer *> chain;
   for (const Layer *l = index.find(id); l; l = index.parent(l->id)) {
@@ -335,7 +337,7 @@ static bool world_transform_indexed(const LayerIndex &index, bool setup_frame, u
   bool bound = false;
   for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
     const Layer &layer = **it;
-    Transform2D transform = parent * layer.local_transform();
+    Transform2D transform = parent * (own_local && layer.id == id ? *own_local : layer.local_transform());
     const bool binds = armature && !bound && layer.followed_bone() != 0;
     if (binds) {
       const std::vector<BonePose> poses = armature_pose(*armature, setup_frame);
@@ -447,6 +449,17 @@ Transform2D layer_setup_world_transform(const Document &doc, uint64_t id)
     return transform;
   }
   world_transform_in(doc.layers, Transform2D(), nullptr, Transform2D(), true, id, &transform);
+  return transform;
+}
+
+Transform2D layer_world_transform_with(const Document &doc, uint64_t id, const Transform2D &local, bool setup_frame)
+{
+  Transform2D transform;
+  if (const LayerIndex *index = index_for(doc)) {
+    world_transform_indexed(*index, setup_frame, id, &transform, &local);
+    return transform;
+  }
+  world_transform_in(doc.layers, Transform2D(), nullptr, Transform2D(), setup_frame, id, &transform, false, &local);
   return transform;
 }
 

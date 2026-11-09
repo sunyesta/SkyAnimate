@@ -63,6 +63,9 @@ VectorDrawing layer_setup_drawing(const Document &doc, const Layer &layer, bool 
 /* For each of the layer's own points: from where it is stored to where it shows (layer space).
  * Identity everywhere when no bones move it. */
 std::vector<Transform2D> layer_point_skins(const Document &doc, const Layer &layer);
+/* Where the layer's point `i` shows (layer space): its skin (layer_point_skins) applied to where it is stored, without
+ * working out every point's skin: the bones' for it alone, or where the deforms put it. */
+float2 layer_point_shown(const Document &doc, const Layer &layer, size_t i);
 /* What the bones alone make of some of the layer's points (`points`, indices), by each one's own weights: for points
  * just made, without working out the rest. */
 std::vector<Transform2D> layer_point_skins_bones_some(const Document &doc, const Layer &layer,

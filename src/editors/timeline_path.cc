@@ -12,6 +12,7 @@
 
 #include "anim/motion_path.hh"
 #include "anim/timing_curve.hh"
+#include "core/profile.hh"
 #include "data/document.hh"
 #include "data/vector.hh"
 #include "editors/editors.hh"
@@ -324,6 +325,7 @@ bool timeline_path_strip_ticks_editable(const ToolSettings &ts)
 void timeline_path_strip(Context &C, ImVec2 min, ImVec2 max, float keys_x, float view_start, float span,
                          float row_h)
 {
+  OANIM_PROFILE("timeline_path_strip");
   const std::vector<MotionPathTarget> targets = timeline_path_strip_targets(C);
   if (targets.empty() || max.y - min.y < 4.0f) {
     g_tick = {};
@@ -929,6 +931,7 @@ static void point_pick_nearest(Context &C, const MotionPathTarget &t, int frame,
 static void path_timing_graph(Context &C, const MotionPathTarget &t, const MotionPathStretch &s, ImVec2 min,
                               ImVec2 max)
 {
+  OANIM_PROFILE("path_timing_graph");
   Document &doc = *C.document;
   WindowManager &wm = *C.wm;
   ToolSettings &ts = wm.tool_settings;
@@ -1752,6 +1755,7 @@ static void path_timing_body(Area &area, Context &C);
 
 void path_timing_draw(Area &area, Context &C)
 {
+  OANIM_PROFILE("path_timing_draw");
   /* The editor's whole region below its header, for the Adjust Last Operation panel in its bottom-left corner (over
    * whatever is there). */
   const ImVec2 win = ImGui::GetWindowPos();

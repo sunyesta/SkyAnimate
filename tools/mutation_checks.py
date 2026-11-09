@@ -225,6 +225,16 @@ PENDING = [
     ('src/anim/motion_path.cc', '  const Channel<float2> &ch = position ? *position : layer->position_keys;',
      '  const Channel<float2> &ch = layer->position_keys; (void)position;',
      "the handles and control points take their own values from the keys changed", 'motion_path_from_keys'),
+    ('src/anim/deform.cc', 'return layer_point_skins_bones_some(doc, layer, {int(i)})[0].apply(stored);',
+     'return stored;', "a point placed by itself goes where its bones' skin takes it", 'motion_path_edit_fast'),
+    ('src/anim/deform.cc', '        return shown.points[i].pos;', '        return stored;',
+     'a bent point placed by itself goes where the deforms show it', 'motion_path_edit_fast'),
+    ('src/anim/motion_path.cc', 'const bool in_place = !target.bone &&', 'const bool in_place = false && !target.bone &&',
+     'a dot moved is placed on the document held as shown, not another copy', 'motion_path_edit_fast'),
+    ('src/anim/timing_curve.cc', '    if (f.speeds == speeds) {', '    if (false) {',
+     "a drawing keyed whole fits its timing once for all its channels", 'motion_path_edit_fast'),
+    ('src/anim/motion_path.cc', '    if (ch && base) {', '    if (false) {',
+     "handles and control points start from the channel given, not the document's", 'motion_path_edit_fast'),
 ]
 
 def build(root):

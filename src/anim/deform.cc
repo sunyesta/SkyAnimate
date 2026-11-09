@@ -1304,6 +1304,26 @@ static std::vector<Transform2D> layer_point_skins_bones(const Document &doc, con
   return skins;
 }
 
+float2 layer_point_shown(const Document &doc, const Layer &layer, const size_t i)
+{
+  const float2 stored = layer.drawing.points[i].pos;
+  const VectorDrawing &drawing = layer_drawing(doc, layer);
+  if (!matched_original(doc, layer) && i < drawing.points.size()) {
+    if (!(layer.type == LayerType::Vector && layer_is_deformed(doc, layer))) {
+      return layer_point_skins_bones_some(doc, layer, {int(i)})[0].apply(stored);
+    }
+    /* Bent by a deform: its skin takes it on to where the deforms show it (as layer_point_skins' onto_shown). */
+    if (drawing.points[i].pos == stored) {
+      const VectorDrawing shown = stack_points(doc, layer);
+      if (i < shown.points.size()) {
+        return shown.points[i].pos;
+      }
+    }
+  }
+  const std::vector<Transform2D> skins = layer_point_skins(doc, layer);
+  return i < skins.size() ? skins[i].apply(stored) : stored;
+}
+
 std::vector<Transform2D> layer_point_skins_bones_some(const Document &doc, const Layer &layer,
                                                      const std::vector<int> &points)
 {

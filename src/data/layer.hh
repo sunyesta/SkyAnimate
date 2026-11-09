@@ -1348,6 +1348,8 @@ struct Layer {
   static const rna::StructRNA &rna();
 };
 
+/* A layer's transform from these values (Layer::local_transform's). */
+Transform2D layer_local_transform(float2 position, float rotation, float2 shear, float2 scale);
 const char *layer_type_name(LayerType type);
 /* Start With from a card's first step: Add starts from nothing, Subtract from everything. */
 void mask_card_start_from_steps(LayerMask &card);
