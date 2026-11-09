@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -16,7 +17,9 @@
 
 namespace oanim {
 
+struct Bone;
 struct Document;
+struct Layer;
 
 /* The setup pose of some layers, as it was before a move. */
 struct SetupSnapshot {
@@ -37,6 +40,20 @@ struct SetupSnapshot {
 };
 
 SetupSnapshot setup_snapshot(const Document &doc, const std::vector<uint64_t> &layers);
+
+/* Copy Angle and Copy Position (Follow Move) add the target's turn and move from its setup, so when the targets'
+ * setups move (from `was`, by bone id) what they add on every posed frame changes: this is what `bone`'s own posed
+ * angle and position (in its parent's space) take on to show the same poses (keep_poses), or its setup to rest as it
+ * shows. The targets' setups are their setups now (each target's own copying made up for as keep_poses does), or
+ * `now`'s for those in it, before anything is made up for (Apply Pose as Rest, which puts it into their new rests). */
+struct BoneCopyShift {
+  float2 position{0.0f, 0.0f};
+  float angle = 0.0f;
+  bool any() const { return std::fabs(angle) > 1e-9f || length(position) > 1e-9f; }
+};
+BoneCopyShift bone_copy_shift(const Layer &armature, const Bone &bone,
+                              const std::map<uint64_t, SetupSnapshot::BoneSetup> &was,
+                              const std::map<uint64_t, SetupSnapshot::BoneSetup> *now = nullptr, int depth = 0);
 
 /* After the move is recorded (animation_record): every key on another frame of what moved, worked out
  * again against the new setup so it shows the same pose. Returns how many keys changed. */

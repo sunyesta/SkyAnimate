@@ -47,6 +47,43 @@ SetupSnapshot setup_snapshot(const Document &doc, const std::vector<uint64_t> &l
   return snap;
 }
 
+BoneCopyShift bone_copy_shift(const Layer &armature, const Bone &bone,
+                              const std::map<uint64_t, SetupSnapshot::BoneSetup> &was,
+                              const std::map<uint64_t, SetupSnapshot::BoneSetup> *now, int depth)
+{
+  BoneCopyShift shift;
+  if (depth > 8) {
+    return shift;
+  }
+  for (const BoneConstraint &c : bone.constraints) {
+    const float w = std::clamp(c.influence, 0.0f, 1.0f);
+    const Bone *t = c.enabled && w > 0.0f ? bone_find(armature, c.target) : nullptr;
+    const auto it = t && t->id != bone.id ? was.find(t->id) : was.end();
+    if (it == was.end()) {
+      continue;
+    }
+    const bool angle = c.type == BoneConstraintType::CopyAngle;
+    if (!angle && !(c.type == BoneConstraintType::CopyPosition && c.follow_move && !bone_is_controller(*t))) {
+      continue;
+    }
+    /* (As armature_pose adds them: the target's own value less its setup.) Its own values change by its setup's move
+     * less what its own copying took on, which its new setup holds: with its new setup given, nothing to take off. */
+    SetupSnapshot::BoneSetup setup{t->setup_position, t->setup_angle, 0.0f};
+    if (now) {
+      const auto found = now->find(t->id);
+      setup = found != now->end() ? found->second : it->second;
+    }
+    const BoneCopyShift own = now ? BoneCopyShift() : bone_copy_shift(armature, *t, was, nullptr, depth + 1);
+    if (angle) {
+      shift.angle += (setup.angle - it->second.angle - own.angle) * c.factor * w;
+    }
+    else {
+      shift.position += (setup.position - it->second.position - own.position) * (c.factor * w);
+    }
+  }
+  return shift;
+}
+
 /* `f(key value)` for every key on another frame than the setup's, in the mainline and every action
  * but the action bone ones (`action_bone_actions`): an action bone action's keys are added on top of the pose as its
  * bone turns,
@@ -129,7 +166,10 @@ int keep_poses(Document &doc, const SetupSnapshot &before)
         continue;
       }
       const SetupSnapshot::BoneSetup &was = it->second;
-      const bool moved = length(b.setup_position - was.position) > 1e-9f || std::fabs(b.setup_angle - was.angle) > 1e-9f;
+      /* What its Copy constraints add changed with their targets' setups: its own values make up for it. */
+      const BoneCopyShift copied = bone_copy_shift(*layer, b, s.bones);
+      const bool moved = length(b.setup_position - was.position) > 1e-9f ||
+                         std::fabs(b.setup_angle - was.angle) > 1e-9f || copied.any();
       /* An action bone's angle keys in its own action say which turn plays which frame: they keep
        * the turn's meaning as its mainline keys do. */
       std::string own_action_bones;
@@ -140,11 +180,12 @@ int keep_poses(Document &doc, const SetupSnapshot &before)
       }
       if (moved) {
         changed += each_posed_key(b.position_keys, action_bone_actions, [&](float2 &t) {
-          const float2 where = was.position + rotate(t, was.angle);
+          const float2 where = was.position + rotate(t, was.angle) + copied.position;
           t = rotate(where - b.setup_position, -b.setup_angle);
         });
-        changed += each_posed_key(b.angle_keys, action_bone_actions, [&](float &u) { u += was.angle - b.setup_angle; },
-                                  own_action_bones);
+        changed += each_posed_key(
+            b.angle_keys, action_bone_actions, [&](float &u) { u += was.angle - b.setup_angle + copied.angle; },
+            own_action_bones);
       }
       /* Lengthened on the setup frame: its keyed scale along it shrinks to keep its posed length. */
       if (std::fabs(b.length - was.length) > 1e-9f && b.length > 1e-9f) {

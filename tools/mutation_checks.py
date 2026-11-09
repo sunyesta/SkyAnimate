@@ -36,7 +36,20 @@ CMAKE = (r"C:/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/Common7/
 EXE = os.path.join("build", "bin", "RelWithDebInfo", "OpenAnimate.exe")
 
 # (file, old, new, name, test)
-PENDING = []
+PENDING = [
+    ('src/ops/rig_ops.cc', '              if (copied.any()) {', '              if (false) {',
+     'Apply Pose as Rest: a bone a Copy constraint moves rests as it shows', 'apply_rest_copy'),
+    ('src/anim/keep_poses.cc', 'u += was.angle - b.setup_angle + copied.angle; }', 'u += was.angle - b.setup_angle; }',
+     "a Copy Angle bone's keys make up for its target's rest moving", 'apply_rest_copy'),
+    ('src/anim/keep_poses.cc', 'rotate(t, was.angle) + copied.position;', 'rotate(t, was.angle);',
+     "a Copy Position bone's keys make up for its target's rest moving", 'apply_rest_copy'),
+    ('src/ops/rig_ops.cc', 'const float turn = was_angle - b.setup_angle + copied.angle;', 'const float turn = was_angle - b.setup_angle;',
+     "a Copy Angle bone with no keys is held where its target's rest moved", 'apply_rest_copy'),
+    ('src/anim/keep_poses.cc', 'setup.angle - it->second.angle - own.angle', 'setup.angle - it->second.angle',
+     "a bone copying a bone that copies makes up only for the turn its target's keys change by", 'apply_rest_copy'),
+    ('src/ops/rig_ops.cc', 'rotate(was_position + copied.position - b.setup_position', 'rotate(was_position - b.setup_position',
+     "a Copy Position bone with no keys is held where its target's rest moved", 'apply_rest_copy'),
+]
 
 def build(root):
     return subprocess.run([CMAKE, "--build", "--preset", "release"], cwd=root, capture_output=True,

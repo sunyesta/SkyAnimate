@@ -2691,6 +2691,33 @@ void rig_operators_register()
               rest[b.id] = {position, angle};
             }
           }
+          /* A bone Copy Angle or Copy Position (Follow Move) moves rests as it shows: what they add as their targets'
+           * rests move comes into its own rest (bone_copy_shift), its keys staying as they are. */
+          {
+            std::map<uint64_t, SetupSnapshot::BoneSetup> was_setups, new_setups;
+            for (const Bone &b : armature->bones) {
+              was_setups[b.id] = {b.setup_position, b.setup_angle, 0.0f};
+            }
+            for (const auto &[id, r] : rest) {
+              new_setups[id] = {r.first, r.second, 0.0f};
+            }
+            std::map<uint64_t, std::pair<float2, float>> shifted;
+            for (const Bone &b : armature->bones) {
+              if ((only_selected && !b.selected) || bone_is_controller(b) || action_bones.count(b.id)) {
+                continue;
+              }
+              const BoneCopyShift copied = bone_copy_shift(*armature, b, was_setups, &new_setups);
+              if (copied.any()) {
+                const auto it = rest.find(b.id);
+                const std::pair<float2, float> r = it != rest.end() ? it->second :
+                                                                      std::pair{b.setup_position, b.setup_angle};
+                shifted[b.id] = {r.first + copied.position, r.second + copied.angle};
+              }
+            }
+            for (const auto &[id, r] : shifted) {
+              rest[id] = r;
+            }
+          }
           if (left_action_bones > 0) {
             report(ReportType::Info, std::to_string(left_action_bones) + (left_action_bones == 1 ? " action bone keeps" : " action bones keep") +
                                          " its rest, so its actions play from the same turns");
@@ -2831,13 +2858,19 @@ void rig_operators_register()
           keep_poses(doc, before);
           /* A timeline without keys for a bone shows it at rest: where the rest moved, it gets one key
            * (frame 1 on) holding the old rest, so it shows as it did. */
+          std::map<uint64_t, SetupSnapshot::BoneSetup> was_setups;
+          for (const auto &[id, setup] : old_rest) {
+            was_setups[id] = {setup.first, setup.second, 0.0f};
+          }
           for (Bone &b : armature->bones) {
-            if (!moved.count(b.id) || bone_is_controller(b)) {
+            /* (A bone whose Copy constraints' targets moved shows differently too, though it rests where it did.) */
+            const BoneCopyShift copied = bone_copy_shift(*armature, b, was_setups);
+            if ((!moved.count(b.id) && !copied.any()) || bone_is_controller(b)) {
               continue;
             }
             const auto &[was_position, was_angle] = old_rest[b.id];
-            const float turn = was_angle - b.setup_angle;
-            const float2 transform = rotate(was_position - b.setup_position, -b.setup_angle);
+            const float turn = was_angle - b.setup_angle + copied.angle;
+            const float2 transform = rotate(was_position + copied.position - b.setup_position, -b.setup_angle);
             const auto posed = [](const auto &keys) {
               return std::any_of(keys.begin(), keys.end(), [](const auto &k) { return k.frame != 0; });
             };

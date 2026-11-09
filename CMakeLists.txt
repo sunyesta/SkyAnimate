@@ -740,3 +740,5 @@ add_test(NAME handle_zero_setup
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_handle_zero_setup.py)
 add_test(NAME align_twice
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_align_twice.py)
+add_test(NAME apply_rest_copy
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_apply_rest_copy.py)
