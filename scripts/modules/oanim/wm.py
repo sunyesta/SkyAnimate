@@ -379,6 +379,12 @@ def motion_path_places_clear():
     _oanim.motion_path_places_clear()
 
 
+def motion_path_own_from_keys(on=True):
+    """Whether Own Motion takes a point's or a layer's own values on each frame from its keys where nothing else moves
+    them, with no copy of the document worked out (on unless a test compares it with working them out)."""
+    _oanim.motion_path_own_from_keys(bool(on))
+
+
 def profile_enable(on=True):
     """Starts (or stops) timing where the UI's frames go, for profile(). Off when the app starts."""
     _oanim.profile_enable(bool(on))

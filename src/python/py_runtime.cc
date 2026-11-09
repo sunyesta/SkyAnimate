@@ -808,6 +808,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return d;
   });
   m.def("motion_path_places_clear", []() { motion_path_places_clear(); });
+  m.def("motion_path_own_from_keys", [](bool on) { motion_path_own_from_keys(on); });
   /* Layers' drawings bent side by side as a render bends them (layers_evaluated_drawings): for each its points and its
    * curves' handles where they show (the bones' rigid move put back), and how many threads took part. */
   m.def(

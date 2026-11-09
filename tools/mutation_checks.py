@@ -207,6 +207,24 @@ PENDING = [
     ('src/anim/motion_path.cc', 'MotionPathPlacesKept *kept = kind != PLACES_UNKEPT ? t_places_kept : nullptr;',
      'MotionPathPlacesKept *kept = nullptr;',
      'the places handles and control points come from are kept while the document stays the same', 'motion_path_kept'),
+    ('src/anim/motion_path.cc', '    if (d.target.layer == t.layer ||', '    if (false ||',
+     "a driven layer's own values are worked out, not taken from its keys", 'motion_path_from_keys'),
+    ('src/anim/motion_path.cc', '''        if (pool) {
+          own_values_set(copy, t, was);
+        }''', '''        if (false) {
+          own_values_set(copy, t, was);
+        }''', "a kept copy of the document is put back after each path's places", 'motion_path_from_keys'),
+    ('src/anim/motion_path.cc', '''      if (pool) {
+        own_values_set(mine, t, was);
+        mine.frame_current = doc->frame_current;
+      }''', '''      if (false) {
+        own_values_set(mine, t, was);
+        mine.frame_current = doc->frame_current;
+      }''', 'a kept copy of the document is put back after the handles and control points are placed',
+     'motion_path_from_keys'),
+    ('src/anim/motion_path.cc', '  const Channel<float2> &ch = position ? *position : layer->position_keys;',
+     '  const Channel<float2> &ch = layer->position_keys; (void)position;',
+     "the handles and control points take their own values from the keys changed", 'motion_path_from_keys'),
 ]
 
 def build(root):

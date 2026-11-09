@@ -574,6 +574,8 @@ add_test(NAME motion_path_places
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_places.py)
 add_test(NAME motion_path_kept
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_kept.py)
+add_test(NAME motion_path_from_keys
+  COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_motion_path_from_keys.py)
 add_test(NAME overlay_colors
   COMMAND OpenAnimate --background --python ${CMAKE_SOURCE_DIR}/tests/test_overlay_colors.py)
 add_test(NAME point_drag

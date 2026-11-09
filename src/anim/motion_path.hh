@@ -83,9 +83,16 @@ void motion_path_tool_on(bool on);
  * motion_paths_make: where each target really is then, its own values and the space drawn relative to. None of that
  * depends on the frame shown, so a frame change (Own Motion holds the rest as shown, a path drawn relative to
  * something moves with it) only places the paths again. */
+/* Copies of the document as shown, kept between redraws while it stays the same, one for each thread placing at once:
+ * Own Motion puts a point's or a layer's own values on one to see where they take it, then puts back what it changed,
+ * rather than copying the whole document each time. Shared by a MotionPathKept's frames and places. */
+struct MotionPathShownCopies;
 struct MotionPathFrames {
   /* What the document is now, as the caller tells (its changes): frames kept for another are worked out again. */
   uint64_t document = 0;
+  /* The document that is (the one drawn), and copies of it as shown, kept (with MotionPathKept). */
+  const Document *of = nullptr;
+  std::shared_ptr<MotionPathShownCopies> shown_copies;
   /* What they were worked out for. */
   bool made = false;
   uint64_t made_for = 0;
@@ -112,6 +119,8 @@ struct MotionPathFrames {
 struct MotionPathPlacesKept {
   /* What the document is now, as the caller tells: places kept for another are worked out again. */
   uint64_t document = 0;
+  const Document *of = nullptr;
+  std::shared_ptr<MotionPathShownCopies> shown_copies;
   uint64_t made_for = 0;
   struct Entry {
     MotionPathTarget target;
@@ -140,6 +149,7 @@ class MotionPathPlacesScope {
  * (UndoStack::content_change_count, picking keys left out), the keys (edits recorded as the frame changes count no
  * change) and anything else the caller counts (a drag's steps). */
 struct MotionPathKept {
+  MotionPathKept();
   MotionPathFrames frames;
   MotionPathPlacesKept places;
   /* Called before drawing: whatever was kept for another document is worked out again. */
@@ -469,6 +479,9 @@ struct MotionPathPlaces {
 };
 MotionPathPlaces motion_path_places();
 void motion_path_places_clear();
+/* Whether Own Motion takes a point's or a layer's own values on each frame from its keys where nothing else moves them,
+ * with no copy of the document worked out (on unless a test compares it with working them out). */
+void motion_path_own_from_keys(bool on);
 /* Every control point of `target`'s path (position keys only). With `tips`: only those it says yes to have their
  * handles' tips worked out (each takes two more places on copies of the document); the others' tips are their point. */
 std::vector<MotionPathControl> motion_path_controls(
