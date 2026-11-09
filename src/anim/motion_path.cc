@@ -577,16 +577,18 @@ static void own_constraints_off(Document &copy, const MotionPathTarget &t)
 
 static std::atomic<uint64_t> g_places{0};
 static std::atomic<int> g_places_threads{0};
+static std::atomic<uint64_t> g_path_frames{0};
 
 MotionPathPlaces motion_path_places()
 {
-  return {g_places.load(), g_places_threads.load()};
+  return {g_places.load(), g_places_threads.load(), g_path_frames.load()};
 }
 
 void motion_path_places_clear()
 {
   g_places = 0;
   g_places_threads = 0;
+  g_path_frames = 0;
 }
 
 /* How many threads work `count` places out side by side: one a core at most. Each place copies the document and works
@@ -628,7 +630,7 @@ static void places_side_by_side(const Document &doc, size_t count,
 }
 
 std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector<MotionPathTarget> &targets,
-                                          int first, int last)
+                                          int first, int last, MotionPathFrames *kept)
 {
   OANIM_PROFILE("motion_paths_make");
   std::vector<MotionPath> paths;
@@ -650,53 +652,123 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
   /* Drawn relative to something: each frame's place taken into its space then, and back out of it as it is now. */
   const bool relative = doc.path_relative != PathRelative::World;
   const Transform2D back = relative ? relative_space(doc).inverted() : Transform2D();
-  /* Own Motion: a path being edited is worked out on a copy held as the frame shown, only the target's own values
-   * taken from each frame. */
-  std::vector<std::unique_ptr<Document>> held(paths.size());
+  /* Own Motion: a path being edited shows only the target's own values from each frame, everything else held as the
+   * frame shown. */
+  std::vector<bool> own(paths.size(), false);
   for (size_t i = 0; i < paths.size(); i++) {
-    if (motion_path_own_motion(doc, paths[i].target)) {
-      paths[i].own_motion = true;
-      held[i] = std::make_unique<Document>(g_shown ? *g_shown : doc);
-      own_constraints_off(*held[i], paths[i].target);
-    }
+    own[i] = paths[i].own_motion = motion_path_own_motion(doc, paths[i].target);
   }
   /* Edits not yet keyed stay on the frame they were made on: each frame from its keys alone. The frames worked out
-   * side by side in runs, each run on its own copies; then gathered in order (a frame where the target isn't found
-   * keeps where it was the frame before). */
-  struct Place {
-    float2 at{0.0f, 0.0f}, own{0.0f, 0.0f};
-    bool found = false, got = false, own_found = false;
-  };
+   * side by side in runs, each run on its own copy; then gathered in order (a frame where the target isn't found
+   * keeps where it was the frame before). Kept for the caller while the document stays the same. */
+  using Place = MotionPathFrames::Place;
   const size_t frames = size_t(last - first + 1);
-  std::vector<std::vector<Place>> found(frames, std::vector<Place>(paths.size()));
-  std::vector<Transform2D> intos(frames);
-  const size_t runs = dynamics_in(doc) ? 1 : place_lanes(frames);
-  places_side_by_side(doc, runs, [&](size_t run, Document &copy) {
-    copy = doc;
-    std::vector<std::unique_ptr<Document>> own_held(paths.size());
-    for (size_t i = 0; i < paths.size(); i++) {
-      if (held[i]) {
-        own_held[i] = std::make_unique<Document>(*held[i]);
-      }
-    }
-    for (size_t k = frames * run / runs; k < frames * (run + 1) / runs; k++) {
-      const int f = first + int(k);
-      copy.frame_current = f;
-      animation_evaluate(copy, f);
-      ArmaturePoseCacheScope poses;
-      intos[k] = relative ? relative_space(copy) : Transform2D();
-      for (size_t i = 0; i < paths.size(); i++) {
-        Place &q = found[k][i];
-        q.found = target_position(copy, paths[i].target, q.at);
-        OwnValues v;
-        if (paths[i].own_motion && own_values(copy, paths[i].target, v)) {
-          q.got = true;
-          own_values_set(*own_held[i], paths[i].target, v);
-          q.own_found = target_position(*own_held[i], paths[i].target, q.own);
+  MotionPathFrames made;
+  MotionPathFrames &f_kept = kept ? *kept : made;
+  if (!kept || !f_kept.made || f_kept.made_for != f_kept.document || f_kept.targets != targets || f_kept.own != own ||
+      f_kept.first != first || f_kept.last != last || f_kept.relative != doc.path_relative ||
+      f_kept.relative_layer != doc.path_relative_layer || f_kept.relative_bone != doc.path_relative_bone)
+  {
+    f_kept.made = false;
+    f_kept.places.assign(frames, std::vector<Place>(paths.size()));
+    f_kept.intos.assign(frames, Transform2D());
+    const size_t runs = dynamics_in(doc) ? 1 : place_lanes(frames);
+    places_side_by_side(doc, runs, [&](size_t run, Document &copy) {
+      copy = doc;
+      for (size_t k = frames * run / runs; k < frames * (run + 1) / runs; k++) {
+        const int f = first + int(k);
+        copy.frame_current = f;
+        animation_evaluate(copy, f);
+        g_path_frames++;
+        ArmaturePoseCacheScope poses;
+        f_kept.intos[k] = relative ? relative_space(copy) : Transform2D();
+        for (size_t i = 0; i < paths.size(); i++) {
+          Place &q = f_kept.places[k][i];
+          q.found = target_position(copy, paths[i].target, q.at);
+          OwnValues v;
+          if (own[i] && own_values(copy, paths[i].target, v)) {
+            q.got = true;
+            q.own_position = v.position;
+            q.own_scale = v.scale;
+            q.own_angle = v.angle;
+          }
         }
       }
+    });
+    f_kept.made = true;
+    f_kept.made_for = f_kept.document;
+    f_kept.targets = targets;
+    f_kept.own = own;
+    f_kept.first = first;
+    f_kept.last = last;
+    f_kept.relative = doc.path_relative;
+    f_kept.relative_layer = doc.path_relative_layer;
+    f_kept.relative_bone = doc.path_relative_bone;
+  }
+  const std::vector<std::vector<Place>> &found = f_kept.places;
+  const std::vector<Transform2D> &intos = f_kept.intos;
+  /* Own Motion: each frame's own values put on the document as shown (its own constraints off), where they take the
+   * target. A bone is posed with the rest of its bones as they are shown, as path_position_in does, with no copy of
+   * the document; a point or a layer on copies of it, side by side. */
+  const Document &shown = g_shown ? *g_shown : doc;
+  std::vector<std::vector<float2>> own_at(paths.size());
+  std::vector<std::vector<char>> own_found(paths.size());
+  std::vector<size_t> on_copies;
+  for (size_t i = 0; i < paths.size(); i++) {
+    if (!own[i]) {
+      continue;
     }
-  });
+    own_at[i].assign(frames, float2(0.0f, 0.0f));
+    own_found[i].assign(frames, 0);
+    const MotionPathTarget &t = paths[i].target;
+    if (!t.bone) {
+      on_copies.push_back(i);
+      continue;
+    }
+    const Layer *rig = layer_find(shown, t.layer);
+    const int b = rig ? bone_index(*rig, t.bone) : -1;
+    if (b < 0) {
+      continue;
+    }
+    const Transform2D to_doc = layer_world_transform(shown, rig->id);
+    std::vector<Bone> bones = rig->bones;
+    for (BoneConstraint &c : bones[size_t(b)].constraints) {
+      c.enabled = false;
+    }
+    for (size_t k = 0; k < frames; k++) {
+      const Place &q = found[k][i];
+      if (!q.got) {
+        continue;
+      }
+      Bone &bone = bones[size_t(b)];
+      bone.position = q.own_position;
+      bone.scale = q.own_scale;
+      bone.angle = q.own_angle;
+      const std::vector<BonePose> poses = armature_pose_of(*rig, bones, false);
+      own_at[i][k] = to_doc.apply(t.head ? poses[size_t(b)].knob.apply({0, 0}) : poses[size_t(b)].tail);
+      own_found[i][k] = 1;
+    }
+  }
+  if (!on_copies.empty()) {
+    const size_t runs = dynamics_in(doc) ? 1 : place_lanes(frames);
+    places_side_by_side(doc, runs, [&](size_t run, Document &copy) {
+      for (const size_t i : on_copies) {
+        copy = shown;
+        own_constraints_off(copy, paths[i].target);
+        for (size_t k = frames * run / runs; k < frames * (run + 1) / runs; k++) {
+          const Place &q = found[k][i];
+          if (!q.got) {
+            continue;
+          }
+          own_values_set(copy, paths[i].target, {q.own_position, q.own_scale, q.own_angle});
+          ArmaturePoseCacheScope poses;
+          float2 at;
+          own_found[i][k] = target_position(copy, paths[i].target, at) ? 1 : 0;
+          own_at[i][k] = at;
+        }
+      }
+    });
+  }
   /* (Where an Own Motion path really goes: what a frame it isn't found on falls back to.) */
   std::vector<std::vector<float2>> really(paths.size());
   for (size_t k = 0; k < frames; k++) {
@@ -712,7 +784,10 @@ std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector
       }
       if (p.own_motion) {
         /* Everything else held as shown, so drawn relative to anything it stays where it is. */
-        p.points.push_back(!q.got ? at : q.own_found ? q.own : !p.points.empty() ? p.points.back() : at);
+        p.points.push_back(!q.got            ? at
+                           : own_found[i][k] ? own_at[i][k]
+                           : !p.points.empty() ? p.points.back()
+                                               : at);
       }
     }
   }
@@ -1154,20 +1229,159 @@ struct HeldPlace {
   bool ok = false;
 };
 
+/* The places kept while a MotionPathPlacesScope is open on this thread. */
+thread_local MotionPathPlacesKept *t_places_kept = nullptr;
+
+}  // namespace
+
+MotionPathPlacesScope::MotionPathPlacesScope(MotionPathPlacesKept &kept) : was_(t_places_kept)
+{
+  if (kept.made_for != kept.document) {
+    kept.entries.clear();
+    kept.made_for = kept.document;
+  }
+  t_places_kept = &kept;
+}
+
+MotionPathPlacesScope::~MotionPathPlacesScope()
+{
+  t_places_kept = was_;
+}
+
+void MotionPathKept::sync(const Document &doc, const uint64_t content_changes, const uint64_t serial)
+{
+  const uint64_t keys = channel_keys_generation();
+  if (doc_ != &doc || changes_ != content_changes || serial_ != serial || keys_ != keys) {
+    doc_ = &doc;
+    changes_ = content_changes;
+    serial_ = serial;
+    keys_ = keys;
+    frames.document++;
+  }
+  places.document = frames.document;
+}
+
+namespace {
+
+/* Kinds of copy held_places works places out on, to keep them by (0: not kept). */
+enum { PLACES_UNKEPT = 0, PLACES_KEY_VALUE = 1, PLACES_HELD_KEY = 2 };
+
 /* Each of `places` worked out on its own copy of `copy`, given its value by `set` (on the copy's channel), side by side
- * (places_side_by_side). `copy` stays as it is: the document as shown for Own Motion, as path_position has it. */
+ * (places_side_by_side). `copy` stays as it is: the document as shown for Own Motion, as path_position has it. As
+ * path_position_in, in two steps: the frame worked out (its own values with Own Motion, else where `t` is), which a
+ * MotionPathPlacesScope keeps by `kind`, then placed with the rest as shown. */
 static void held_places(const Document &copy, const MotionPathTarget &t, std::vector<HeldPlace> &places,
-                        const std::function<bool(Document &, const HeldPlace &)> &set)
+                        const std::function<bool(Document &, const HeldPlace &)> &set, int kind = PLACES_UNKEPT)
 {
   OANIM_PROFILE("held_places");
   const Document *held = g_shown;
+  using Entry = MotionPathPlacesKept::Entry;
+  MotionPathPlacesKept *kept = kind != PLACES_UNKEPT ? t_places_kept : nullptr;
+  std::vector<Entry> worked(places.size());
+  std::vector<char> known(places.size(), 0);
+  for (size_t i = 0; kept && i < places.size(); i++) {
+    for (const Entry &e : kept->entries) {
+      if (e.kind == kind && e.frame == places[i].frame && e.value == places[i].value && e.target == t) {
+        worked[i] = e;
+        known[i] = 1;
+        break;
+      }
+    }
+  }
   places_side_by_side(copy, places.size(), [&](size_t i, Document &mine) {
     HeldPlace &p = places[i];
-    g_places++;
-    mine = copy;
-    mine.frame_current = p.frame;
-    p.ok = set(mine, p) && path_position_in(mine, held, copy, t, p.frame, p.at);
+    Entry &w = worked[i];
+    if (!known[i]) {
+      g_places++;
+      mine = copy;
+      mine.frame_current = p.frame;
+      w.set = set(mine, p);
+      w.own = motion_path_own_motion(mine, t);
+      if (w.set) {
+        animation_evaluate(mine, p.frame);
+        if (w.own) {
+          OwnValues v;
+          w.got = own_values(mine, t, v);
+          w.own_position = v.position;
+          w.own_scale = v.scale;
+          w.own_angle = v.angle;
+          w.ok = true;
+        }
+        else {
+          w.ok = target_position(mine, t, w.at);
+        }
+      }
+    }
   });
+  /* Then placed: Own Motion's own values put on the document as shown, its own constraints off. A bone posed with the
+   * rest of its bones as shown, with no copy of the document; a point or a layer on a copy of it, one a thread. */
+  const Document &shown = held ? *held : copy;
+  std::vector<size_t> on_copies;
+  for (size_t i = 0; i < places.size(); i++) {
+    HeldPlace &p = places[i];
+    const Entry &w = worked[i];
+    p.ok = false;
+    if (!w.set || !w.ok) {
+      continue;
+    }
+    if (!w.own) {
+      p.at = w.at;
+      p.ok = true;
+      continue;
+    }
+    if (!t.bone) {
+      on_copies.push_back(i);
+      continue;
+    }
+    const Layer *rig = layer_find(shown, t.layer);
+    const int b = rig ? bone_index(*rig, t.bone) : -1;
+    if (b < 0) {
+      continue;
+    }
+    std::vector<Bone> bones = rig->bones;
+    Bone &bone = bones[size_t(b)];
+    if (w.got) {
+      bone.position = w.own_position;
+      bone.scale = w.own_scale;
+      bone.angle = w.own_angle;
+    }
+    for (BoneConstraint &c : bone.constraints) {
+      c.enabled = false;
+    }
+    const std::vector<BonePose> poses = armature_pose_of(*rig, bones, false);
+    const float2 at = t.head ? poses[size_t(b)].knob.apply({0, 0}) : poses[size_t(b)].tail;
+    p.at = layer_world_transform(shown, rig->id).apply(at);
+    p.ok = true;
+  }
+  OwnValues as_shown;
+  if (!on_copies.empty() && own_values(shown, t, as_shown)) {
+    const size_t count = on_copies.size(), runs = place_lanes(count);
+    places_side_by_side(copy, runs, [&](size_t run, Document &mine) {
+      mine = shown;
+      own_constraints_off(mine, t);
+      for (size_t j = count * run / runs; j < count * (run + 1) / runs; j++) {
+        HeldPlace &p = places[on_copies[j]];
+        const Entry &w = worked[on_copies[j]];
+        /* (With nothing held, the copy as given its value, not worked out.) */
+        if (!held) {
+          mine.frame_current = p.frame;
+          set(mine, p);
+        }
+        own_values_set(mine, t, w.got ? OwnValues{w.own_position, w.own_scale, w.own_angle} : as_shown);
+        p.ok = target_position(mine, t, p.at);
+      }
+    });
+  }
+  for (size_t i = 0; kept && i < places.size(); i++) {
+    if (!known[i]) {
+      Entry &e = worked[i];
+      e.target = t;
+      e.kind = kind;
+      e.frame = places[i].frame;
+      e.value = places[i].value;
+      kept->entries.push_back(std::move(e));
+    }
+  }
 }
 
 /* The position keys that carry `t`'s path handles, or null (a bone's tip, a connected bone's head). */
@@ -1219,7 +1433,7 @@ bool key_jacobian(const Document &doc, const MotionPathTarget &t, int frame, flo
       k->value = p.value;
     }
     return k != nullptr;
-  });
+  }, PLACES_KEY_VALUE);
   r_at = places[0].at;
   r_cx = (places[1].at - r_at) / h;
   r_cy = (places[2].at - r_at) / h;
@@ -1715,7 +1929,7 @@ static void held_copy_places(const Document &copy, const MotionPathTarget &t, st
     ch->keys[0].frame = p.frame;
     ch->keys[0].value = p.value;
     return true;
-  });
+  }, PLACES_HELD_KEY);
 }
 
 constexpr float VALUE_STEP = 1e-2f;

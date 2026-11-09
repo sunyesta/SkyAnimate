@@ -49,6 +49,15 @@ class UndoStack {
     changes_++;
     unknown_changes_++;
   }
+  /* A change to nothing but what is selected (keys picked on a motion path) and the frame shown: unsaved, as
+   * mark_changed, but what is worked out from the document (the paths, on copies of it) stays as it was. */
+  void mark_selection_changed()
+  {
+    mark_changed();
+    selection_changes_++;
+  }
+  /* change_count less the changes to nothing but what is selected. */
+  uint64_t content_change_count() const { return changes_ - selection_changes_; }
   /* Grows with changes not made through a push (mark_changed, reset): what changed isn't known. */
   uint64_t unknown_changes() const { return unknown_changes_; }
 
@@ -79,6 +88,7 @@ class UndoStack {
   size_t active_ = 0;
   uint64_t changes_ = 0;
   uint64_t unknown_changes_ = 0;
+  uint64_t selection_changes_ = 0;
 };
 
 }  // namespace oanim

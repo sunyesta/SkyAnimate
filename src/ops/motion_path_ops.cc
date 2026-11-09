@@ -323,7 +323,7 @@ static OpStatus path_stretch_select(Context &C, const MotionPathTarget &target, 
   C.wm->path_timing_target = target;
   C.wm->path_timing_end = stretches.front().end;
   C.wm->path_timing_frame = doc.frame_current;
-  C.undo->mark_changed();
+  C.undo->mark_selection_changed();
   return OpStatus::Finished;
 }
 
@@ -653,7 +653,7 @@ void motion_path_operators_register()
           if (dot || motion_path_key_selected(doc, t, frame)) {
             doc.frame_current = frame;
             animation_sync(doc);
-            C.undo->mark_changed();
+            C.undo->mark_selection_changed();
             return OpStatus::Finished;
           }
         }
@@ -669,7 +669,7 @@ void motion_path_operators_register()
       if (none) {
         /* Nothing picked: the Path Timing panel follows the frame shown again. */
         C.wm->path_timing_end = 0;
-        C.undo->mark_changed();
+        C.undo->mark_selection_changed();
         return OpStatus::Finished;
       }
       if (op_arg_bool(C, "go")) {
@@ -713,7 +713,7 @@ void motion_path_operators_register()
           dots.push_back({t, frame});
         }
       }
-      C.undo->mark_changed();
+      C.undo->mark_selection_changed();
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
@@ -737,7 +737,7 @@ void motion_path_operators_register()
       std::vector<MotionPathHandlePick> &picks = C.wm->path_handle_picks;
       if (op_arg_bool(C, "none")) {
         picks.clear();
-        C.undo->mark_changed();
+        C.undo->mark_selection_changed();
         return OpStatus::Finished;
       }
       std::vector<MotionPathTarget> targets;
@@ -786,7 +786,7 @@ void motion_path_operators_register()
         picks.push_back(pick);
       }
       C.wm->path_timing_target = motion_path_timing_owner(doc, pick.target);
-      C.undo->mark_changed();
+      C.undo->mark_selection_changed();
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));
@@ -851,7 +851,7 @@ void motion_path_operators_register()
       C.wm->path_dots.clear();
       C.wm->path_handle_picks.clear();
       C.wm->path_timing_end = 0;
-      C.undo->mark_changed();
+      C.undo->mark_selection_changed();
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));

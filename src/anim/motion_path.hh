@@ -79,9 +79,79 @@ bool motion_path_own_motion(const Document &doc, const MotionPathTarget &target)
 /* Whether the Motion Path tool is on (the window's): Own Motion is for editing with it; outside it paths are only
  * looked at, the real ones. */
 void motion_path_tool_on(bool on);
-/* The paths of `targets` over frames first..last. */
+/* Each frame of some paths as worked out on a copy of the document, kept by whoever draws them for its next
+ * motion_paths_make: where each target really is then, its own values and the space drawn relative to. None of that
+ * depends on the frame shown, so a frame change (Own Motion holds the rest as shown, a path drawn relative to
+ * something moves with it) only places the paths again. */
+struct MotionPathFrames {
+  /* What the document is now, as the caller tells (its changes): frames kept for another are worked out again. */
+  uint64_t document = 0;
+  /* What they were worked out for. */
+  bool made = false;
+  uint64_t made_for = 0;
+  std::vector<MotionPathTarget> targets;
+  std::vector<bool> own;
+  int first = 0, last = -1;
+  PathRelative relative = PathRelative::World;
+  uint64_t relative_layer = 0, relative_bone = 0;
+  struct Place {
+    float2 at{0.0f, 0.0f};
+    bool found = false;
+    /* Its own values then (Own Motion), as own_values reads them. */
+    bool got = false;
+    float2 own_position{0.0f, 0.0f}, own_scale{1.0f, 1.0f};
+    float own_angle = 0.0f;
+  };
+  /* places[frame - first][target]. */
+  std::vector<std::vector<Place>> places;
+  std::vector<Transform2D> intos;
+};
+/* The places the handles and control points are worked out from (each a frame of the document with one key's value
+ * changed, on a copy), kept by whoever draws them while the document stays the same, as MotionPathFrames: a frame
+ * change only places them again. Used while a MotionPathPlacesScope for them is open on the thread. */
+struct MotionPathPlacesKept {
+  /* What the document is now, as the caller tells: places kept for another are worked out again. */
+  uint64_t document = 0;
+  uint64_t made_for = 0;
+  struct Entry {
+    MotionPathTarget target;
+    /* Which kind of copy (a key's value changed, or the channel held at one key) and the change. */
+    int kind = 0, frame = 0;
+    float2 value;
+    /* What was worked out: whether the change could be made, Own Motion's own values then (`got`), else where the
+     * target is. */
+    bool set = false, own = false, ok = false, got = false;
+    float2 at, own_position, own_scale;
+    float own_angle = 0.0f;
+  };
+  std::vector<Entry> entries;
+};
+class MotionPathPlacesScope {
+ public:
+  explicit MotionPathPlacesScope(MotionPathPlacesKept &kept);
+  ~MotionPathPlacesScope();
+  MotionPathPlacesScope(const MotionPathPlacesScope &) = delete;
+  MotionPathPlacesScope &operator=(const MotionPathPlacesScope &) = delete;
+
+ private:
+  MotionPathPlacesKept *was_;
+};
+/* Both of those, kept by whoever draws the paths, and what tells whether the document is still the same: its changes
+ * (UndoStack::content_change_count, picking keys left out), the keys (edits recorded as the frame changes count no
+ * change) and anything else the caller counts (a drag's steps). */
+struct MotionPathKept {
+  MotionPathFrames frames;
+  MotionPathPlacesKept places;
+  /* Called before drawing: whatever was kept for another document is worked out again. */
+  void sync(const Document &doc, uint64_t content_changes, uint64_t serial = 0);
+
+ private:
+  const Document *doc_ = nullptr;
+  uint64_t changes_ = ~uint64_t(0), serial_ = 0, keys_ = 0;
+};
+/* The paths of `targets` over frames first..last; with `kept`, frames worked out for the same document reused. */
 std::vector<MotionPath> motion_paths_make(const Document &doc, const std::vector<MotionPathTarget> &targets,
-                                          int first, int last);
+                                          int first, int last, MotionPathFrames *kept = nullptr);
 /* A path's colour: its own, or one of a few told apart by the order it comes in. */
 Color motion_path_color(const Document &doc, const MotionPathTarget &target, size_t index);
 /* A label for a target: "arm_L tip", "Face point 12", "Face". */
@@ -394,6 +464,8 @@ struct MotionPathControl {
 struct MotionPathPlaces {
   uint64_t places = 0;
   int threads = 0;
+  /* Frames of the paths worked out on copies by motion_paths_make (none when kept ones were reused). */
+  uint64_t frames = 0;
 };
 MotionPathPlaces motion_path_places();
 void motion_path_places_clear();

@@ -2114,7 +2114,15 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     uint64_t relative_layer = 0, relative_bone = 0;
     std::vector<MotionPath> paths;
   } cache;
-  const uint64_t changes = C.undo ? C.undo->change_count() : 0;
+  /* Picking keys on the paths changes nothing they are worked out from. */
+  const uint64_t content = C.undo ? C.undo->content_change_count() : 0;
+  /* What the paths, handles and control points are worked out from on copies of the document, kept while it stays the
+   * same: a frame change (Own Motion, drawn relative to something) only places them again. (Keys can change with no
+   * change counted: edits recorded as the frame changes.) */
+  static MotionPathKept kept;
+  kept.sync(doc, content, g_path_drag.serial);
+  /* (What the caches below are kept for.) */
+  const uint64_t changes = kept.frames.document;
   /* Drawn relative to something, or showing only its own motion (the rest held as now), a path depends on where that
    * is now too. */
   const bool any_own = std::find(own.begin(), own.end(), true) != own.end();
@@ -2135,7 +2143,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     cache.relative = doc.path_relative;
     cache.relative_layer = doc.path_relative_layer;
     cache.relative_bone = doc.path_relative_bone;
-    cache.paths = motion_paths_make(doc, targets, first, last);
+    cache.paths = motion_paths_make(doc, targets, first, last, &kept.frames);
   }
   const auto u32 = [](const Color &c, float alpha) {
     return ImGui::ColorConvertFloat4ToU32(ImVec4(c.r, c.g, c.b, c.a * alpha));
@@ -2356,6 +2364,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
     handles.frame = doc.frame_current;
     handles.keys = handle_keys;
     handles.shown.clear();
+    const MotionPathPlacesScope places_scope(kept.places);
     for (const auto &[target, f] : handle_keys) {
       PathHandlesShown h;
       h.target = target;
@@ -2455,6 +2464,7 @@ static void draw_motion_paths(Context &C, Area &area, const ViewMapping &view, I
       controls.frame = doc.frame_current;
       controls.tipped = tipped;
       controls.all.clear();
+      const MotionPathPlacesScope places_scope(kept.places);
       for (const MotionPath &p : cache.paths) {
         if (motion_path_has_handles(doc, p.target)) {
           const MotionPathTarget target = p.target;

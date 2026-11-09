@@ -196,6 +196,17 @@ PENDING = [
     ('src/io/oanim_file.cc', '''    key.filler_edited = !key.filler && get_bool(k, "filler_edited", false);
 ''', '''''',
      'a retimed filler is still let go when the row is opened after saving and opening', 'key_together_retimed'),
+    ('src/anim/motion_path.cc', 'if (!kept || !f_kept.made', 'if (true || !kept || !f_kept.made',
+     "a frame change reuses the paths' frames worked out on copies", 'motion_path_kept'),
+    ('src/ops/undo.hh', '''    mark_changed();
+    selection_changes_++;
+''', '''    mark_changed();
+''', 'picking keys on the paths keeps what they are worked out from', 'motion_path_kept'),
+    ('src/anim/motion_path.cc', 'serial_ != serial || keys_ != keys)', 'serial_ != serial)',
+     'keys changed with no change counted work the paths out again', 'motion_path_kept'),
+    ('src/anim/motion_path.cc', 'MotionPathPlacesKept *kept = kind != PLACES_UNKEPT ? t_places_kept : nullptr;',
+     'MotionPathPlacesKept *kept = nullptr;',
+     'the places handles and control points come from are kept while the document stays the same', 'motion_path_kept'),
 ]
 
 def build(root):

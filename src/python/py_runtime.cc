@@ -82,6 +82,9 @@ namespace oanim::python {
 
 /* See python_runs. */
 static uint64_t g_python_runs = 0;
+/* motion_paths and motion_path_controls with kept=True keep what they work out while the document stays the same, as
+ * the viewport does. */
+static MotionPathKept g_hook_kept;
 
 static Context *g_context = nullptr;
 static bool g_initialized = false;
@@ -801,6 +804,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     py::dict d;
     d["places"] = c.places;
     d["threads"] = c.threads;
+    d["frames"] = c.frames;
     return d;
   });
   m.def("motion_path_places_clear", []() { motion_path_places_clear(); });
@@ -841,9 +845,14 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       py::arg("ids"), py::arg("render") = false);
   /* The control points the Motion Path tool draws for the paths shown: where each is and where the path is on its
    * nearest frame, and its handles' tips (document space). */
-  m.def("motion_path_controls", []() {
+  m.def("motion_path_controls", [](bool kept) {
     Context &C = current_context();
     py::list out;
+    std::optional<MotionPathPlacesScope> scope;
+    if (kept) {
+      g_hook_kept.sync(*C.document, C.undo ? C.undo->content_change_count() : 0);
+      scope.emplace(g_hook_kept.places);
+    }
     for (const MotionPathTarget &t : motion_path_targets(C)) {
       for (const MotionPathControl &c : motion_path_controls(*C.document, t)) {
         py::dict d;
@@ -859,7 +868,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       }
     }
     return out;
-  });
+  }, py::arg("kept") = false);
   m.def("profile_enable", [](bool on) { profile_enable(on); });
   /* Closes a "frame" of the profile by hand: a background run has no UI frames. */
   m.def("profile_frame_end", []() { profile_frame_end(); });
@@ -1511,7 +1520,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     out["paths"] = paths;
     return out;
   });
-  m.def("motion_paths", []() {
+  m.def("motion_paths", [](bool kept) {
     Context &C = current_context();
     const Document &doc = *C.document;
     const std::vector<MotionPathTarget> targets = motion_path_targets(C);
@@ -1521,7 +1530,12 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       return out;
     }
     motion_path_tool_sync(C);
-    for (const MotionPath &p : motion_paths_make(doc, targets, first, last)) {
+    std::optional<MotionPathPlacesScope> scope;
+    if (kept) {
+      g_hook_kept.sync(doc, C.undo ? C.undo->content_change_count() : 0);
+      scope.emplace(g_hook_kept.places);
+    }
+    for (const MotionPath &p : motion_paths_make(doc, targets, first, last, kept ? &g_hook_kept.frames : nullptr)) {
       py::dict d;
       d["label"] = motion_path_label(doc, p.target);
       d["layer"] = p.target.layer;
@@ -1590,7 +1604,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       out.append(d);
     }
     return out;
-  });
+  }, py::arg("kept") = false);
   m.def("motion_path_surface_ghost", []() {
     /* As the Motion Path tool's Surface Smooth shows it: each segment of the paths' line whose fit differs from it. */
     Context &C = current_context();
