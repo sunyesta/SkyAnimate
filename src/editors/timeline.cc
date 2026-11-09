@@ -2671,7 +2671,7 @@ struct ChannelRow {
   bool dim = false;
   /* A group's, bone layer's or vector layer's row (its layer, `together`). With Key Together on (`together_on`) it is
    * chained: one movement, one row that never opens. Off, it folds as any row does, keying nothing; open, it is a
-   * heading with no keys of its own (`filter.kinds` 0), what it holds showing them in their rows. */
+   * heading as every open folding row is (`rows_headed`). */
   uint64_t together = 0;
   bool together_on = false;
   /* Keyed as one (a chain where the arrow would be; clicking it turns that off): Key Together's layer row, or Key
@@ -2683,6 +2683,8 @@ struct ChannelRow {
    * keys are drawn hollow. Null while nothing inside is picked (all drawn full). On the Summary and on rows that show
    * more than they hold open: a chained or folded layer row. */
   std::shared_ptr<const std::set<int>> picked_frames;
+  /* A switch layer's row: open, it shows only its own switch keys (which child shows), not what it holds. */
+  Layer *open_switch = nullptr;
   /* Whether an Alt click picks a stretch here: one timing, a chained row or a single channel's. */
   bool stretch_pickable() const
   {
@@ -3025,18 +3027,10 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
     if (allowed) {
       row.together = l.id;
     }
-    if (open && l.is_switch()) {
-      /* A switch open: only its own switch keys (which child shows), as an open group's row has none of what it holds,
-       * those showing in their own rows. Folded, everything inside it. */
-      row.layers = {&l};
-      row.filter = now(KeyFilter{KEY_SWITCH, false, "switch", false});
+    if (l.is_switch()) {
+      row.open_switch = &l;
     }
-    else if (open && allowed) {
-      row.filter.kinds = 0;
-    }
-    else if (!open) {
-      row.picked_frames = picked_frames(under);
-    }
+    row.picked_frames = picked_frames(under);
     return open;
   };
   const auto tree = [&](auto &&self, std::vector<Layer> &list, int depth) -> void {
@@ -3082,6 +3076,27 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
   std::erase_if(g_pick_folded,[&](const std::string &key) {
     return std::none_of(rows.begin(), rows.end(), [&](const ChannelRow &r) { return r.holds_pick && r.fold == key; });
   });
+  return rows;
+}
+
+/* Open, a folding row is a heading with no keys of its own, what it holds showing them in its rows; folded, it shows
+ * them all. A switch's row open keeps its own switch keys (which child shows). The Summary never folds and a chained
+ * row never opens, so both always show theirs. Done once the rows' folds are known. */
+static std::vector<ChannelRow> rows_headed(std::vector<ChannelRow> rows)
+{
+  for (ChannelRow &row : rows) {
+    if (row.fold.empty() || !row.open || row.summary || row.media || row.chain != ChannelRow::Chain::None) {
+      continue;
+    }
+    row.picked_frames = nullptr;
+    if (row.open_switch) {
+      row.layers = {row.open_switch};
+      row.filter = KeyFilter{KEY_SWITCH, false, "switch", false};
+    }
+    else {
+      row.filter.kinds = 0;
+    }
+  }
   return rows;
 }
 
@@ -3202,7 +3217,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
   const std::string &search = doc.timeline_search;
   const bool filtering = doc.timeline_show != TIMELINE_SHOW_ANIMATED || kinds != TIMELINE_KIND_ALL || !search.empty();
   if (!filtering) {
-    return channel_rows_built(area, layers, doc, pinned_layers, open_all, false);
+    return rows_headed(channel_rows_built(area, layers, doc, pinned_layers, open_all, false));
   }
   std::vector<ChannelRow> full =
       channel_rows_built(area, layers, doc, pinned_layers, true, doc.timeline_show == TIMELINE_SHOW_ALL);
@@ -3280,7 +3295,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
     }
     rows.push_back(std::move(row));
   }
-  return rows;
+  return rows_headed(std::move(rows));
 }
 
 std::vector<std::pair<std::string, bool>> timeline_key_menu_top(Context &C, int row, int frame)

@@ -71,6 +71,8 @@ PENDING = [
     ('src/anim/motion_path.cc', '    else if (layer->has_drawing()) {',
      '    else if (layer->has_drawing() && !layer->key_whole_drawing) {',
      "a drawing keyed whole shows its picked points' paths", 'timeline_chain'),
+    ('src/editors/timeline.cc', '    else {\n      row.filter.kinds = 0;\n    }', '    else {\n    }',
+     "an open folder (Bones, a bone, Points) is a heading with no keys of its own", 'timeline_tree'),
 ]
 
 def build(root):

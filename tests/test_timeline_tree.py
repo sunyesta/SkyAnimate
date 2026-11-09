@@ -130,7 +130,11 @@ layers.active = second
 ops.mesh.select_none()
 second.select_points([0])
 pts = row("Points")
-assert pts["fold"] and pts["frames"] == [0, 20], pts
+assert pts["fold"] and pts["open"] and pts["frames"] == [], ("open: a heading, its keys in its rows", pts)
+at = [r["name"] for r in rows(True)].index("Points")
+assert wm.timeline_row_fold(at, False)
+assert row("Points", True)["frames"] == [0, 20], ("folded: every key inside", row("Points", True))
+assert wm.timeline_row_fold(at, True)
 sel = row("Selected Points")
 assert sel["red"] and sel["depth"] == pts["depth"] + 1, sel
 
@@ -155,6 +159,9 @@ assert (d + 1, "Bones") in mine and (d + 2, "arm") in mine and (d + 3, "Angle") 
 assert row("arm")["red"] and not row("leg")["red"], "the picked bone is red"
 assert row("Bones", True)["open"] and row("arm", True)["open"], "a picked bone starts open"
 assert not row("leg", True)["open"]
+assert row("Bones", True)["frames"] == [] and row("arm", True)["frames"] == [], "open folders: headings"
+assert row("leg", True)["frames"] == [0, 5], ("a folded bone: its keys", row("leg", True))
+assert row("Angle", True)["frames"] == [0, 5], "the open bone's keys in its rows"
 doc.timeline_only_selected = True
 
 # The camera, once keyed, comes last.
