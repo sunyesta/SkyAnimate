@@ -56,10 +56,10 @@ assert "art" in names(), "an undo step"
 ops.ed.redo()
 assert names() == []
 
-# Points picked in the layer being edited: it shows, its Drawing red.
+# Points picked in the layer being edited: it shows, red (keying together, chained shut over the pick).
 art.select_points([0])
 assert "art" in names(), names()
-assert any(r[1] == "Drawing" and r[2] for r in wm.timeline_rows()), wm.timeline_rows()
+assert art.key_together and any(r[1] == "art" and r[2] for r in wm.timeline_rows()), wm.timeline_rows()
 ops.mesh.select_none()
 assert names() == [], names()
 

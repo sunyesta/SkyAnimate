@@ -218,6 +218,12 @@ struct TimelineRowInfo {
   /* The frames it shows keys on, and those whose keys are all fillers (drawn grey and hollow). */
   std::vector<int> frames;
   std::vector<int> filler_frames;
+  /* Keyed as one, a chain where the arrow would be: "TOGETHER" (Key Together), "DRAWING" (Key Whole Drawing), "". */
+  std::string chain;
+  /* The frames drawn hollow: where something inside has keys but nothing picked (bones, points) has its own. */
+  std::vector<int> hollow_frames;
+  /* Whether an Alt click picks a stretch on it (a chained row or a single channel's). */
+  bool stretch_pickable = false;
 };
 /* A press on the key at `frame` of row `row` (as timeline_rows_list(as_shown=true) lists them) with the timeline's
  * click and drag (`ctrl`, `shift`: held as it is pressed): dragged to `to_frame` (or by the frames `typed`) when it
@@ -259,6 +265,9 @@ void timeline_row_fold(const std::string &key, bool fold_default, bool holds_pic
 void tool_follow_active_layer(Context &C);
 /* The same for row `row` as timeline_rows_list(as_shown=true) lists them; false when it doesn't fold. */
 bool timeline_row_fold_at(Context &C, int row, bool open);
+/* Clicks row `row`'s chain (as timeline_rows_list(as_shown=true) lists them): its Key Together or Key Whole Drawing
+ * turned off, an undo step. False when it has none. */
+bool timeline_row_chain_at(Context &C, int row);
 /* An Alt click on `frame` of row `row` (as timeline_rows_list(as_shown=true) lists them), Shift held or not:
  * anim.timeline_stretch_pick on its channels. False when it did nothing. */
 bool timeline_row_alt_click(Context &C, int row, int frame, bool shift);

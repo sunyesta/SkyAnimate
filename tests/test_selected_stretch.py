@@ -176,14 +176,14 @@ assert dots() == [(True, 17)] and doc.frame_current == 17, ("the head's dot", do
 assert teal() == {"Transform": (10, 20)}
 assert wm.timeline_row_alt_click(row("Angle"), 14, shift=True)
 assert dots() == [(False, 14), (True, 17)] and doc.frame_current == 14, ("Shift adds the tip's", dots())
-assert wm.timeline_row_alt_click(row("arm"), 22)
-assert dots() == [(False, 22), (True, 22)], ("a bone's row: its tip and head", dots())
+# Only a single channel's row (or a chained one) picks a stretch: a bone's row, a folder, the Summary don't.
+assert not wm.timeline_row_alt_click(row("arm"), 22), "a bone's row: its channels pick, not it"
+assert dots() == [(False, 14), (True, 17)], ("nothing changed", dots())
 summary = next(i for i, r in enumerate(rows()) if r["summary"])
-assert wm.timeline_row_alt_click(summary, 12)
-assert dots() == [(False, 12), (True, 12)], ("the Summary: every path shown", dots())
+assert not wm.timeline_row_alt_click(summary, 12), "the Summary"
 assert not wm.timeline_row_alt_click(row(rig.name), 13), "the rig's row open: a heading, nothing to pick"
-assert wm.timeline_row_alt_click(row("Bones"), 12)
-assert dots() == [(False, 12), (True, 12)], ("a folder: every path inside", dots())
+assert not wm.timeline_row_alt_click(row("Bones"), 12), "a folder"
+assert [r["stretch_pickable"] for r in rows() if r["name"] in ("arm", "Bones", "Transform")] == [False, False, True]
 assert wm.timeline_row_alt_click(row("Transform"), 20)
 assert dots() == [] and selected() == [20] and doc.frame_current == 20, ("on a key: the key", dots(), selected())
 assert len(wm.undo_history()[0]) == steps, "no undo step"

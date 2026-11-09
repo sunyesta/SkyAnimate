@@ -31,7 +31,7 @@ std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std
                                                   bool edit_layer = false);
 /* What the timing chart and Path Timing graph show: the paths' targets, then the drawing (MotionPathTarget::drawing)
  * of each Key Whole Drawing layer among the active, picked and edited ones whose drawing is animated. A Key Whole
- * Drawing layer's points trace no path of their own. */
+ * Drawing layer's picked points trace their paths, but their timing is the drawing's (no row of their own). */
 std::vector<MotionPathTarget> motion_path_timing_targets(const Document &doc, const std::vector<Layer *> &editing,
                                                          bool edit_layer = false);
 /* Whose timing `target`'s stretches are: inside a folded Key Together group (the outermost), the group's (its

@@ -20,6 +20,7 @@ ops.armature.bone_add(name="root", head_x="0", head_y="0", tail_x="0", tail_y="1
 ops.layer.new()
 drawing = layers.active
 drawing.key_whole_drawing = False  # keyed point by point here
+drawing.key_together = False  # open: its Points or Drawing row shows
 assert ops.layer.move_to_group(group=str(rig.id)) == {'FINISHED'}
 drawing = next(x for x in layers.all() if x.id == drawing.id)
 drawing.add_curve([(0, 0), (1, 0), (1, 1)], closed=False)
@@ -65,6 +66,7 @@ def drawing_row():
 
 drawing.key_whole_drawing = True
 assert drawing_row()[2], ("the Drawing row is red with points selected", drawing_row())
+assert next(r for r in oanim.wm.timeline_row_details() if r["name"] == "Drawing")["chain"] == "DRAWING", "chained"
 ops.mesh.select_none()
 assert not drawing_row()[2], ("nothing selected: not red", drawing_row())
 ops.mesh.select_all()

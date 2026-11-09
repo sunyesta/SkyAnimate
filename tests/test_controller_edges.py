@@ -116,7 +116,7 @@ r.doc.frame_current = 15
 r.mainline()
 frames_before = r.rig.key_frames
 knob_before = [r.keys('bones["joy"].position')]
-assert ops.anim.timeline_fold_together(layer=str(r.rig.id), folded="1") == {'FINISHED'}
+assert ops.anim.key_together_set(layer=str(r.rig.id), on="1") == {'FINISHED'}
 r.settle()
 r.doc.frame_current = 5
 r.doc.frame_current = 0

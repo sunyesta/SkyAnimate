@@ -1,7 +1,7 @@
 """The timeline's rows follow the Layers editor: Summary first (every key below it), then Pinned, then each
 shown layer in the Layers editor's order and nesting, folding to its own channels, its Drawing or Points,
-its Bones (a folder per bone) and a Media layer's clips; the camera and Simulation last. A layer's row is folded
-exactly while it keys together (open, a heading without keys); other folds are kept by the project.
+its Bones (a folder per bone) and a Media layer's clips; the camera and Simulation last. Folding is a view kept by the
+project and keys nothing; a layer keying together is a chained row that never opens.
 
 Run with:  OpenAnimate --background --python tests/test_timeline_tree.py
 """
@@ -76,12 +76,20 @@ assert (2, "Layer") in tree and (3, "Position") in tree and (2, "Drawing") in tr
 assert tree.index((1, "second")) < tree.index((2, "Drawing")), "a layer's rows under it"
 assert "top" not in [name for depth, name in tree], "only what's picked"
 assert row("group")["frames"] == [], "open (not keying together): no keys of its own"
-# Folded, it keys together and shows what it holds; opened again, its filler keys go.
-assert wm.timeline_row_fold(1, False) and group.key_together
-assert row("group")["frames"] == [0, 10, 20] and row("group")["label"] == "group", rows()
+# Folded, it shows what it holds and keys nothing: folding is a view.
+assert wm.timeline_row_fold(1, False) and not group.key_together
+assert row("group", True)["frames"] == [0, 10, 20] and row("group", True)["label"] == "group", rows(True)
 assert names(True) == [(0, "Summary"), (0, "group")], "folded: what it holds hidden"
+assert next(r for r in rows() if r["name"] == "Drawing")["frames"] == [0, 20], "no fillers: nothing keyed"
 assert wm.timeline_row_fold(1, True) and not group.key_together
 assert row("group")["frames"] == [] and (2, "Drawing") in names()
+# Keying together: chained, never open, showing what it holds; clicking the chain lets go, and its fillers go.
+group.key_together = True
+assert row("group")["chain"] == "TOGETHER" and not row("group")["open"], row("group")
+assert row("group")["frames"] == [0, 10, 20] and names() == [(0, "Summary"), (0, "group")], names()
+assert not wm.timeline_row_fold(1, True), "a chained row never opens"
+assert wm.timeline_row_chain(1) and not group.key_together
+assert row("group")["chain"] == "" and (2, "Drawing") in names()
 assert next(r for r in rows() if r["name"] == "Drawing")["frames"] == [0, 20], "the fillers went again"
 assert row("group")["layer"] == group.id and row("Drawing")["layer"] == 0
 
@@ -100,23 +108,21 @@ layers.active = second
 tree = names()
 assert (0, "group") in tree and (1, "second") in tree and row("group")["dim"], tree
 
-# Folds: a layer's row is folded exactly while it keys together (Key Together), so these layers start open; the
-# project's kept folds don't reach it. Folding is an undo step.
+# Folds: these layers start open and fold as the project keeps them, keying nothing; keying together chains a row
+# shut whatever its kept fold.
 ops.mesh.select_none()
 layers.active = group
-assert row("group", True)["open"] and row("first", True)["open"], "open while not keying together"
+assert row("group", True)["open"] and row("first", True)["open"], "open to start with"
 assert names(True).count((2, "Layer")) == 2
 wm.set_ui_open("Timeline/" + row("first")["fold"], False)
-assert row("first", True)["open"], "the kept fold doesn't decide it"
-at = [r["name"] for r in rows(True)].index("first")
-assert wm.timeline_row_fold(at, False) and first.key_together
 assert not row("first", True)["open"] and names(True).count((2, "Layer")) == 1, "a folded layer hides its rows"
-assert ops.ed.undo() == {'FINISHED'}
-layers.active = group
-assert not first.key_together and row("first", True)["open"], "undo opens it again"
+assert not first.key_together, "folding keys nothing"
+at = [r["name"] for r in rows(True)].index("first")
+assert wm.timeline_row_fold(at, True) and row("first", True)["open"] and not first.key_together
 first.key_together = True
-assert not row("first", True)["open"], "Key Together set elsewhere folds it"
+assert not row("first", True)["open"] and row("first")["chain"] == "TOGETHER", "Key Together set elsewhere chains it"
 first.key_together = False
+assert row("first", True)["open"], "let go, its kept fold again"
 
 # Points keyed point by point: a Points folder, with the selected points' keys red under it.
 second.key_whole_drawing = False

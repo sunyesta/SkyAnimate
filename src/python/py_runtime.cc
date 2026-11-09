@@ -485,6 +485,7 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
     return timeline_scrollbar_drag(start, end, part, frames);
   });
   m.def("timeline_row_fold", [](int row, bool open) { return timeline_row_fold_at(current_context(), row, open); });
+  m.def("timeline_row_chain", [](int row) { return timeline_row_chain_at(current_context(), row); });
   m.def("timeline_double_click_keys", [](bool double_click, bool alt) { return timeline_double_click_keys(double_click, alt); });
   /* An Alt click (Shift Alt with shift=True) on `frame` of row `row` of timeline_rows(True). */
   m.def("timeline_row_alt_click", [](int row, int frame, bool shift) {
@@ -509,6 +510,9 @@ PYBIND11_EMBEDDED_MODULE(_oanim, m)
       d["teal"] = row.teal.second > row.teal.first ? py::object(py::make_tuple(row.teal.first, row.teal.second)) : py::none();
       d["frames"] = row.frames;
       d["filler_frames"] = row.filler_frames;
+      d["chain"] = row.chain;
+      d["hollow_frames"] = row.hollow_frames;
+      d["stretch_pickable"] = row.stretch_pickable;
       result.append(d);
     }
     return result;

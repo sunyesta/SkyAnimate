@@ -1,8 +1,8 @@
-"""A layer's timeline row folded is its Key Together, one switch: folding a group's, bone layer's or vector layer's row
-turns Key Together on (an undo step), opening it turns it off, and Key Together set elsewhere folds or opens the row.
-Open, the row is a heading with no keys of its own. A vector layer alone keys together too: its move, turn, size,
-opacity and drawing as one movement, filler keys holding the rest, let go again when it is opened, the timing chart
-having one "<layer> together" row.
+"""A group, bone layer or vector layer keying together (Key Together) is a chained timeline row: it never opens,
+showing every key inside it, and clicking its chain turns Key Together off (an undo step). Folding any other row is a
+view and keys nothing. Open, a layer's row is a heading with no keys of its own. A vector layer alone keys together
+too: its move, turn, size, opacity and drawing as one movement, filler keys holding the rest, let go again when the
+chain is clicked, the timing chart having one "<layer> together" row.
 
 Run with:  OpenAnimate --background --python tests/test_key_together_fold.py
 """
@@ -82,13 +82,21 @@ top = rows()[1]
 assert (top["name"], top["label"], top["open"], top["frames"]) == ("Ball", "Ball", True, []), top
 assert row("Position") and row("Drawing"), rows()
 
-# Folded: Key Together on, an undo step; the row shows every key; its rows hidden.
-assert wm.timeline_row_fold(1, False)
-assert ball.key_together
-assert wm.undo_history()[0][-1] == "Key Together", wm.undo_history()[0][-1]
+# Folded: a view, keying nothing; the row shows every key, its rows hidden.
+assert wm.timeline_row_fold(1, False) and not ball.key_together
+top = rows()[1]
+assert not top["open"] and top["frames"] == [0, 10, 20] and top["chain"] == "", top
+assert frames(ball, "position") == [0, 10] and point_frames(ball) == [0, 20], "nothing keyed"
+assert wm.timeline_row_fold(1, True) and rows()[1]["open"]
+
+# Key Together on (an undo step): chained, never open; the row shows every key; its rows hidden.
+assert ops.anim.key_together_set(layer=str(ball.id), on="1") == {'FINISHED'} and ball.key_together
+settle()
 top = rows()[1]
 assert top["label"] == "Ball" and not top["open"] and top["frames"] == [0, 10, 20], top
-assert row("Position") is None and row("Drawing") is None, "folded: its rows hidden"
+assert top["chain"] == "TOGETHER" and top["stretch_pickable"], top
+assert not wm.timeline_row_fold(1, True) and not rows()[1]["open"], "a chained row never opens"
+assert row("Position") is None and row("Drawing") is None, "chained: its rows hidden"
 # Keyed as one: the move held on 20, the drawing held on 10, by filler keys.
 assert frames(ball, "position") == [0, 10, 20] and 20 in fillers(ball, "position"), ball.keyframes("position")
 assert point_frames(ball) == [0, 10, 20], point_frames(ball)
@@ -102,9 +110,10 @@ assert 25 in frames(ball, "position") and 25 in point_frames(ball), (frames(ball
 labels = [t["label"] for t in wm.motion_path_timing()]
 assert labels == ["Ball together"], labels
 
-# Opened: Key Together off, the filler keys never edited go; its own keys stay.
-assert wm.timeline_row_fold(1, True)
+# The chain clicked: Key Together off, an undo step; the filler keys never edited go; its own keys stay.
+assert wm.timeline_row_chain(1)
 assert not ball.key_together
+assert wm.undo_history()[0][-1] == "Key Together", wm.undo_history()[0][-1]
 settle()
 assert frames(ball, "position") == [0, 10], frames(ball, "position")
 assert point_frames(ball) == [0, 20], point_frames(ball)
@@ -112,20 +121,21 @@ assert frames(ball, "opacity") == [0, 20, 25], ("the edit made while folded stay
                                                 frames(ball, "opacity"))
 assert rows()[1]["frames"] == [] and rows()[1]["open"]
 
-# Undo folds it again, its fillers back.
+# Undo chains it again, its fillers back.
 assert ops.ed.undo() == {'FINISHED'}
 assert ball.key_together and not rows()[1]["open"]
 assert 20 in frames(ball, "position"), frames(ball, "position")
 assert ops.ed.redo() == {'FINISHED'}
 assert not ball.key_together and rows()[1]["open"]
 
-# Key Together set in the Layer tab folds the row; cleared, it opens.
+# Key Together set in the Layer tab chains the row; cleared, it opens.
 ball.key_together = True
-assert not rows()[1]["open"]
+assert not rows()[1]["open"] and rows()[1]["chain"] == "TOGETHER"
 ball.key_together = False
-assert rows()[1]["open"]
+assert rows()[1]["open"] and rows()[1]["chain"] == ""
+assert not wm.timeline_row_chain(1), "no chain to click"
 
-# A group: folded with Key Together, open without; a layer inside folded too while the group is open.
+# A group: chained with Key Together, folding freely without; a layer inside chained too while the group is open.
 ops.layer.new()
 other = layers.active
 other.key_together = False  # open: its own rows show
@@ -142,15 +152,17 @@ group.name = "Group"
 settle()
 assert row("Group")["open"] and row("Group")["frames"] == [] and row("Ball")["open"], rows()
 at = next(i for i, r in enumerate(rows()) if r["name"] == "Group")
-assert wm.timeline_row_fold(at, False) and group.key_together
+assert wm.timeline_row_fold(at, False) and not group.key_together
 assert not row("Group")["open"] and row("Ball") is None and row("Group")["frames"] == [0, 5, 10, 20, 25], rows()
-assert wm.timeline_row_fold(at, True) and not group.key_together
-at = next(i for i, r in enumerate(rows()) if r["name"] == "Other")
-assert wm.timeline_row_fold(at, False) and other.key_together and not group.key_together
-assert not row("Other")["open"] and row("Group")["open"]
+assert wm.timeline_row_fold(at, True) and row("Group")["open"]
+assert ops.anim.key_together_set(layer=str(group.id), on="1") == {'FINISHED'} and group.key_together
+assert not row("Group")["open"] and row("Ball") is None and row("Group")["chain"] == "TOGETHER", rows()
+assert wm.timeline_row_chain(at) and not group.key_together and row("Group")["open"]
+other.key_together = True
+assert not row("Other")["open"] and row("Other")["chain"] == "TOGETHER" and row("Group")["open"]
 other.key_together = False
 
-# A pick inside a folded row never opens it: red instead.
+# A pick inside a chained row never opens it: red instead.
 group.key_together = True
 layers.active = ball
 ops.mesh.select_all()
@@ -158,7 +170,7 @@ assert not row("Group")["open"] and row("Group")["red"] and group.key_together, 
 ops.mesh.select_none()
 assert not row("Group")["red"]
 
-# Keyed between poses while folded: the poses either side hold what they showed (their fillers become its own keys),
+# Keyed between poses while keying together: the poses either side hold what they showed (their fillers become its own keys),
 # so the edit changes it only between them; kept when the row is opened.
 group.key_together = False
 settle()
@@ -201,7 +213,7 @@ settle()
 assert frames(hop, "position") == [0, 10, 15, 20, 30], frames(hop, "position")
 assert hop_y() == [0.0, 0.0, 2.0, 0.0, 0.0], ("opened, they stay", hop_y())
 
-# Not every layer: a media or switch layer's row folds as before (the project keeps it).
-assert not ops.anim.timeline_fold_together(layer="999999") == {'FINISHED'}
+# Only a layer that can key together.
+assert not ops.anim.key_together_set(layer="999999") == {'FINISHED'}
 
 print("key together fold: ok")

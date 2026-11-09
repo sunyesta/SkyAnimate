@@ -36,7 +36,7 @@ def worst(p, q):
 
 
 def unfold(d, a):
-    assert ops.anim.timeline_fold_together(layer=str(a.id), folded="0") == {'FINISHED'}
+    assert ops.anim.key_together_set(layer=str(a.id), on="0") == {'FINISHED'}
     d.frame_current = 1
     d.frame_current = 0
 

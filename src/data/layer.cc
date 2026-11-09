@@ -576,8 +576,8 @@ const rna::StructRNA &Layer::rna()
                         "Everything in this layer is keyed as one movement (a group's or bone layer's layers, a "
                         "vector layer's own channels): an edit on a frame keys all of it there (move, turn, size and "
                         "opacity, bones and drawing's points), all sharing their keys' frames and timing, edited "
-                        "together in the timing chart's together row. The same as its timeline row folded. Turned "
-                        "on, everything is keyed where anything is, holding where it is (filler keys); turned off, "
+                        "together in the timing chart's together row and on its timeline row, chained (it never "
+                        "opens; click the chain to turn this off). Turned on, everything is keyed where anything is, holding where it is (filler keys); turned off, "
                         "the filler keys never edited go again",
                         &Layer::key_together),
         def_bool<Layer>("link_same_named", "Link Same-Named Switches",

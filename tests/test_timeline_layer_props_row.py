@@ -77,8 +77,11 @@ props = [r for r in rows()[i + 1:] if r["depth"] == own["depth"] + 1]
 names = [r["label"] for r in props[:2]]
 assert names == ["Position", "Rotation"], labels()
 assert [r["frames"] for r in props[:2]] == [[0, 4], [0, 8]], [r["frames"] for r in props[:2]]
-# Its keys pick and move as a row's: an Alt click without the tool selects the stretch's end key there.
-assert wm.timeline_row_alt_click(i, 5)
+# Its channels' keys pick and move as a row's: an Alt click without the tool selects the stretch's end key there (the
+# Layer row holds several channels: not it).
+assert not wm.timeline_row_alt_click(i, 5)
+rot = next(k for k, r in enumerate(rows()) if k > i and r["label"] == "Rotation")
+assert wm.timeline_row_alt_click(rot, 5)
 assert [k["frame"] for k in group.keyframes("rotation") if k["selected"]] == [8]
 
 # --- Each layer with something of its own keyed has one (Group, Inner); Plain, with nothing, has none ------------------

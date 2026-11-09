@@ -1,6 +1,6 @@
 """The timeline's Summary row is always its own row, never merged into a lone layer's ("Summary / Ball 1" is gone):
 it shows every key, never folds and keys nothing together, the one view of the whole shot's timing. A lone layer gets
-its own row under it, a heading while open (no keys of its own), its keys on it once folded (Key Together).
+its own row under it, a heading while open (no keys of its own), its keys on it once folded or keying together.
 
 Run with:  OpenAnimate --background --python tests/test_timeline_summary_merge.py
 """
@@ -39,12 +39,15 @@ assert any(r["depth"] == 2 and r["name"] == "Position" for r in wm.timeline_row_
     "its channels under it, in its Layer row"
 assert not wm.timeline_row_fold(0, False), "the Summary doesn't fold"
 
-# Folded (Key Together on): still two rows, the layer's with its keys.
-assert wm.timeline_row_fold(1, False)
-assert ball.key_together
+# Folded, or keying together (chained): still two rows, the layer's with its keys.
+assert wm.timeline_row_fold(1, False) and not ball.key_together
+assert top() == [(0, "Summary", True, 0), (0, "Ball 1", False, ball.id)], top()
+assert 10 in wm.timeline_row_details(True)[1]["frames"]
+assert wm.timeline_row_fold(1, True)
+ball.key_together = True
 assert top() == [(0, "Summary", True, 0), (0, "Ball 1", False, ball.id)], top()
 assert 10 in wm.timeline_row_details()[1]["frames"]
-assert wm.timeline_row_fold(1, True) and not ball.key_together
+ball.key_together = False
 
 # A second layer shown: the Summary over both.
 ops.layer.new()

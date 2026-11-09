@@ -89,6 +89,11 @@ still.name = "still"
 assert not still.keyframes("position")
 rows = wm.timeline_row_details()
 at = next((i for i, r in enumerate(rows) if r["layer"] == still.id), None)
+assert at is not None and rows[at]["chain"] == "TOGETHER", ("an unkeyed layer listed with All, chained",
+                                                            [r["name"] for r in rows])
+still.key_together = False  # open: its channels show
+rows = wm.timeline_row_details()
+at = next((i for i, r in enumerate(rows) if r["layer"] == still.id), None)
 assert at is not None, ("an unkeyed layer listed with All", [r["name"] for r in rows])
 under = []
 for r in rows[at + 1:]:

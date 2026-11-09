@@ -144,7 +144,7 @@ for l in layers.all():
     l.selected = l.id in (a.id, b.id)
 assert ops.layer.group() == {'FINISHED'}
 g = layers.active
-assert ops.anim.timeline_fold_together(layer=str(g.id), folded="1") == {'FINISHED'}
+assert ops.anim.key_together_set(layer=str(g.id), on="1") == {'FINISHED'}
 settle(doc)
 assert keys(b, "position", filler=True) == [10] and keys(a, "position", filler=True) == [20]
 for l in layers.all():
@@ -395,7 +395,7 @@ turn(10, "a", 0.4)
 turn(20, "b", 0.5)
 doc.action = ""
 doc.frame_current = 0
-assert ops.anim.timeline_fold_together(layer=str(rig.id), folded="1") == {'FINISHED'}
+assert ops.anim.key_together_set(layer=str(rig.id), on="1") == {'FINISHED'}
 settle(doc)
 
 

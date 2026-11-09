@@ -1478,23 +1478,27 @@ void anim_operators_register()
   }
   {
     OperatorType ot;
-    ot.idname = "anim.timeline_fold_together";
+    ot.idname = "anim.key_together_set";
     ot.name = "Key Together";
-    ot.description = "Fold this layer's timeline row and key all of it as one movement (Key Together), or open it "
-                     "and key its parts apart again; the fold and Key Together are one switch";
+    ot.description = "Key all of this layer as one movement (Key Together), or with drawing=1 its drawing's points "
+                     "(Key Whole Drawing), on=1; on=0 keys the parts apart again (the timeline row's chain clicked). "
+                     "Without on=, switches it. Folding the row is a view only and keys nothing together";
     ot.flag = OPTYPE_REGISTER | OPTYPE_UNDO;
     ot.poll = [](Context &C) { return C.document != nullptr; };
     ot.exec = [](Context &C) {
       Layer *layer = layer_find(*C.document, uint64_t(std::strtoull(op_arg(C, "layer", "0").c_str(), nullptr, 10)));
-      if (!layer || !key_together_allowed(*layer)) {
-        report(ReportType::Warning, "Key Together is for groups, bone layers and vector layers");
+      const bool drawing = op_arg_bool(C, "drawing");
+      if (drawing ? !layer || layer->type != LayerType::Vector : !layer || !key_together_allowed(*layer)) {
+        report(ReportType::Warning, drawing ? "Key Whole Drawing is for vector layers" :
+                                              "Key Together is for groups, bone layers and vector layers");
         return OpStatus::Cancelled;
       }
-      const bool on = op_has_arg(C, "folded") ? op_arg_bool(C, "folded") : !layer->key_together;
-      if (layer->key_together == on) {
+      bool &setting = drawing ? layer->key_whole_drawing : layer->key_together;
+      const bool on = op_has_arg(C, "on") ? op_arg_bool(C, "on") : !setting;
+      if (setting == on) {
         return OpStatus::Cancelled;
       }
-      layer->key_together = on;
+      setting = on;
       return OpStatus::Finished;
     };
     operators().add(std::move(ot));

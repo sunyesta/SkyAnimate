@@ -607,8 +607,9 @@ std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std
         }
       }
     }
-    else if (layer->has_drawing() && !layer->key_whole_drawing) {
-      /* A point with one of its handles picked traces too: the handle is part of it. */
+    else if (layer->has_drawing()) {
+      /* A point with one of its handles picked traces too: the handle is part of it. (Keyed as a whole drawing, each
+       * still traces its own path, timed with the drawing: motion_path_timing_owner.) */
       std::vector<bool> handle_picked(layer->drawing.points.size(), false);
       for (const Curve &c : layer->drawing.curves) {
         for (const CurvePoint &cp : c.points) {
@@ -638,10 +639,24 @@ std::vector<MotionPathTarget> motion_path_targets(const Document &doc, const std
   return out;
 }
 
+/* A point of a drawing keyed as a whole (outside a Key Together group, which owns it first). */
+static bool point_keyed_whole(const Document &doc, const MotionPathTarget &target)
+{
+  const Layer *layer = target.point ? layer_find(doc, target.layer) : nullptr;
+  return layer && layer->key_whole_drawing && layer->has_drawing() && drawing_animated(doc, *layer);
+}
+
 MotionPathTarget motion_path_timing_owner(const Document &doc, const MotionPathTarget &target)
 {
   Document &d = const_cast<Document &>(doc);
   const Layer *group = key_together_group(d, target.layer);
+  if (!group && point_keyed_whole(doc, target)) {
+    /* A point keyed with its whole drawing: the drawing's timing, keyed as one. */
+    MotionPathTarget t;
+    t.layer = target.layer;
+    t.drawing = true;
+    return t;
+  }
   if (!group || (target.drawing && target.layer == group->id) || !drawing_animated(doc, *group)) {
     return target;
   }
@@ -699,10 +714,10 @@ std::vector<MotionPathTarget> motion_path_timing_targets(const Document &doc, co
       out.push_back(t);
     }
   }
-  /* Inside a Key Together group: its timing is the group's row. */
+  /* Inside a Key Together group: its timing is the group's row; a point keyed with its whole drawing, the drawing's. */
   std::erase_if(out, [&](const MotionPathTarget &t) {
     const Layer *group = key_together_group(d, t.layer);
-    return group && !(t.drawing && t.layer == group->id);
+    return (group && !(t.drawing && t.layer == group->id)) || (!group && point_keyed_whole(doc, t));
   });
   /* A whole drawing's layer that doesn't move itself: its own row would only show the drawing's keys again, with no
    * timing of its own. */

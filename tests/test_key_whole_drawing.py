@@ -145,14 +145,15 @@ for f in (0, 10, 15):
     doc.frame_current = f
     assert close([tuple(p) for p in loose.points], before[f]), (f, loose.points, before[f])
 
-# --- Motion Path tool: no path for its points; its timing edited as a whole ----------------------------------------
+# --- Motion Path tool: its picked points show their paths; its timing edited as a whole ----------------------------
 layers.active = line
 for other in layers:
     other.selected = other.id == line.id
 line.select_points([0, 1, 2])
 assert ops.wm.tool_motion_path() == {'FINISHED'}
 labels = [p["label"] for p in oanim.wm.motion_paths()]
-assert not any("point" in l for l in labels), ("no path for its points", labels)
+assert sorted(l for l in labels if "point" in l) == [line.name + " point " + str(i) for i in range(3)], (
+    "a path for each picked point", labels)
 timing = oanim.wm.motion_path_timing()
 drawing_rows = [t for t in timing if t["label"] == line.name + " drawing"]
 assert len(drawing_rows) == 1, [t["label"] for t in timing]

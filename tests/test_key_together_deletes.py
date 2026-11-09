@@ -123,7 +123,7 @@ for l in L.all():
     l.selected = l.name in ("C", "D")
 assert ops.layer.group() == {'FINISHED'}
 g = L.active
-assert ops.anim.timeline_fold_together(layer=str(g.id), folded="1") == {'FINISHED'}
+assert ops.anim.key_together_set(layer=str(g.id), on="1") == {'FINISHED'}
 settle()
 assert frames(named("C"), "position") == [0, 8, 16], frames(named("C"), "position")
 path = os.path.join(tempfile.mkdtemp(), "moved_out.oanim")

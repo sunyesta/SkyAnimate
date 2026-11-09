@@ -86,13 +86,13 @@ def folded_group(*names):
         l.selected = l.name in names
     assert ops.layer.group() == {'FINISHED'}
     g = L.active
-    assert ops.anim.timeline_fold_together(layer=str(g.id), folded="1") == {'FINISHED'}
+    assert ops.anim.key_together_set(layer=str(g.id), on="1") == {'FINISHED'}
     settle()
     return g
 
 
 def open_row(layer):
-    assert ops.anim.timeline_fold_together(layer=str(layer.id), folded="0") == {'FINISHED'}
+    assert ops.anim.key_together_set(layer=str(layer.id), on="0") == {'FINISHED'}
     settle()
 
 

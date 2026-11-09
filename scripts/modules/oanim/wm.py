@@ -746,9 +746,16 @@ def timeline_hidden():
 
 def timeline_row_fold(row, open):
     """Fold (open=False) or open the timeline's row `row` (as timeline_row_details(as_shown=True) lists them) as
-    its arrow does: a row holding the pick (holds_pick) stays folded only while the pick lasts. False when the
-    row doesn't fold."""
+    its arrow does: a row holding the pick (holds_pick) stays folded only while the pick lasts. Folding is a view:
+    it changes no keys. False when the row doesn't fold (a chained row never opens)."""
     return _oanim.timeline_row_fold(int(row), bool(open))
+
+
+def timeline_row_chain(row):
+    """Click the chain of the timeline's row `row` (as timeline_row_details(as_shown=True) lists them): a row keying
+    together (chain "TOGETHER") turns Key Together off, a Drawing row keying the whole drawing ("DRAWING") turns
+    Key Whole Drawing off, as an undo step. False when the row has no chain."""
+    return _oanim.timeline_row_chain(int(row))
 
 
 def timeline_row_details(as_shown=False):
@@ -756,9 +763,12 @@ def timeline_row_details(as_shown=False):
     else 0), fold (a folding row's key: set_ui_open("Timeline/" + fold, open) folds it), open, summary, label (as
     shown: "Summary / <name>" when a lone layer's row is the Summary too),
     holds_pick (a folding row holding the picked points or bones: open while the pick lasts, unless
-    folded since), frames (where it shows keys) and filler_frames (those whose keys are all fillers, drawn grey and hollow),
-    teal ((start, end) of the selected stretch where it is shaded on this row, else None). as_shown=True lists them
-    folded as the project keeps them (else every row open)."""
+    folded since), frames (where it shows keys) and filler_frames (those whose keys are all fillers, drawn small and grey),
+    teal ((start, end) of the selected stretch where it is shaded on this row, else None), chain ("TOGETHER" on a
+    row keying together, "DRAWING" on a Drawing row keying the whole drawing, else ""; a chained row never opens),
+    hollow_frames (frames drawn hollow: other channels have keys there but the picked bones and points don't) and
+    stretch_pickable (Alt click picks a stretch: a chained row or a single channel's). as_shown=True lists them
+    folded as the project keeps them (else every row open but chained ones)."""
     return [dict(r) for r in _oanim.timeline_rows(bool(as_shown))]
 
 

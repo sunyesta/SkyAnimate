@@ -1909,15 +1909,19 @@ static ImU32 col_faded(ImU32 col, float a)
 }
 
 /* How a frame's keys look in a row: a filler (Key Together's, Key Whole Drawing's: kept there to hold the rest,
- * not posed) grey and hollow; a breakdown a small circle; else the key's shape. Outside the playback range,
- * faint. */
-static void key_summary_draw(ImDrawList *dl, ImVec2 c, float r, const KeyFrameSummary &sum, bool in_range)
+ * not posed) small and grey; `hollow` (on a folded or chained row, nothing picked inside it keyed here, only other
+ * channels) hollow; a breakdown a small circle; else the key's shape. Outside the playback range, faint. */
+static void key_summary_draw(ImDrawList *dl, ImVec2 c, float r, const KeyFrameSummary &sum, bool in_range,
+                             bool hollow = false)
 {
   const float a = in_range ? 1.0f : 0.4f;
   const bool selected = sum.selected > 0;
   if (sum.keys > 0 && sum.fillers == sum.keys) {
-    key_draw(dl, c, r, sum.shape, col_faded(selected ? COL_KEY_SELECTED : IM_COL32(0x90, 0x90, 0x90, 255), a),
+    key_draw(dl, c, r * 0.6f, sum.shape, col_faded(selected ? COL_KEY_SELECTED : IM_COL32(0x90, 0x90, 0x90, 255), a),
              col_faded(IM_COL32(0, 0, 0, 200), a));
+  }
+  else if (hollow) {
+    key_draw(dl, c, r, sum.shape, col_faded(selected ? COL_KEY_SELECTED : COL_KEY, a), col_faded(IM_COL32(0, 0, 0, 200), a));
     key_draw(dl, c, r * 0.5f, sum.shape, col_faded(IM_COL32(0x2b, 0x2b, 0x2b, 255), a), IM_COL32(0, 0, 0, 0));
   }
   else if (sum.breakdowns == sum.keys && in_range) {
@@ -2665,11 +2669,33 @@ struct ChannelRow {
   bool summary = false;
   /* A group not shown itself, holding shown layers: listed (dimmed) to show where they are. */
   bool dim = false;
-  /* A group's, bone layer's or vector layer's row: folded is its Key Together (`together_on`), one switch. Open, it is
-   * a heading with no keys of its own (`filter.kinds` 0), what it holds showing them in their rows. */
+  /* A group's, bone layer's or vector layer's row (its layer, `together`). With Key Together on (`together_on`) it is
+   * chained: one movement, one row that never opens. Off, it folds as any row does, keying nothing; open, it is a
+   * heading with no keys of its own (`filter.kinds` 0), what it holds showing them in their rows. */
   uint64_t together = 0;
   bool together_on = false;
+  /* Keyed as one (a chain where the arrow would be; clicking it turns that off): Key Together's layer row, or Key
+   * Whole Drawing's Drawing row (its layer, `chain_layer`). Never opens; Alt picks its one stretch. */
+  enum class Chain : uint8_t { None, Together, WholeDrawing };
+  Chain chain = Chain::None;
+  uint64_t chain_layer = 0;
+  /* Frames where the picked bones and points inside this row have keys of their own (not fillers): the rest of its
+   * keys are drawn hollow. Null while nothing inside is picked (all drawn full). On the Summary and on rows that show
+   * more than they hold open: a chained or folded layer row. */
+  std::shared_ptr<const std::set<int>> picked_frames;
+  /* Whether an Alt click picks a stretch here: one timing, a chained row or a single channel's. */
+  bool stretch_pickable() const
+  {
+    return chain != Chain::None ||
+           (!summary && !media && filter.kinds != 0 && !filter.path.empty() && filter.path.back() != '.');
+  }
 };
+
+/* Whether row `row`'s keys on `frame` are drawn hollow: something picked inside it, but not keyed (of its own) here. */
+static bool key_hollow(const ChannelRow &row, int frame)
+{
+  return row.picked_frames && !row.picked_frames->contains(frame);
+}
 
 /* The rows the selected stretch is shaded on: each holding a channel of `channels` (those moving the picked dots)
  * with no row under it shown that holds one too, so the most specific row shown (the channel's own, else the row it
@@ -2766,6 +2792,27 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
   const auto keyed = [&](const std::vector<Layer *> &ls, const KeyFilter &f) {
     return !layers_key_summary(ls, now(f)).empty();
   };
+  /* The frames the picked bones and points in `ls` have keys of their own on (fillers left out: with Key Whole Drawing
+   * nearly every point has one on every keyed frame); null with nothing picked in them. */
+  const auto picked_frames = [&](const std::vector<Layer *> &ls) -> std::shared_ptr<const std::set<int>> {
+    const bool any = std::any_of(ls.begin(), ls.end(), [&](const Layer *l) {
+      return (edited->contains(l->id) &&
+              std::any_of(l->drawing.points.begin(), l->drawing.points.end(),
+                          [](const MeshPoint &p) { return p.selected; })) ||
+             std::any_of(l->bones.begin(), l->bones.end(),
+                         [](const Bone &b) { return b.selected || b.select_head || b.select_tail; });
+    });
+    if (!any) {
+      return nullptr;
+    }
+    auto out = std::make_shared<std::set<int>>();
+    for (const auto &[frame, s] : layers_key_summary(ls, now(KeyFilter{KEY_BONES | KEY_POINTS, true}))) {
+      if (s.keys > s.fillers) {
+        out->insert(frame);
+      }
+    }
+    return out;
+  };
   const auto add = [&](std::string name, std::vector<Layer *> ls, KeyFilter f, int depth, std::string fold,
                        bool fold_default, bool red, uint64_t layer, bool pick = false) -> bool {
     ChannelRow row;
@@ -2845,6 +2892,7 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
   if (keyed(all, layer_keys) || !pinned.empty() || (show_all && !layers.empty())) {
     add("Summary", all, layer_keys, 0, "", false, false, 0);
     rows.back().summary = true;
+    rows.back().picked_frames = picked_frames(all);
   }
 
   if (!pinned.empty()) {
@@ -2900,6 +2948,9 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
       const KeyFilter sel{KEY_POINTS, true};
       if (l->key_whole_drawing) {
         add("Drawing", {l}, points, depth, "", false, keyed({l}, sel), 0);
+        rows.back().chain = ChannelRow::Chain::WholeDrawing;
+        rows.back().chain_layer = l->id;
+        rows.back().picked_frames = picked_frames({l});
       }
       else {
         if (add("Points", {l}, points, depth, "pts:" + id, true, false, 0, keyed({l}, sel)) && keyed({l}, sel)) {
@@ -2952,31 +3003,41 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
     return picks_in(l) || std::any_of(l.children.begin(), l.children.end(),
                                       [&](const Layer &child) { return self(self, child); });
   };
-  /* A layer's row. One that can Key Together is folded exactly while it does, never opened by a pick (opening it would
-   * turn it off): red instead while folded over one. */
+  /* A layer's row. One keyed together is chained: it never opens (not for a pick either: red instead while it holds
+   * one). The rest fold as the project keeps them, a pick opening them while it lasts. */
   const auto layer_row = [&](Layer &l, const std::vector<Layer *> &under, int depth, bool fold_default, bool red,
                              bool pick) -> bool {
     const std::string fold = "layer:" + std::to_string(l.id);
-    if (!key_together_allowed(l)) {
-      const bool open = add(l.name, under, layer_keys, depth, fold, fold_default, red, l.id, pick);
+    const bool allowed = key_together_allowed(l);
+    if (allowed && l.key_together) {
+      add(l.name, under, layer_keys, depth, "", false, red || pick, l.id, false);
+      ChannelRow &row = rows.back();
+      row.together = l.id;
+      row.together_on = true;
+      row.chain = ChannelRow::Chain::Together;
+      row.chain_layer = l.id;
+      row.picked_frames = picked_frames(under);
+      return false;
+    }
+    /* (Key Together off: open unless folded, as a group's or bone layer's row was.) */
+    const bool open = add(l.name, under, layer_keys, depth, fold, allowed || fold_default, red, l.id, pick);
+    ChannelRow &row = rows.back();
+    if (allowed) {
+      row.together = l.id;
+    }
+    if (open && l.is_switch()) {
       /* A switch open: only its own switch keys (which child shows), as an open group's row has none of what it holds,
        * those showing in their own rows. Folded, everything inside it. */
-      if (open && l.is_switch()) {
-        ChannelRow &row = rows.back();
-        row.layers = {&l};
-        row.filter = now(KeyFilter{KEY_SWITCH, false, "switch", false});
-      }
-      return open;
+      row.layers = {&l};
+      row.filter = now(KeyFilter{KEY_SWITCH, false, "switch", false});
     }
-    add(l.name, under, layer_keys, depth, fold, fold_default, red || (l.key_together && pick), l.id, false);
-    ChannelRow &row = rows.back();
-    row.together = l.id;
-    row.together_on = l.key_together;
-    row.open = open_all || !l.key_together;
-    if (!l.key_together) {
+    else if (open && allowed) {
       row.filter.kinds = 0;
     }
-    return row.open;
+    else if (!open) {
+      row.picked_frames = picked_frames(under);
+    }
+    return open;
   };
   const auto tree = [&](auto &&self, std::vector<Layer> &list, int depth) -> void {
     for (Layer &l : list) {
@@ -3024,11 +3085,17 @@ static std::vector<ChannelRow> channel_rows_built(const Area &area, const std::v
   return rows;
 }
 
-/* Folds a layer's row (Key Together on) or opens it (off): an undo step, as it changes keys. */
-static void row_fold_together(Context &C, const ChannelRow &row, bool folded)
+/* A chained row's chain clicked: its Key Together or Key Whole Drawing turned off (an undo step, as it changes keys),
+ * the arrow back in its place. */
+static bool row_chain_release(Context &C, const ChannelRow &row)
 {
-  operator_call(C, "anim.timeline_fold_together",
-                {{"layer", std::to_string(row.together)}, {"folded", folded ? "1" : "0"}});
+  if (row.chain == ChannelRow::Chain::None) {
+    return false;
+  }
+  return operator_call(C, "anim.key_together_set",
+                       {{"layer", std::to_string(row.chain_layer)},
+                        {"drawing", row.chain == ChannelRow::Chain::WholeDrawing ? "1" : "0"},
+                        {"on", "0"}}) == OpStatus::Finished;
 }
 
 /* Whether `name` has the letters of `search` in order, whatever their case (Blender's fuzzy match). */
@@ -3108,6 +3175,18 @@ static bool row_channel_changes(const ChannelRow &row)
   return true;
 }
 
+/* Whether a chained row (which never opens) holds a layer or bone named with the search's letters: kept, found. */
+static bool chain_holds_match(const ChannelRow &row, const std::string &search)
+{
+  if (row.chain == ChannelRow::Chain::None) {
+    return false;
+  }
+  return std::any_of(row.layers.begin(), row.layers.end(), [&](const Layer *l) {
+    return fuzzy_match(l->name, search) ||
+           std::any_of(l->bones.begin(), l->bones.end(), [&](const Bone &b) { return fuzzy_match(b.name, search); });
+  });
+}
+
 /* The timeline's rows with its filters: built whole (every folder open), each channel's row kept when it is of a
  * kind shown, changes (for Changed) and its name, or a folder's above it, has the search's letters; a folder is
  * kept with anything inside it; then folded as the project keeps them (not while searching, so what's found
@@ -3154,6 +3233,14 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
     else if (row.media && row.media_part == 1) {
       keep[i] = i > 0 && keep[i - 1];
     }
+    else if (row.chain != ChannelRow::Chain::None) {
+      /* A chained row never opens, so it stands for all it holds: kept by the search when it or a layer or bone in
+       * it has the letters. */
+      keep[i] = kinds != 0 &&
+                (search.empty() || found_above[i] || fuzzy_match(row.name, search) || chain_holds_match(row, search));
+      keep[i] = keep[i] || inside;
+      hidden += keep[i] ? 0 : 1;
+    }
     else if (kind != 0) {
       const std::string &name = row.media ? std::string("Clips") : row.name;
       keep[i] = (kinds & kind) && (doc.timeline_show != TIMELINE_SHOW_CHANGED || row_channel_changes(row)) &&
@@ -3186,8 +3273,7 @@ static std::vector<ChannelRow> channel_rows(const Area &area, const std::vector<
     }
     folded_at = -1;
     if (!row.fold.empty()) {
-      row.open = open_all || !search.empty() ||
-                 (row.together ? !row.together_on : row_open(area, row.fold, row.fold_default, row.holds_pick));
+      row.open = open_all || !search.empty() || row_open(area, row.fold, row.fold_default, row.holds_pick);
       if (!row.open) {
         folded_at = row.depth;
       }
@@ -3274,12 +3360,17 @@ bool timeline_row_fold_at(Context &C, int row, bool open)
   if (row < 0 || row >= int(rows.size()) || rows[row].fold.empty()) {
     return false;
   }
-  if (rows[row].together) {
-    row_fold_together(C, rows[row], !open);
-    return true;
-  }
   timeline_row_fold(rows[row].fold, rows[row].fold_default, rows[row].holds_pick, open);
   return true;
+}
+
+bool timeline_row_chain_at(Context &C, int row)
+{
+  Area area;
+  ui_bind_project(C.document, C.undo);
+  const std::vector<ChannelRow> rows =
+      channel_rows(area, timeline_shown_layers(C), *C.document, timeline_pinned_layer_ids(C));
+  return row >= 0 && row < int(rows.size()) && row_chain_release(C, rows[size_t(row)]);
 }
 
 std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown)
@@ -3305,11 +3396,18 @@ std::vector<TimelineRowInfo> timeline_rows_list(Context &C, bool as_shown)
     info.label = row.name;
     info.dim = row.dim;
     info.holds_pick = row.holds_pick;
+    info.chain = row.chain == ChannelRow::Chain::Together     ? "TOGETHER" :
+                 row.chain == ChannelRow::Chain::WholeDrawing ? "DRAWING" :
+                                                                "";
+    info.stretch_pickable = row.stretch_pickable();
     if (row.filter.kinds != 0) {
       for (const auto &[frame, summary] : layers_key_summary(row.layers, row.filter)) {
         info.frames.push_back(frame);
         if (summary.keys > 0 && summary.fillers == summary.keys) {
           info.filler_frames.push_back(frame);
+        }
+        else if (key_hollow(row, frame)) {
+          info.hollow_frames.push_back(frame);
         }
       }
     }
@@ -3353,7 +3451,7 @@ bool timeline_row_alt_click(Context &C, int row, int frame, bool shift)
   ui_bind_project(C.document, C.undo);
   const std::vector<ChannelRow> rows =
       channel_rows(area, timeline_shown_layers(C), *C.document, timeline_pinned_layer_ids(C));
-  if (row < 0 || row >= int(rows.size()) || rows[size_t(row)].media || rows[size_t(row)].filter.kinds == 0) {
+  if (row < 0 || row >= int(rows.size()) || !rows[size_t(row)].stretch_pickable()) {
     return false;
   }
   return operator_call(C, "anim.timeline_stretch_pick",
@@ -3734,8 +3832,8 @@ static void timeline_body(Area &area, Context &C)
           operator_call(C, "anim.channel_pin",
                         {{"layer", std::to_string(row.pin_layer)}, {"paths", row.pin_path}, {"pinned", "0"}});
         }
-        else if (row.together && on_arrow) {
-          row_fold_together(C, row, !row.together_on);
+        else if (row.chain != ChannelRow::Chain::None && on_arrow) {
+          row_chain_release(C, row);
         }
         else if (!row.fold.empty() && (on_arrow || !row.layer)) {
           timeline_row_fold(row.fold, row.fold_default, row.holds_pick, !row.open);
@@ -3774,7 +3872,7 @@ static void timeline_body(Area &area, Context &C)
       if (g_press.active && !g_press.scrub && io.KeyAlt && !io.KeyCtrl) {
         int on_row = -1;
         const int on_key = key_under(io.MousePos, &on_row);
-        if (on_row >= 0 && !rows[size_t(on_row)].media && rows[size_t(on_row)].filter.kinds != 0) {
+        if (on_row >= 0 && rows[size_t(on_row)].stretch_pickable()) {
           const ChannelRow &row = rows[size_t(on_row)];
           operator_call(C, "anim.timeline_stretch_pick", timeline_stretch_pick_args(
               row.layers, row.filter, on_key >= 0 ? on_key : std::max(0, int(std::lround(x_frame(io.MousePos.x)))),
@@ -4299,7 +4397,7 @@ static void timeline_body(Area &area, Context &C)
       if (kx < k0.x - kr || kx > p1.x + kr) {
         continue;
       }
-      key_summary_draw(dl, ImVec2(kx, ky), kr, sum, f >= doc.frame_start && f <= doc.frame_end);
+      key_summary_draw(dl, ImVec2(kx, ky), kr, sum, f >= doc.frame_start && f <= doc.frame_end, key_hollow(rows[r], f));
     }
     /* Moving keys: how many frames to the keys either side of the selected ones (animBot's). */
     if (g_key_transform.active && g_key_transform.kind != 'D') {
@@ -4362,7 +4460,19 @@ static void timeline_body(Area &area, Context &C)
                       : is_active      ? IM_COL32(0xff, 0xff, 0xff, 255)
                                        : IM_COL32(0xc8, 0xc8, 0xc8, 255);
     float x = p0.x + 6.0f + float(row.depth) * font_size;
-    if (!row.fold.empty()) {
+    if (row.chain != ChannelRow::Chain::None) {
+      /* Keyed as one: a chain where the arrow would be (it never opens); clicking it turns that off. */
+      const ImVec2 c(x + font_size * 0.4f, ky);
+      chain_draw(dl, c, font_size * 0.3f, col);
+      if (io.MousePos.x >= x && io.MousePos.x < x + font_size && io.MousePos.y >= top && io.MousePos.y < top + row_h) {
+        ImGui::SetTooltip(row.chain == ChannelRow::Chain::Together ?
+                              "Key Together: everything in it is keyed as one movement, one row with one timing (Alt "
+                              "click picks its stretch). Click to turn it off and key its parts apart" :
+                              "Key Whole Drawing: every point is keyed as one, one row with one timing (Alt click "
+                              "picks its stretch). Click to turn it off and key the points apart");
+      }
+    }
+    else if (!row.fold.empty()) {
       /* The fold arrow: pointing down when open, right when folded. */
       const float s = font_size * 0.28f;
       const ImVec2 c(x + font_size * 0.4f, ky);

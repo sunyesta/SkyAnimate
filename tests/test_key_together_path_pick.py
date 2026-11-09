@@ -47,7 +47,7 @@ def scene(fold=True, nest=False):
         g = layers.active
         g.name = "Outer"
     if fold:
-        assert ops.anim.timeline_fold_together(layer=str(g.id), folded="1") == {'FINISHED'}
+        assert ops.anim.key_together_set(layer=str(g.id), on="1") == {'FINISHED'}
     doc.frame_current = 1
     doc.frame_current = 0
     for l in layers.all():
