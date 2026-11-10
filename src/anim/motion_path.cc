@@ -3028,6 +3028,22 @@ bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame,
   }
   size_t i = 0;
   int start = 0, n = 0;
+  /* Timed as one with others (a point keyed with its whole drawing, a path in a folded Key Together group): the dot
+   * says how far along it is wanted, and the owner's timing is slid there, so every path it times follows. */
+  const bool shared = !motion_path_timing_owner(doc, target).same(target);
+  const auto slide_shared = [&](float progress) {
+    bool slid = false;
+    with_timing_channels(doc, target, [&](auto &c) {
+      size_t ci = 0;
+      int cs = 0, cn = 0;
+      if (stretch_of(c, frame, ci, cs, cn)) {
+        const std::vector<float> s = stretch_make_custom(c, ci, cs, cn);
+        key_speeds_set(c.keys, ci, slid_speeds(s, frame - cs, progress, slide));
+        slid = true;
+      }
+    });
+    return slid;
+  };
   if (tip_turns(doc, target)) {
     /* A tip: its bone's angle, the stretch's progress how far the angle has turned between its keys. */
     const int b = bone_index(*layer, target.bone);
@@ -3052,11 +3068,18 @@ bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame,
       return false;
     }
     const float progress = (want - a) / (z - a);
-    if (!stretch_of(ch, frame, i, start, n)) {
-      return false;
+    if (shared) {
+      if (!slide_shared(progress)) {
+        return false;
+      }
     }
-    const std::vector<float> s = stretch_make_custom(ch, i, start, n);
-    key_speeds_set(ch.keys, i, slid_speeds(s, frame - start, progress, slide));
+    else {
+      if (!stretch_of(ch, frame, i, start, n)) {
+        return false;
+      }
+      const std::vector<float> s = stretch_make_custom(ch, i, start, n);
+      key_speeds_set(ch.keys, i, slid_speeds(s, frame - start, progress, slide));
+    }
   }
   else {
     Channel<float2> *ch = handle_channel(doc, target);
@@ -3085,11 +3108,18 @@ bool motion_path_slide(Document &doc, const MotionPathTarget &target, int frame,
     const float was = now[size_t(std::clamp(frame - start, 0, n))];
     const float progress = nearest_progress(ch->keys, i, v, std::clamp(std::min(0.0f, was - 0.5f), -1.0f, 0.0f),
                                             std::clamp(std::max(1.0f, was + 0.5f), 1.0f, 2.0f));
-    if (!stretch_of(*ch, frame, i, start, n)) {
-      return false;
+    if (shared) {
+      if (!slide_shared(progress)) {
+        return false;
+      }
     }
-    const std::vector<float> s = stretch_make_custom(*ch, i, start, n);
-    key_speeds_set(ch->keys, i, slid_speeds(s, frame - start, progress, slide));
+    else {
+      if (!stretch_of(*ch, frame, i, start, n)) {
+        return false;
+      }
+      const std::vector<float> s = stretch_make_custom(*ch, i, start, n);
+      key_speeds_set(ch->keys, i, slid_speeds(s, frame - start, progress, slide));
+    }
   }
   animation_evaluate(doc, doc.frame_current);
   return true;

@@ -86,6 +86,8 @@ PENDING = [
      '  if (false) {', "Timing Only refuses a point timed as its drawing", 'motion_path_copy_paste'),
     ('src/ops/motion_path_ops.cc', '(op_has_arg(C, "layer") || (C.wm && C.wm->path_under));', '(op_has_arg(C, "layer"));',
      "Ctrl C and Ctrl V work over a path", 'motion_path_copy_paste'),
+    ('src/anim/motion_path.cc', 'const bool shared = !motion_path_timing_owner(doc, target).same(target);',
+     'const bool shared = false;', "dragging a whole drawing's point's dot retimes the drawing", 'key_whole_drawing'),
     ('src/anim/animation.cc', '  layer_for_each_channel(document_camera(doc), clear);\n  return count;', '  return count;',
      "Clear Timeline on the mainline clears the camera's keys too", 'timeline_clear'),
 ]

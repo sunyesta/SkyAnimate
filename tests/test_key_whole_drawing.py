@@ -177,6 +177,14 @@ assert close(key(line, "points[4].radius", 10)["speeds"], key(line, "points[0].p
 assert ops.anim.motion_path_timing_blend(frame="5", **args) == {'FINISHED'}
 assert ops.anim.motion_path_dot_speed(frame="5", speed="1.5", **args) == {'FINISHED'}
 assert close(key(line, "curves[1].points[1].handle_out", 10)["speeds"], key(line, "points[0].pos", 10)["speeds"])
+# Dragging one point's dot along its path (the viewport's slide, to x, y): the drawing's timing, so every point follows.
+pid = line.point_ids
+assert ops.anim.motion_path_slide(frame="5", x="1", y="0.7", proportional="0", layer=str(line.id),
+                                  point=str(pid[1])) == {'FINISHED'}
+doc.frame_current = 5
+assert close(line.points[1][:2], (1.0, 0.7), 1e-3), line.points[1]
+for path in ("points[0].pos", "points[4].radius", "curves[1].points[1].handle_out"):
+    assert close(key(line, path, 10)["speeds"], key(line, "points[1].pos", 10)["speeds"]), ("timed alike", path)
 loose.key_whole_drawing = False
 assert ops.anim.motion_path_stretch_shape(shape="EVEN", frame="5", layer=str(loose.id), drawing="1") == {
     'CANCELLED'}, "only a whole drawing"
