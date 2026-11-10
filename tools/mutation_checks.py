@@ -37,6 +37,8 @@ EXE = os.path.join("build", "bin", "RelWithDebInfo", "OpenAnimate.exe")
 
 # (file, old, new, name, test)
 PENDING = [
+    ('src/anim/animation.cc', 'settled[i] += drawing_key_whole_away(layer, doc.action);', '(void)0;',
+     'Key Whole Drawing turned on lines up every action', 'tests/test_key_whole_drawing_actions.py'),
 ]
 
 def build(root):

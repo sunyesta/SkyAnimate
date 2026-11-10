@@ -1071,6 +1071,124 @@ int drawing_key_whole(Layer &layer, bool settle, const std::string &action, bool
       settle, action, false, r_keys_went);
 }
 
+/* Key Whole Drawing turned on, in the timeline being edited (`current`, an action's name or "" for the mainline):
+ * the keys of every other timeline the drawing has (put away in each channel's `actions`) are made to agree as well,
+ * so going into one later adds no keys with no edit. Each is brought out as going into it would (an action's frame 0
+ * the setup pose), keyed as one with its timing settled, and put away again; the values shown stay. Returns how many
+ * keys already there had their timing changed. */
+static int drawing_key_whole_away(Layer &layer, const std::string &current)
+{
+  if (!layer.has_drawing() || layer.is_reference()) {
+    return 0;
+  }
+  VectorDrawing &drawing = layer.drawing;
+  std::set<std::string> names;
+  /* What each channel holds where it has no keys of a timeline: the setup pose (its value, as the sync reads it). */
+  std::vector<float2> held2;
+  std::vector<float> held1;
+  drawing_shape_channels(drawing, [&](auto &ch, auto &value) {
+    for (const auto &[name, keys] : ch.actions) {
+      if (name != current && !keys.empty()) {
+        names.insert(name);
+      }
+    }
+    using T = std::decay_t<decltype(value)>;
+    const T setup = ch.animated() ? ch.evaluate(0) : value - ch.from_action_bones;
+    if constexpr (std::is_same_v<T, float2>) {
+      held2.push_back(setup + ch.from_action_bones);
+    }
+    else {
+      held1.push_back(setup + ch.from_action_bones);
+    }
+  });
+  if (names.empty()) {
+    return 0;
+  }
+  /* The sync remembers the frames it keyed, for the timeline being edited: kept as they were. */
+  const std::string was_action = layer.key_whole_action;
+  const std::set<int> was_frames = layer.key_whole_frames;
+  int settled = 0;
+  for (const std::string &name : names) {
+    /* The timeline being edited, set aside meanwhile. */
+    std::vector<std::vector<Key<float2>>> stash2;
+    std::vector<std::vector<Key<float>>> stash1;
+    drawing_shape_channels(drawing, [&](auto &ch, auto & /*value*/) {
+      using T = std::decay_t<decltype(ch.keys[0].value)>;
+      if constexpr (std::is_same_v<T, float2>) {
+        stash2.push_back(std::move(ch.keys));
+      }
+      else {
+        stash1.push_back(std::move(ch.keys));
+      }
+      ch.keys.clear();
+      if (auto it = ch.actions.find(name); it != ch.actions.end()) {
+        ch.keys = std::move(it->second);
+        ch.actions.erase(it);
+      }
+    });
+    /* An action's keys start after frame 0, the setup pose: given it, as going into the action does. */
+    if (!name.empty()) {
+      size_t i2 = 0, i1 = 0;
+      drawing_shape_channels(drawing, [&](auto &ch, auto & /*value*/) {
+        using T = std::decay_t<decltype(ch.keys[0].value)>;
+        T held;
+        if constexpr (std::is_same_v<T, float2>) {
+          held = held2[i2++];
+        }
+        else {
+          held = held1[i1++];
+        }
+        if (ch.keys.empty() || ch.key_at(0)) {
+          return;
+        }
+        Key<T> &k = ch.set_key(0, held - ch.from_action_bones);
+        if constexpr (std::is_same_v<T, float2>) {
+          if (auto it = ch.action_setup.find(name); it != ch.action_setup.end()) {
+            k.path_handles = it->second.path_handles;
+            k.path_in = it->second.path_in;
+            k.path_out = it->second.path_out;
+          }
+        }
+      });
+    }
+    settled += keys_together_sync(
+        layer,
+        [&](auto &&f) {
+          size_t i2 = 0, i1 = 0;
+          drawing_shape_channels(drawing, [&](auto &ch, auto & /*value*/) {
+            using T = std::decay_t<decltype(ch.keys[0].value)>;
+            if constexpr (std::is_same_v<T, float2>) {
+              f(ch, held2[i2++], &ch);
+            }
+            else {
+              f(ch, held1[i1++], &ch);
+            }
+          });
+        },
+        [](bool /*to_changes*/) {}, true, name, false);
+    size_t s2 = 0, s1 = 0;
+    drawing_shape_channels(drawing, [&](auto &ch, auto & /*value*/) {
+      using T = std::decay_t<decltype(ch.keys[0].value)>;
+      auto keys = std::move(ch.keys);
+      if constexpr (std::is_same_v<T, float2>) {
+        ch.keys = std::move(stash2[s2++]);
+      }
+      else {
+        ch.keys = std::move(stash1[s1++]);
+      }
+      if (!name.empty()) {
+        std::erase_if(keys, [](const auto &k) { return k.frame == 0; });
+      }
+      if (!keys.empty()) {
+        ch.actions[name] = std::move(keys);
+      }
+    });
+  }
+  layer.key_whole_action = was_action;
+  layer.key_whole_frames = was_frames;
+  return settled;
+}
+
 bool key_together_allowed(const Layer &layer)
 {
   /* A vector layer alone: its move, turn, size, opacity and drawing keyed as one. */
@@ -1400,7 +1518,11 @@ void animation_record(Document &doc)
         continue;
       }
       bool went = false;
-      settled[i] = drawing_key_whole(layer, !layer.key_whole_settled, action_key, &went);
+      const bool settle = !layer.key_whole_settled;
+      settled[i] = drawing_key_whole(layer, settle, action_key, &went);
+      if (settle) {
+        settled[i] += drawing_key_whole_away(layer, doc.action);
+      }
       keys_went[i] = went;
       layer.key_whole_settled = true;
     }
