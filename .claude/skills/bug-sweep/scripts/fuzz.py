@@ -694,7 +694,7 @@ def apply_new(op):
             return "skip"
         kw = {"layer": str(op["layer"])}
         if op["folded"]:
-            kw["folded"] = op["folded"]
+            kw["on"] = op["folded"]  # the row's chain (folding a row is only a view now)
         turning_on = op["folded"] == "1" or (not op["folded"] and not layer.key_together)
         # (on the frames keyed in it only: between keys, the keys taking the timing most have there moves things by
         # design, the Info editor saying how many)
@@ -705,7 +705,7 @@ def apply_new(op):
             doc.frame_current = fr
             before[fr] = full_pose()
         doc.frame_current = f0
-        r = ops.anim.timeline_fold_together(**kw)
+        r = ops.anim.key_together_set(**kw)
         if turning_on and r == {'FINISHED'} and os.environ.get("OA_FUZZ_FOLD_POSE", "1") == "1":
             for fr in frames:
                 doc.frame_current = fr

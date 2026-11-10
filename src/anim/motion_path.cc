@@ -6015,10 +6015,18 @@ static std::string path_channel_name(const std::string &name)
   return name;
 }
 
-/* The channels `target`'s own keys are on (motion_path_key_filter's), each with its name. None for a drawing's. */
-static std::vector<std::pair<std::string, ChannelRef>> path_own_channels(Document &doc, const MotionPathTarget &target)
+/* One of the channels a path's own keys are on, named as a bone's, with what one unit of it is in radians for a turn
+ * (a layer's rotation is kept in degrees, a bone's angle in radians). */
+struct PathOwnChannel {
+  std::string name;
+  float unit = 1.0f;
+  ChannelRef ref;
+};
+
+/* The channels `target`'s own keys are on (motion_path_key_filter's). None for a drawing's. */
+static std::vector<PathOwnChannel> path_own_channels(Document &doc, const MotionPathTarget &target)
 {
-  std::vector<std::pair<std::string, ChannelRef>> out;
+  std::vector<PathOwnChannel> out;
   Layer *layer = target.drawing ? nullptr : layer_find(doc, target.layer);
   if (!layer) {
     return out;
@@ -6033,28 +6041,90 @@ static std::vector<std::pair<std::string, ChannelRef>> path_own_channels(Documen
     if (name.empty() || name.find_first_of("[.") != std::string::npos) {
       continue;
     }
-    out.push_back({path_channel_name(name), ref});
+    out.push_back({path_channel_name(name), name == "rotation" ? PI_F / 180.0f : 1.0f, ref});
   }
   return out;
 }
 
-/* A bone's moves are kept along its rest axes (bone_transform_from_position): turned by this into its parent's
- * space, which a point's and a layer's moves are in already, so a move copied from one kind of target, or a bone
- * resting another way, pastes going the same way on screen, and flips left to right there. */
-static float path_axes_angle(const Document &doc, const MotionPathTarget &target, const std::string &name)
+/* How a step of a path's position value moves it on screen (the columns cx and cy): a bone's moves are kept along its
+ * rest axes, and parents, bone or layer, turn, scale and mirror what any target's moves show as. A copied path is
+ * kept as moves on screen, so it pastes going the same way there, whatever the target is or sits inside, and flips
+ * left to right there. */
+struct PathAxes {
+  float2 cx{1.0f, 0.0f}, cy{0.0f, 1.0f};
+  float det() const
+  {
+    return cx.x * cy.y - cx.y * cy.x;
+  }
+  float2 to_screen(float2 v) const
+  {
+    return {cx.x * v.x + cy.x * v.y, cx.y * v.x + cy.y * v.y};
+  }
+  float2 from_screen(float2 s) const
+  {
+    const float d = det();
+    return {(s.x * cy.y - s.y * cy.x) / d, (cx.x * s.y - cx.y * s.x) / d};
+  }
+};
+
+/* On `frame`, found by nudging the position value on a copy (value_jacobian); a bone's own rest turn where that can't
+ * be done. */
+static PathAxes path_screen_axes(const Document &doc, const MotionPathTarget &target, int frame)
 {
-  const Layer *layer = target.bone && name == "position" ? layer_find(doc, target.layer) : nullptr;
-  const int i = layer ? bone_index(*layer, target.bone) : -1;
-  return i >= 0 ? layer->bones[size_t(i)].setup_angle : 0.0f;
+  MotionPathTarget t = target;
+  t.head = t.head || t.bone != 0;
+  PathAxes axes;
+  const Layer *layer = layer_find(doc, t.layer);
+  if (const int b = layer && t.bone ? bone_index(*layer, t.bone) : -1; b >= 0) {
+    const float a = layer->bones[size_t(b)].setup_angle;
+    axes.cx = {std::cos(a), std::sin(a)};
+    axes.cy = {-std::sin(a), std::cos(a)};
+  }
+  const Channel<float2> *ch = handle_channel(const_cast<Document &>(doc), t);
+  if (!ch) {
+    return axes;
+  }
+  /* With no keys yet, one at its setup on a copy: the nudge moves a key. */
+  std::optional<Document> keyed;
+  if (ch->keys.empty()) {
+    keyed.emplace(doc);
+    for (const PathOwnChannel &c : path_own_channels(*keyed, t)) {
+      if (c.name == "position" && c.ref.vector && c.ref.vector->keys.empty()) {
+        Key<float2> k;
+        k.value = *c.ref.vector_value;
+        c.ref.vector->keys.push_back(k);
+      }
+    }
+  }
+  const Document &d = keyed ? *keyed : doc;
+  const Channel<float2> *keys = handle_channel(const_cast<Document &>(d), t);
+  float2 at, cx, cy;
+  if (!keys || keys->keys.empty() || !value_jacobian(d, t, frame, keys->evaluate(frame), at, &cx, &cy)) {
+    return axes;
+  }
+  PathAxes found{cx, cy};
+  const float scale = std::max(dot(cx, cx) + dot(cy, cy), 1e-20f);
+  return std::abs(found.det()) > 1e-6f * scale ? found : axes;
 }
 
-template<typename T> static T path_axes(const T &v, float angle)
+/* A target's change as a move on screen (a turn in radians, turning the way it shows), and back. */
+template<typename T> static T path_to_screen(const T &v, const std::string &name, float unit, const PathAxes &axes)
 {
   if constexpr (std::is_same_v<T, float2>) {
-    return angle != 0.0f ? rotate(v, angle) : v;
+    return name == "position" ? axes.to_screen(v) : v;
   }
   else {
-    return v;
+    return name == "angle" ? v * unit * (axes.det() < 0.0f ? -1.0f : 1.0f) : v;
+  }
+}
+
+template<typename T> static T path_from_screen(const T &v, const std::string &name, float unit, const PathAxes &axes)
+{
+  if constexpr (std::is_same_v<T, float2>) {
+    return name == "position" ? axes.from_screen(v) : v;
+  }
+  else {
+    return name == "angle" ? v / unit * (axes.det() < 0.0f ? -1.0f : 1.0f) : v;
   }
 }
 
@@ -6069,24 +6139,26 @@ static float2 path_flip(float2 v, const std::string & /*name*/, bool flip)
 }
 
 template<typename T>
-static void copy_path_keys(const Channel<T> &ch, int first, int last, float axes, std::vector<Key<T>> &out)
+static void copy_path_keys(const Channel<T> &ch, int first, int last, const std::string &name, float unit,
+                           const PathAxes &axes, std::vector<Key<T>> &out)
 {
   const T base = ch.evaluate(first);
+  const auto screen = [&](const T &v) { return path_to_screen(v, name, unit, axes); };
   for (const Key<T> &key : ch.keys) {
     if (key.frame < first || key.frame > last) {
       continue;
     }
     Key<T> k = key;
-    k.value = path_axes(T(k.value - base), axes);
+    k.value = screen(T(k.value - base));
     for (T &c : k.path_controls) {
-      c = path_axes(T(c - base), axes);
+      c = screen(T(c - base));
     }
     if constexpr (std::is_same_v<T, float2>) {
-      k.path_in = path_axes(k.path_in, axes);
-      k.path_out = path_axes(k.path_out, axes);
+      k.path_in = screen(k.path_in);
+      k.path_out = screen(k.path_out);
       for (PathControlHandles &h : k.path_control_handles) {
-        h.in = path_axes(h.in, axes);
-        h.out = path_axes(h.out, axes);
+        h.in = screen(h.in);
+        h.out = screen(h.out);
       }
     }
     k.selected = k.filler = k.filler_inside = k.filler_edited = false;
@@ -6099,7 +6171,7 @@ bool motion_path_copy(const Document &cdoc, const MotionPathTarget &target, std:
   Document &doc = const_cast<Document &>(cdoc);
   const auto channels = path_own_channels(doc, target);
   int keyed_last = 0, picked_first = INT_MAX, picked_last = INT_MIN;
-  for (const auto &[name, ref] : channels) {
+  for (const PathOwnChannel &c : channels) {
     const auto look = [&](const auto &ch) {
       for (const auto &k : ch.keys) {
         keyed_last = std::max(keyed_last, k.frame);
@@ -6109,7 +6181,7 @@ bool motion_path_copy(const Document &cdoc, const MotionPathTarget &target, std:
         }
       }
     };
-    ref.scalar ? look(*ref.scalar) : look(*ref.vector);
+    c.ref.scalar ? look(*c.ref.scalar) : look(*c.ref.vector);
   }
   if (keyed_last <= 0) {
     if (r_why) {
@@ -6124,19 +6196,19 @@ bool motion_path_copy(const Document &cdoc, const MotionPathTarget &target, std:
   const bool span = picked_first < picked_last;
   copied.first = span ? picked_first : 0;
   copied.last = span ? picked_last : keyed_last;
-  for (const auto &[name, ref] : channels) {
-    if (ref.scalar ? ref.scalar->keys.empty() : ref.vector->keys.empty()) {
+  const PathAxes axes = path_screen_axes(doc, target, copied.first);
+  for (const PathOwnChannel &own : channels) {
+    if (own.ref.scalar ? own.ref.scalar->keys.empty() : own.ref.vector->keys.empty()) {
       continue;
     }
     CopiedPathChannel c;
-    c.name = name;
-    c.vector = ref.vector != nullptr;
-    const float axes = path_axes_angle(doc, target, name);
-    if (ref.vector) {
-      copy_path_keys(*ref.vector, copied.first, copied.last, axes, c.vec);
+    c.name = own.name;
+    c.vector = own.ref.vector != nullptr;
+    if (own.ref.vector) {
+      copy_path_keys(*own.ref.vector, copied.first, copied.last, own.name, own.unit, axes, c.vec);
     }
     else {
-      copy_path_keys(*ref.scalar, copied.first, copied.last, axes, c.scalar);
+      copy_path_keys(*own.ref.scalar, copied.first, copied.last, own.name, own.unit, axes, c.scalar);
     }
     copied.channels.push_back(std::move(c));
   }
@@ -6179,42 +6251,102 @@ bool motion_path_paste_allowed(const Document &cdoc, const MotionPathTarget &tar
     return why(motion_path_label(doc, target) + " is timed as one with " +
                motion_path_label(doc, motion_path_timing_owner(doc, target)) + ": retime that instead");
   }
-  for (const auto &[name, ref] : path_own_channels(doc, target)) {
-    if (copied_channel_for(name, ref)) {
+  for (const PathOwnChannel &c : path_own_channels(doc, target)) {
+    if (copied_channel_for(c.name, c.ref)) {
       return true;
     }
   }
   return why(motion_path_label(doc, target) + " has nothing that moves as " + g_copied_path.label + " does");
 }
 
+/* A copied key's timing onto a key: how the stretch arriving at it plays. */
+template<typename K, typename C> static void key_timing_take(K &k, const C &c)
+{
+  k.interp = c.interp;
+  k.type = c.type;
+  k.hold = c.hold;
+  k.interval = c.interval;
+  k.ease = c.ease;
+  k.overshoot = c.overshoot;
+  k.elastic_amplitude = c.elastic_amplitude;
+  k.elastic_period = c.elastic_period;
+  k.noise_amplitude = c.noise_amplitude;
+  k.noise_frequency = c.noise_frequency;
+  k.cycle_back = c.cycle_back;
+  k.cycle_absolute = c.cycle_absolute;
+  k.cycle_frame = c.cycle_frame;
+  k.bezier = c.bezier;
+  k.timing = c.timing;
+}
+
+/* Keyed in place on the copied frames (each where it is now), those keys given the copied timing; frame 0, the
+ * setup, takes only its hold and interval (how the stretch leaving it plays, as Moho times it). Keys it adds on
+ * a channel not the path's own (another of a drawing's points, another layer keyed together) are fillers. */
+template<typename T, typename C>
+static int paste_timing_keys(Channel<T> &ch, const T &value, const std::vector<Key<C>> &copied, bool own)
+{
+  std::vector<Key<T>> added;
+  for (const Key<C> &c : copied) {
+    if (c.frame > 0 && !ch.key_at(c.frame)) {
+      Key<T> k;
+      k.frame = c.frame;
+      k.value = ch.keys.empty() ? value : ch.evaluate(c.frame);
+      k.filler = !own;
+      added.push_back(k);
+    }
+  }
+  if (ch.keys.empty()) {
+    Key<T> k;
+    k.value = value;
+    ch.keys.push_back(k);
+  }
+  ch.keys.insert(ch.keys.end(), added.begin(), added.end());
+  std::sort(ch.keys.begin(), ch.keys.end(), [](const Key<T> &a, const Key<T> &b) { return a.frame < b.frame; });
+  int set = 0;
+  for (const Key<C> &c : copied) {
+    Key<T> *k = ch.key_at(c.frame);
+    if (!k) {
+      continue;
+    }
+    if (c.frame == 0) {
+      k->hold = c.hold;
+      k->interval = c.interval;
+    }
+    else {
+      key_timing_take(*k, c);
+      if (own) {
+        k->filler = false;
+      }
+    }
+    set++;
+  }
+  return set;
+}
+
 template<typename T>
 static int paste_path_keys(Channel<T> &ch, T &value, const std::vector<Key<T>> &copied, const std::string &name,
-                           float axes, PathPaste how, bool flip)
+                           float unit, const PathAxes &axes, PathPaste how, bool flip)
 {
   const int first = g_copied_path.first, last = g_copied_path.last;
   /* Where the target is on the first copied frame: what the copied changes go from. */
   const T base = ch.keys.empty() ? value : ch.evaluate(first);
-  /* A change, flipped in the parent's space, along the target's own axes. */
-  const auto turned = [&](const T &change) { return path_axes(path_flip(change, name, flip), -axes); };
+  /* A move on screen, flipped there, as the target's own change. */
+  const auto turned = [&](const T &change) { return path_from_screen(path_flip(change, name, flip), name, unit, axes); };
   const auto placed = [&](const T &change) { return T(base + turned(change)); };
-  const auto setup = [&]() {
-    if (ch.keys.empty()) {
-      Key<T> k;
-      k.value = value;
-      ch.keys.push_back(k);
-    }
-  };
-  const auto sorted = [&]() {
-    std::sort(ch.keys.begin(), ch.keys.end(), [](const Key<T> &a, const Key<T> &b) { return a.frame < b.frame; });
-  };
   int set = 0;
   switch (how) {
     case PathPaste::Whole: {
-      setup();
+      if (ch.keys.empty()) {
+        Key<T> k;
+        k.value = value;
+        ch.keys.push_back(k);
+      }
       std::erase_if(ch.keys, [&](const Key<T> &k) { return k.frame != 0 && k.frame >= first && k.frame <= last; });
       for (Key<T> k : copied) {
-        /* Frame 0 is the target's own setup. */
+        /* Frame 0 is the target's own setup: only how the stretch leaving it plays. */
         if (k.frame == 0) {
+          ch.keys.front().hold = k.hold;
+          ch.keys.front().interval = k.interval;
           continue;
         }
         k.value = placed(k.value);
@@ -6232,7 +6364,7 @@ static int paste_path_keys(Channel<T> &ch, T &value, const std::vector<Key<T>> &
         ch.keys.push_back(k);
         set++;
       }
-      sorted();
+      std::sort(ch.keys.begin(), ch.keys.end(), [](const Key<T> &a, const Key<T> &b) { return a.frame < b.frame; });
       break;
     }
     case PathPaste::Shape: {
@@ -6246,45 +6378,9 @@ static int paste_path_keys(Channel<T> &ch, T &value, const std::vector<Key<T>> &
       }
       break;
     }
-    case PathPaste::Timing: {
-      /* Keyed in place first (each where it is now), then timed. */
-      std::vector<Key<T>> added;
-      for (const Key<T> &c : copied) {
-        if (c.frame > 0 && !ch.key_at(c.frame)) {
-          Key<T> k;
-          k.frame = c.frame;
-          k.value = ch.keys.empty() ? value : ch.evaluate(c.frame);
-          added.push_back(k);
-        }
-      }
-      setup();
-      ch.keys.insert(ch.keys.end(), added.begin(), added.end());
-      sorted();
-      for (const Key<T> &c : copied) {
-        Key<T> *k = c.frame > 0 ? ch.key_at(c.frame) : nullptr;
-        if (!k) {
-          continue;
-        }
-        k->interp = c.interp;
-        k->type = c.type;
-        k->hold = c.hold;
-        k->interval = c.interval;
-        k->ease = c.ease;
-        k->overshoot = c.overshoot;
-        k->elastic_amplitude = c.elastic_amplitude;
-        k->elastic_period = c.elastic_period;
-        k->noise_amplitude = c.noise_amplitude;
-        k->noise_frequency = c.noise_frequency;
-        k->cycle_back = c.cycle_back;
-        k->cycle_absolute = c.cycle_absolute;
-        k->cycle_frame = c.cycle_frame;
-        k->bezier = c.bezier;
-        k->timing = c.timing;
-        k->filler = false;
-        set++;
-      }
+    case PathPaste::Timing:
+      set = paste_timing_keys(ch, value, copied, true);
       break;
-    }
   }
   return set;
 }
@@ -6294,15 +6390,46 @@ int motion_path_paste(Document &doc, const MotionPathTarget &target, PathPaste h
   if (!motion_path_paste_allowed(doc, target, how)) {
     return 0;
   }
+  const PathAxes axes = path_screen_axes(doc, target, g_copied_path.first);
+  const std::vector<PathOwnChannel> own = path_own_channels(doc, target);
   int set = 0;
-  for (const auto &[name, ref] : path_own_channels(doc, target)) {
-    const CopiedPathChannel *c = copied_channel_for(name, ref);
-    if (!c) {
+  /* Timed as one with others (a point keyed with its whole drawing, a path in a folded Key Together group): the
+   * copied timing goes to them all, each keyed in place on the copied frames, then this path takes the copied line
+   * on every frame keyed, so none of their keys goes and they stay timed as one. */
+  const bool shared = how == PathPaste::Whole && !motion_path_timing_owner(doc, target).same(target);
+  if (shared) {
+    const CopiedPathChannel *lead = nullptr;
+    std::vector<const void *> mine;
+    for (const PathOwnChannel &c : own) {
+      const CopiedPathChannel *copied = copied_channel_for(c.name, c.ref);
+      if (!copied) {
+        continue;
+      }
+      lead = lead && lead->name == "position" ? lead : copied;
+      c.ref.vector ? (void)paste_timing_keys(*c.ref.vector, *c.ref.vector_value, copied->vec, true) :
+                     (void)paste_timing_keys(*c.ref.scalar, *c.ref.scalar_value, copied->scalar, true);
+      mine.push_back(c.ref.vector ? static_cast<const void *>(c.ref.vector) : c.ref.scalar);
+    }
+    if (lead) {
+      with_timing_channels(doc, target, [&](auto &ch) {
+        if (ch.keys.empty() || std::find(mine.begin(), mine.end(), static_cast<const void *>(&ch)) != mine.end()) {
+          return;
+        }
+        const auto value = ch.keys.front().value;
+        lead->vector ? (void)paste_timing_keys(ch, value, lead->vec, false) :
+                       (void)paste_timing_keys(ch, value, lead->scalar, false);
+      });
+    }
+  }
+  for (const PathOwnChannel &c : own) {
+    const CopiedPathChannel *copied = copied_channel_for(c.name, c.ref);
+    if (!copied) {
       continue;
     }
-    const float axes = path_axes_angle(doc, target, name);
-    set += ref.vector ? paste_path_keys(*ref.vector, *ref.vector_value, c->vec, name, axes, how, flipped) :
-                        paste_path_keys(*ref.scalar, *ref.scalar_value, c->scalar, name, axes, how, flipped);
+    const PathPaste mode = shared ? PathPaste::Shape : how;
+    set += c.ref.vector ?
+               paste_path_keys(*c.ref.vector, *c.ref.vector_value, copied->vec, c.name, c.unit, axes, mode, flipped) :
+               paste_path_keys(*c.ref.scalar, *c.ref.scalar_value, copied->scalar, c.name, c.unit, axes, mode, flipped);
   }
   return set;
 }

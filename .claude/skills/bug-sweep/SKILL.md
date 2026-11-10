@@ -13,7 +13,8 @@ touching the user's open app. Probes run in the background on private copies whi
 - **Private copy of the file.** Copy the user's file into your scratchpad (`<sweep>/file.oanim`). Probes open the copy;
   nothing is ever saved over it or over the user's file. The user's open app is read-only: never script it.
 - **Frozen app.** Copy the build's output folder (`build/bin/RelWithDebInfo/`) to `<sweep>/bin/`. Probes run that copy,
-  so you can rebuild the real one while they work. (Without it, a rebuild either fails with LNK1168 while a probe runs
+  so you can rebuild the real one while they work. Copy into a new, empty folder: `cp -r` into a `bin/` left from an earlier sweep nests the new build
+  in `bin/RelWithDebInfo/` and leaves the old exe on top (check the exe's time before briefing probes). (Without it, a rebuild either fails with LNK1168 while a probe runs
   the app, or changes the app under the probes.)
 - **Known list.** Collect what's already been found or fixed (earlier sweeps, the conversation) and known artifacts, so
   probes don't report them again.
@@ -152,6 +153,11 @@ not a bug, check the times against the shutdown before shrinking.
 `tests/test_motion_path_places.py` fails on a saturated CPU (its work never spreads over threads): rerun it quiet.
 
 ## Pitfalls (harness mistakes that look like bugs)
+
+- **Key Whole Drawing settles each timeline the first time it is recorded in**, after it is turned on or a file is
+  opened: an action not visited since gets its other channels keyed on its keyed frames when first entered, an edit
+  or not. A "CANCELLED but changed" or "entering an action changed" naming `*_keys_actions` on a drawing keyed whole
+  is this.
 
 - **Python data edits aren't undo steps.** `bone_set`, `set_point`, `layer.keyframe_insert` join the next operator's
   step, so undoing that operator also takes them back. Call `harness.rebase()` (save and reopen) before checking an
